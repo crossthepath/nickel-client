@@ -44,6 +44,6 @@ inline void SkinStealerWork(){Context c{};if(!Local(&c))return;uint64_t level{},
  std::vector<uint8_t> pixels((size_t)w*h*4);memcpy(pixels.data(),(const void*)data,pixels.size());
  if(!SkinSavePng(dir+L"\\"+SkinWide(file)+L".png",pixels.data(),w,h)){DeleteFileW((dir+L"\\"+SkinWide(file)+L".png").c_str());say("Failed to save "+who+"'s skin");return;}
  say("Saved "+who+"'s skin to skins/"+file+".png");}
-inline void SkinStealerGuarded(){__try{SkinStealerWork();}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void SkinStealerGuarded(){static volatile long stopped_=0;if(!stopped_)__try{SkinStealerWork();}__except(game::FeatureFault("SkinStealerGuarded",&stopped_,GetExceptionInformation())){}}
 inline void SkinStealerTick(){auto& s=SkinStealer();if(s.request.exchange(false)){SkinStealerGuarded();s.done=true;}}
 }

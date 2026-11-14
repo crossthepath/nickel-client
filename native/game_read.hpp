@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include "game_fault.hpp"
 
 namespace game {
 struct Player{float position[3];float previous[3];float velocity[3];bool onGround;};

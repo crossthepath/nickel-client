@@ -1248,7 +1248,7 @@ void DrawHud(ImTextureID logo){
   {static Module* hide=ModuleById("stream_hide");streamHide=hide&&hide->enabled;}
   // Timer: the tick rate is written every level tick; the previous value is restored on the tick after disabling.
   bool useTick=false;
-  game::utilityLog=WriteLog;game::actionLog=WriteLog;game::instaLog=WriteLog;game::rotationLog=WriteLog;
+  game::utilityLog=WriteLog;game::actionLog=WriteLog;game::faultLog=WriteLog;game::instaLog=WriteLog;game::rotationLog=WriteLog;
   {static Module* timer=ModuleById("timer");auto& t=game::Timer();const bool on=timer&&timer->enabled;if(on){auto rate=Find(*timer,"tick_rate");t.rate=rate?(float)rate->number:20.f;}
    t.enabled=on;if(on||t.has)useTick=true;}
   // Visual Range, Spammer, Auto Disconnect (game_utility.hpp): level tick subscribers.

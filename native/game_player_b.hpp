@@ -304,9 +304,9 @@ inline void PlayerBFrame(){if(PlayerB().fault)return;__try{PlayerBFrameWork();}_
 inline void PlayerBSendWork(uintptr_t packet){const int id=PacketIdOf(packet);if(id!=0x2f&&id!=0x1e)return;auto& s=PlayerB();std::lock_guard<std::recursive_mutex> lock(s.guard);if(!s.stealer&&!s.filler)return;
  if(id==0x2f){if(s.stealer&&s.steal.active)PbChestReset(s.steal);if(s.filler&&s.fill.active)PbChestReset(s.fill);return;}
  Context c{};if(!Local(&c))return;if(s.stealer)PbChestTrackSend(c,s.steal.track,packet);if(s.filler)PbChestTrackSend(c,s.fill.track,packet);}
-inline void PlayerBSend(uintptr_t packet){if(PlayerB().fault)return;__try{PlayerBSendWork(packet);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void PlayerBSend(uintptr_t packet){static volatile long stopped_=0;if(PlayerB().fault)return;if(!stopped_)__try{PlayerBSendWork(packet);}__except(game::FeatureFault("PlayerBSend",&stopped_,GetExceptionInformation())){}}
 // Packet receive: ContainerOpen / ContainerClose (observation only).
 inline void PlayerBReceiveWork(uintptr_t packet){const int id=PacketIdOf(packet);if(id!=0x2e&&id!=0x2f)return;auto& s=PlayerB();std::lock_guard<std::recursive_mutex> lock(s.guard);
  if(s.stealer)PbChestStealerReceive(s,packet,id);if(s.filler)PbChestFillerReceive(s,packet,id);}
-inline void PlayerBReceive(uintptr_t packet){if(PlayerB().fault)return;__try{PlayerBReceiveWork(packet);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void PlayerBReceive(uintptr_t packet){static volatile long stopped_=0;if(PlayerB().fault)return;if(!stopped_)__try{PlayerBReceiveWork(packet);}__except(game::FeatureFault("PlayerBReceive",&stopped_,GetExceptionInformation())){}}
 }
