@@ -133,7 +133,7 @@ inline void MoveCPhaseWork(uint64_t who,uint64_t boxAddress,uint64_t list){auto&
  if(mode!=1){const uintptr_t input=Move3Input(c);uint32_t bits{};if(!input||!Read(input+0x10,&bits))return;
   if(!(bits&1)){if(bits&0x80){const float e2=-eps;for(uint64_t i=MoveCShapeCount(list);i>0;--i)if(bb[4]+e2<shapeFloat(i-1,0x10))MoveCRemoveShape(list,i-1);}}
   else{const float limit=bb[1]+eps;for(uint64_t i=MoveCShapeCount(list);i>0;--i){const float minY=shapeFloat(i-1,4);if(minY<limit)MoveCRemoveShape(list,i-1);}}}}
-inline void MoveCPhaseGuarded(uint64_t who,uint64_t box,uint64_t list){__try{MoveCPhaseWork(who,box,list);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void MoveCPhaseGuarded(uint64_t who,uint64_t box,uint64_t list){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{MoveCPhaseWork(who,box,list);}__except(game::FeatureFault("MoveCPhaseGuarded",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 // Phase runs in the shared collision shapes detour of game_movement_b.hpp (Jesus), after the game.
 inline int InstallPhaseHook(void(*log)(const char*)){shapesPhase=MoveCPhaseGuarded;return InstallJesusHook(log);}
 
@@ -178,7 +178,7 @@ inline void MoveCElytraWork(){auto& m=MoveC();if(m.cancelSequence.exchange(false
  else if(mode==1&&((bits>>13)&1)){const float B=m.boost.load(),y=yaw*k,p=pitch*k,cp=std::cos(p);v[0]=v[0]-std::sin(y)*cp*B;v[1]=v[1]-std::sin(p)*B;v[2]=std::cos(y)*cp*B+v[2];}
  const float limit=m.maxSpeed.load();float h=std::hypot(v[0],v[2]);if(limit<h&&0.f<h){v[0]*=limit/h;v[2]*=limit/h;}
  if(!m.fireworkAuto)return;h=std::hypot(v[0],v[2]);MoveCElytraFirework(c,h);}
-inline void MoveCElytraTick(){__try{MoveCElytraWork();}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void MoveCElytraTick(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{MoveCElytraWork();}__except(game::FeatureFault("MoveCElytraTick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 // SprintIntent: take off / redeploy. flags = pointer to the intent flag bitset (bit 32 = gliding), state = StateVector, movement = arg 12.
 inline void MoveCElytraSprintWork(uint64_t input,uint64_t state,uint64_t flags,uint64_t movement){auto& m=MoveC();if(!m.elytra)return;Context c{};if(!Local(&c)||!MoveCCanGlide(c)){m.wasGliding=false;m.redeployTicks=0;return;}
  uint64_t bits{};if(!flags||!Read(flags,&bits))return;
@@ -191,7 +191,7 @@ inline void MoveCElytraSprintWork(uint64_t input,uint64_t state,uint64_t flags,u
  // version that kept the elytra from opening at all, even with the jump key.
  (void)movement;static bool pulsed=false;pulsed=!pulsed;if(!pulsed||!input)return;
  uint32_t& keys=*(uint32_t*)input;keys|=(1u<<25)|0x4000080u;*(uint8_t*)(input+0x60)|=0x10;}
-inline void MoveCElytraSprint(uint64_t input,uint64_t state,uint64_t flags,uint64_t movement){__try{MoveCElytraSprintWork(input,state,flags,movement);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void MoveCElytraSprint(uint64_t input,uint64_t state,uint64_t flags,uint64_t movement){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{MoveCElytraSprintWork(input,state,flags,movement);}__except(game::FeatureFault("MoveCElytraSprint",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline void MoveCSetPacketBit(uintptr_t packet,int bit,bool on){uint64_t w{};if(!Read(packet+0x88,&w))return;if(on)w|=1ull<<bit;else w&=~(1ull<<bit);*(uint64_t*)(packet+0x88)=w;}
 inline void MoveCElytraSendWork(uintptr_t packet){auto& m=MoveC();if(!m.elytra||m.elytraMode.load()!=2||PacketIdOf(packet)!=0x90)return;Context c{};if(!Local(&c)||!MoveCCanGlide(c))return;
  MoveCSetPacketBit(packet,33,false);if(!MoveCGliding(c))MoveCSetPacketBit(packet,32,true);}
@@ -202,7 +202,7 @@ inline void MoveCElytraInventory(uintptr_t actor){auto& m=MoveC();if(!m.elytra||
  if(dst<0){int32_t* selected=ActionSelected(actor);for(int i=hotbar-1;i>=0;--i)if(!selected||i!=*selected){dst=i;break;}}
  if(dst<0||ActionCursorBusy(c,actor))return;uint8_t count{};Read(ActionStackAt(c,box,src)+0x22,&count);InvMoveStack(c,actor,0xc,src,0xc,dst,count);}
 inline void MoveCScreenWork(){auto& m=MoveC();if(m.inventoryRequest.exchange(false))InvSubmit(kElytraAction,MoveCElytraInventory);}
-inline void MoveCScreen(){__try{MoveCScreenWork();}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void MoveCScreen(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{MoveCScreenWork();}__except(game::FeatureFault("MoveCScreen",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 
 // ---- Null Movement
 inline void MoveCNullZero(){auto& m=MoveC();std::lock_guard<std::mutex> l(m.lock);memset(m.nullState,0,sizeof(m.nullState));}
@@ -221,7 +221,7 @@ inline void MoveCNullSprintWork(uint64_t input,uint64_t state,uint64_t flags,uin
  if(l){word&=(uint32_t)((l!=1)*0x8000)-0x10001u;x=*(float*)(input+0x24);z=*(float*)(input+0x28);if(x==0.f)*(float*)(input+0x24)=MoveCSignedFill(z,l!=1);}
  if(a&&z==0.f)*(float*)(input+0x28)=MoveCSignedFill(x,a!=1);
  if(movement)memcpy((void*)movement,(const void*)(input+0x24),8);}
-inline void MoveCNullSprint(uint64_t input,uint64_t state,uint64_t flags,uint64_t movement){__try{MoveCNullSprintWork(input,state,flags,movement);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void MoveCNullSprint(uint64_t input,uint64_t state,uint64_t flags,uint64_t movement){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{MoveCNullSprintWork(input,state,flags,movement);}__except(game::FeatureFault("MoveCNullSprint",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline bool MoveCPacketBit(uintptr_t packet,int bit){uint64_t w{};return Read(packet+0x88,&w)&&((w>>bit)&1);}
 inline void MoveCNullSendWork(uintptr_t packet){auto& m=MoveC();if(!m.nullOn||PacketIdOf(packet)!=0x90)return;Context c{};if(!Local(&c)||!MoveCNullGuard(c))return;int a=0,l=0;{std::lock_guard<std::mutex> lk(m.lock);MoveCNullChoose(&a,&l);}
  const int forward=(MoveCPacketBit(packet,10)&&MoveCPacketBit(packet,11))?a:0;const int side=(MoveCPacketBit(packet,12)&&MoveCPacketBit(packet,13))?l:0;
@@ -238,8 +238,8 @@ inline void MoveCNullSendWork(uintptr_t packet){auto& m=MoveC();if(!m.nullOn||Pa
 inline void MoveCNullGameUpdateWork(){auto& m=MoveC();if(!m.nullOn)return;Context c{};if(!Local(&c)||!MoveCNullGuard(c))MoveCNullZero();}
 
 // ---- entry points
-inline void MoveCGameUpdate(){__try{MoveCGlideWork();MoveCNullGameUpdateWork();}__except(EXCEPTION_EXECUTE_HANDLER){}}   // GameUpdate #30 subscribers
-inline void MoveCTick(){__try{MoveCJetpackWork();MoveCBoatWork();}__except(EXCEPTION_EXECUTE_HANDLER){}MoveCElytraTick();}   // UtilityTick (LevelTick)
-inline bool MoveCSend(uintptr_t packet){__try{MoveCElytraSendWork(packet);MoveCNullSendWork(packet);}__except(EXCEPTION_EXECUTE_HANDLER){}return false;}   // PlayerAuthInput subscribers
+inline void MoveCGameUpdate(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{MoveCGlideWork();MoveCNullGameUpdateWork();}__except(game::FeatureFault("MoveCGameUpdate",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}   // GameUpdate #30 subscribers
+inline void MoveCTick(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{MoveCJetpackWork();MoveCBoatWork();}__except(game::FeatureFault("MoveCTick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}MoveCElytraTick();}   // UtilityTick (LevelTick)
+inline bool MoveCSend(uintptr_t packet){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{MoveCElytraSendWork(packet);MoveCNullSendWork(packet);}__except(game::FeatureFault("MoveCSend",&stopped_,GetExceptionInformation())){game::FeatureFlush();}return false;}   // PlayerAuthInput subscribers
 inline void MoveCSprint(uint64_t input,uint64_t state,uint64_t flags,uint64_t movement){MoveCElytraSprint(input,state,flags,movement);MoveCNullSprint(input,state,flags,movement);}   // SprintIntent #19
 }

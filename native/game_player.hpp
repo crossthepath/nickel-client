@@ -83,12 +83,12 @@ inline void PlayerTickWork(){auto& s=Players();std::lock_guard<std::mutex> l(s.g
  // Auto Tool: switch back once the player stops breaking
  if(s.wasTool&&!s.tool){AutoToolStop(s,&c);}s.wasTool=s.tool;
  if(s.tool&&s.toolChosen){uint8_t breaking{};Read(c.actor+0xb4a,&breaking);if(!breaking)AutoToolStop(s,&c);}}
-inline void PlayerTick(){__try{PlayerTickWork();}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void PlayerTick(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{PlayerTickWork();}__except(game::FeatureFault("PlayerTick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 // ---- ContinueDestroyBlock (before the game call)
 inline void AutoToolDestroyWork(uint64_t gm,const int32_t* pos){auto& s=Players();std::lock_guard<std::mutex> l(s.guard);if(!s.tool||s.toolChosen)return;float progress{};if(!Read(gm+0x24,&progress)||progress<s.toolMin)return;
  uint64_t player{};if(!Read(gm+8,&player)||!player)return;Context c{};if(!Client(&c))return;c.actor=player;const uint64_t region=ActorRegion(c);if(!region)return;int32_t* sel=ActionSelected(player);if(!sel)return;
  const int cur=*sel;const uint64_t block=RegionBlock(c,region,pos);const int best=PlayerBestSlot(c,player,block,cur,s.profiles);s.toolChosen=true;if(best>=0&&best!=cur){s.toolPrevious=cur;*sel=best;}}
-inline void AutoToolDestroy(uint64_t gm,const int32_t* pos){__try{AutoToolDestroyWork(gm,pos);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void AutoToolDestroy(uint64_t gm,const int32_t* pos){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{AutoToolDestroyWork(gm,pos);}__except(game::FeatureFault("AutoToolDestroy",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 // ---- receive
 inline bool PlayerReceiveWork(uintptr_t packet){auto& s=Players();bool noRot,debuff;std::set<int> effects;{std::lock_guard<std::mutex> l(s.guard);noRot=s.noRotation;debuff=s.debuff;if(debuff)effects=s.effects;}if(!noRot&&!debuff)return false;
  const int id=PacketIdOf(packet);
@@ -131,5 +131,5 @@ inline void InvModulesFrameWork(){auto& m=InvMods();Context c{};bool totem,spoof
   auto done=[](){auto& mm=InvMods();std::lock_guard<std::mutex> l(mm.guard);mm.armorWait=ActionRandom(mm.armorLow,mm.armorHigh);mm.armorAt=ActionNs();mm.armorArmed=true;};
   if(mode==0){InvCancel(3);if(ArmorMove(c,c.actor)==0)done();}
   else if(!ActionCursorBusy(c,c.actor)){int s{},p{};if(ArmorChoose(c,c.actor,&s,&p))InvSubmit(3,[done](uintptr_t actor){auto& mm=InvMods();{std::lock_guard<std::mutex> l(mm.guard);if(!mm.armor||mm.armorMode!=1)return;}Context k{};if(!Local(&k)||k.actor!=actor)return;if(ArmorMove(k,actor)==0)done();});}}}
-inline void InvModulesFrame(){__try{InvModulesFrameWork();}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void InvModulesFrame(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{InvModulesFrameWork();}__except(game::FeatureFault("InvModulesFrame",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 }

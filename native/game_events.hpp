@@ -68,25 +68,26 @@ inline void(*predictAttack)(uintptr_t local,uintptr_t target)=nullptr;inline voi
 inline bool AttackDetour(void* mode,void* target,bool flag,void* extra){
  uint64_t player{},id{};Context context{};
  if(Read((uintptr_t)mode+8,&player)&&player&&Local(&context)&&player==context.actor){
-  if(cancelAttack&&cancelAttack(context.actor,(uintptr_t)target))return false;
-  if(auto sa=scriptAttack)if(sa(context.actor,(uintptr_t)target))return false;
-  if(auto cc=combatCancel)if(cc(context.actor,(uintptr_t)target))return false;
-  if(auto predict=predictAttack)predict(context.actor,(uintptr_t)target);
-  if(auto ca=combatAttack)ca();
+  static volatile long stopped[5]{};const uintptr_t local=context.actor,hit=(uintptr_t)target;   // subscribers behind fault boundaries (game_fault.hpp)
+  if(GuardBool("Attack: cancel",&stopped[0],cancelAttack,local,hit))return false;
+  if(GuardBool("Attack: scripts",&stopped[1],scriptAttack,local,hit))return false;
+  if(GuardBool("Attack: Hit Select",&stopped[2],combatCancel,local,hit))return false;
+  GuardVoid("Attack: health prediction",&stopped[3],predictAttack,local,hit);
+  GuardVoid("Attack: Reach",&stopped[4],combatAttack);
   if(RuntimeId((uintptr_t)target,&id)){float reach=-1;if(!Reach(context.actor,(uintptr_t)target,&reach))reach=-1;auto& events=Shared();std::lock_guard<std::mutex> lock(events.guard);events.attackTarget=id;events.attackTick=GetTickCount64();events.reach=reach;++events.attackSerial;}}
  return attackOriginal(mode,target,flag,extra);
 }
 inline void ActorEventDetour(void* self,void* sender,void* callback,void* shared){
  if(ReceiveFilter(shared))return;   // PacketReceiveEvent cancelled by a Utility subscriber
  uint64_t packet{},actor{};uint8_t type{};
- if(Read((uintptr_t)shared,&packet)&&packet&&Read(packet+0x30,&actor)&&Read(packet+0x38,&type)&&(type==2||type==3)){if(auto predict=predictActorEvent)predict(actor,type);}
+ if(Read((uintptr_t)shared,&packet)&&packet&&Read(packet+0x30,&actor)&&Read(packet+0x38,&type)&&(type==2||type==3)){static volatile long stopped=0;GuardVoid("ActorEvent: health prediction",&stopped,predictActorEvent,actor,type);}
  if(Read((uintptr_t)shared,&packet)&&packet&&Read(packet+0x30,&actor)&&Read(packet+0x38,&type)&&(type==2||type==3||type==0x41)){auto& events=Shared();std::lock_guard<std::mutex> lock(events.guard);if(events.packets.size()<512)events.packets.push_back({actor,type,GetTickCount64()});}
  actorEventOriginal(self,sender,callback,shared);
 }
 inline PacketFunction levelEventOriginal=nullptr;
 // #195 0x23a7260: LevelEventPacket receive (id 0x19); packet +0x30 event id, +0x34 position, +0x40 data
-inline void LevelEventDetour(void* self,void* sender,void* callback,void* shared){if(ReceiveFilter(shared))return;uint64_t packet{};if(auto predict=predictLevelEvent)if(Read((uintptr_t)shared,&packet)&&packet)predict(packet);levelEventOriginal(self,sender,callback,shared);}
-inline void StartGameDetour(void* self,void* sender,void* callback,void* shared){if(ReceiveFilter(shared))return;{auto& events=Shared();std::lock_guard<std::mutex> lock(events.guard);++events.worldSerial;events.packets.clear();}startGameOriginal(self,sender,callback,shared);}
+inline void LevelEventDetour(void* self,void* sender,void* callback,void* shared){if(ReceiveFilter(shared))return;uint64_t packet{};static volatile long stopped=0;if(Read((uintptr_t)shared,&packet)&&packet)GuardVoid("LevelEvent: health prediction",&stopped,predictLevelEvent,packet);levelEventOriginal(self,sender,callback,shared);}
+inline void StartGameDetour(void* self,void* sender,void* callback,void* shared){if(ReceiveFilter(shared))return;FeatureNewWorld();{auto& events=Shared();std::lock_guard<std::mutex> lock(events.guard);++events.worldSerial;events.packets.clear();}startGameOriginal(self,sender,callback,shared);}
 // 1: hooks installed; -1: refused (wrong game build, unexpected bytes or MinHook failure). Only tried once.
 inline int InstallEvents(void(*log)(const char*)){
  static int state=0;if(state)return state;state=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size)){if(log)log("Game events: not the supported Minecraft image, no game hook installed");return state;}
@@ -97,8 +98,12 @@ inline int InstallEvents(void(*log)(const char*)){
   {0x23a6fb0,{0x4c,0x89,0xc1,0x4d,0x8b,0x01,0x48,0x8b,0x01,0x48,0x8b,0x80,0x98,0x07,0x00,0x00},(void*)StartGameDetour,(void**)&startGameOriginal},
   {0x23a7260,{0x4c,0x89,0xc1,0x4d,0x8b,0x01,0x48,0x8b,0x01,0x48,0x8b,0x80,0x08,0x07,0x00,0x00},(void*)LevelEventDetour,(void**)&levelEventOriginal}};
  for(auto& hook:hooks)for(int i=0;i<16;++i){uint8_t byte{};if(!Read(base+hook.rva+i,&byte)||byte!=hook.bytes[i]){if(log)log("Game events: unexpected bytes at a hook target, no game hook installed");return state;}}
- for(auto& hook:hooks)if(MH_CreateHook((void*)(base+hook.rva),hook.detour,hook.original)!=MH_OK){if(log)log("Game events: MinHook could not create a hook");return state;}
- for(auto& hook:hooks)if(MH_EnableHook((void*)(base+hook.rva))!=MH_OK){if(log)log("Game events: MinHook could not enable a hook");return state;}
+ // all or nothing: on a failure, hooks never enabled are removed and enabled ones are only disabled (their
+ // trampolines stay valid for a thread that may already be inside the detour)
+ int created=0,enabled=0;for(auto& hook:hooks){if(MH_CreateHook((void*)(base+hook.rva),hook.detour,hook.original)!=MH_OK)break;++created;}
+ if(created==4)for(auto& hook:hooks){if(MH_EnableHook((void*)(base+hook.rva))!=MH_OK)break;++enabled;}
+ if(enabled!=4){for(int i=0;i<enabled;++i)MH_DisableHook((void*)(base+hooks[i].rva));for(int i=enabled;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));
+  if(log)log("Game events: MinHook could not install every hook, none left active");return state;}
  if(log)log("Game events: attack, ActorEvent, StartGame and LevelEvent hooks installed");state=1;return state;
 }
 

@@ -143,7 +143,10 @@ inline thread_local void* currentTickLevel=nullptr;   // level of the current ti
 // the local player (rotation stack, Freecam, utility modules) run on the client level tick only, as on a remote
 // server; when the level cannot be told (no player, read failure) they run, as before.
 inline bool ClientTickLevel(void* level){Context c{};uint64_t own{};if(!level||!Local(&c)||!Read(c.actor+0x200,&own)||!own)return true;return own==(uint64_t)level;}
-inline uint64_t TickDetour(void* level){currentTickLevel=level;if(ClientTickLevel(level)){auto rp=rotationPush;if(rp)rp(1);if(auto listener=levelTickListener)listener();if(auto u=utilityTick)u();if(rp)if(auto pop=rotationPop)pop();}if(auto esp=blockEspTick)esp(level);if(!Map().fault)MapGuarded(level);if(!Chests().fault)ChestGuarded(level);if(!Sus().fault)SusGuarded(level);return tickOriginal(level);}
+// A new client level is a new world for the fault boundaries (game_fault.hpp): stopped sites get one more chance, also
+// when the StartGame hook (game_events.hpp) is not installed because no module needs it.
+inline void NoteClientLevel(void* level){static void* last=nullptr;Context c{};uint64_t own{};if(level==last||!Local(&c)||!Read(c.actor+0x200,&own)||own!=(uint64_t)level)return;last=level;FeatureNewWorld();}
+inline uint64_t TickDetour(void* level){currentTickLevel=level;NoteClientLevel(level);if(ClientTickLevel(level)){auto rp=rotationPush;if(rp)rp(1);if(auto listener=levelTickListener)listener();if(auto u=utilityTick)u();if(rp)if(auto pop=rotationPop)pop();}if(auto esp=blockEspTick)esp(level);if(!Map().fault)MapGuarded(level);if(!Chests().fault)ChestGuarded(level);if(!Sus().fault)SusGuarded(level);return tickOriginal(level);}
 inline uint64_t SetBlockDetour(void* sub,uint8_t layer,uint16_t index,void* block){const uint64_t result=setBlockOriginal(sub,layer,index,block);if(auto esp=blockEspSetBlock)esp((uint64_t)sub);if(auto bed=bedSetBlock)bed((uint64_t)sub,layer,index);if(auto rg=regenSetBlock)rg((uint64_t)sub,layer,index);if(auto bf=baseSetBlock)bf((uint64_t)sub,(uint64_t)block);if(auto ss=schematicSetBlock)ss((uint64_t)sub);auto& shared=Map();if(shared.enabled&&!shared.fault){std::lock_guard<std::mutex> lock(shared.pendingGuard);if(shared.pending.size()<4096)shared.pending.push_back((uint64_t)sub);}
  auto& chests=Chests();if(chests.enabled&&!chests.fault){std::lock_guard<std::mutex> lock(chests.pendingGuard);if(chests.pending.size()<4096)chests.pending.push_back((uint64_t)sub);}
  auto& sus=Sus();if(sus.enabled&&!sus.fault){std::lock_guard<std::mutex> lock(sus.pendingGuard);if(sus.pending.size()<4096)sus.pending.push_back((uint64_t)sub);}return result;}
@@ -155,8 +158,12 @@ inline int InstallMapHooks(void(*log)(const char*)){
   {0x2323c10,{0x55,0x56,0x57,0x53,0x48,0x81,0xec,0xb8,0x00,0x00,0x00,0x48,0x8d,0xac,0x24,0x80},(void*)TickDetour,(void**)&tickOriginal},
   {0x5cf63d0,{0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x88},(void*)SetBlockDetour,(void**)&setBlockOriginal}};
  for(auto& hook:hooks)for(int i=0;i<16;++i){uint8_t byte{};if(!Read(base+hook.rva+i,&byte)||byte!=hook.bytes[i]){if(log)log("MiniMap: unexpected bytes at a terrain hook target, no terrain hook installed");return state;}}
- for(auto& hook:hooks)if(MH_CreateHook((void*)(base+hook.rva),hook.detour,hook.original)!=MH_OK){if(log)log("MiniMap: MinHook could not create a terrain hook");return state;}
- for(auto& hook:hooks)if(MH_EnableHook((void*)(base+hook.rva))!=MH_OK){if(log)log("MiniMap: MinHook could not enable a terrain hook");return state;}
+ // all or nothing: on a failure, hooks never enabled are removed and enabled ones are only disabled (their
+ // trampolines stay valid for a thread that may already be inside the detour)
+ int created=0,enabled=0;for(auto& hook:hooks){if(MH_CreateHook((void*)(base+hook.rva),hook.detour,hook.original)!=MH_OK)break;++created;}
+ if(created==2)for(auto& hook:hooks){if(MH_EnableHook((void*)(base+hook.rva))!=MH_OK)break;++enabled;}
+ if(enabled!=2){for(int i=0;i<enabled;++i)MH_DisableHook((void*)(base+hooks[i].rva));for(int i=enabled;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));
+  if(log)log("MiniMap: MinHook could not install every hook, none left active");return state;}
  if(log)log("MiniMap: level tick and block change hooks installed");state=1;return state;
 }
 }

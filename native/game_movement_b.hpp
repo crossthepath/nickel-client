@@ -161,14 +161,14 @@ inline void LongJumpPreWork(){
  auto& m=MoveB();if(!m.longJump)return;Context c{};if(!Local(&c)||!StickyHasInput(c))return;float x{},z{};if(!MoveBDirection(c,&x,&z))return;
  std::lock_guard<std::mutex> lock(m.guard);m.ljVelocity=m.ljSpeed;m.ljTicks=m.ljAirTicks;m.ljActive=true;m.ljLeft=false;m.ljPending=true;m.ljPendingX=x*m.ljSpeed;m.ljPendingZ=z*m.ljSpeed;
 }
-inline void LongJumpPre(uint64_t,uint64_t){__try{LongJumpPreWork();}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void LongJumpPre(uint64_t,uint64_t){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{LongJumpPreWork();}__except(game::FeatureFault("LongJumpPre",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 // After the game's jump: arg8 is the movement state (velocity x +0x18, y +0x1c, z +0x20).
 inline void LongJumpPostWork(uint64_t arg8){
  auto& m=MoveB();if(!m.longJump||!arg8)return;float x,z,height;
  {std::lock_guard<std::mutex> lock(m.guard);if(!m.ljPending)return;m.ljPending=false;x=m.ljPendingX;z=m.ljPendingZ;height=m.ljHeight;}
  *(float*)(arg8+0x18)=x;*(float*)(arg8+0x20)=z;*(float*)(arg8+0x1c)+=height;
 }
-inline void LongJumpPost(uint64_t arg8){__try{LongJumpPostWork(arg8);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void LongJumpPost(uint64_t arg8){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{LongJumpPostWork(arg8);}__except(game::FeatureFault("LongJumpPost",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline void LongJumpTickWork(const Context& c){
  auto& m=MoveB();std::lock_guard<std::mutex> lock(m.guard);
  if(!LocalHas(c,0xc29078a0u)){
@@ -189,7 +189,7 @@ inline void MoveBTickWork(){
  if(m.airJump)AirJumpWork(c);
  if(m.longJump)LongJumpTickWork(c);
 }
-inline void MoveBTick(){__try{MoveBTickWork();}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void MoveBTick(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{MoveBTickWork();}__except(game::FeatureFault("MoveBTick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 // True when the level tick subscriber is needed (the menu keeps it installed while this holds).
 inline bool MoveBNeedsTick(){auto& m=MoveB();return m.airJump||m.longJump||m.wasLongJump||m.jesus;}
 
@@ -251,7 +251,7 @@ inline void ReverseStepWork(uint64_t input,uint64_t state,uint64_t){
   float* box=(float*)boxPointer;box[1]+=dy;box[4]+=dy;sv[7]=0;}
  else sv[7]=-(drop+.01f);
 }
-inline void ReverseStepSprint(uint64_t input,uint64_t state,uint64_t flags){__try{ReverseStepWork(input,state,flags);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void ReverseStepSprint(uint64_t input,uint64_t state,uint64_t flags){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{ReverseStepWork(input,state,flags);}__except(game::FeatureFault("ReverseStepSprint",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 // Frees the shape buffer when the module is switched off.
 // Menu thread: only requests the release; the buffer is freed on the game thread at the next SprintIntent.
 inline void ReverseStepRelease(){MoveB().rsRelease=true;}
@@ -292,7 +292,7 @@ inline void ParkourWork(uint64_t input,uint64_t state){
  if(MoveBClimbable(c,region,bb))return;
  if(ParkourSimulate(c,region,ParkourThreshold(c)))JumpRequest(c.actor);
 }
-inline void ParkourSprint(uint64_t input,uint64_t state,uint64_t){__try{ParkourWork(input,state);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void ParkourSprint(uint64_t input,uint64_t state,uint64_t){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{ParkourWork(input,state);}__except(game::FeatureFault("ParkourSprint",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 // Menu thread: the collision buffer is freed on the game thread at the next SprintIntent.
 inline void ParkourRelease(){MoveB().pkRelease=true;}
 
@@ -318,7 +318,7 @@ inline void SafeWalkAfterWork(const SafeWalkSaved& saved){
  if(saved.arg7)*(uint8_t*)(saved.arg7+0x55)=(uint8_t)saved.sneak;
 }
 inline bool SafeWalkBefore(uint64_t flags,const void* a,const void* b,uint64_t g,SafeWalkSaved* s){__try{return SafeWalkBeforeWork(flags,a,b,g,s);}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
-inline void SafeWalkAfter(const SafeWalkSaved& s){__try{SafeWalkAfterWork(s);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void SafeWalkAfter(const SafeWalkSaved& s){static volatile long reported_=0;__try{SafeWalkAfterWork(s);}__except(game::FeatureFault("SafeWalkAfter",&reported_,GetExceptionInformation())){game::FeatureFlush();}}
 inline void SafeWalkDetour(uint64_t a,uint64_t flags,uint64_t c,uint64_t d,const void* inputRef,const void* memberRef,uint64_t g,uint64_t h){
  SafeWalkSaved saved{};const bool armed=MoveB().safeWalk&&SafeWalkBefore(flags,inputRef,memberRef,g,&saved);
  // The game receives the addresses of local copies of the two 16-byte references.
@@ -362,7 +362,7 @@ inline void JesusWork(uint64_t entity,uint64_t box,uint64_t result,uint64_t regi
   if(!MoveBPush(result+0x58,shape,0x18)||!MoveBPush(result+0x70,zero,0x18))return;
  }
 }
-inline void JesusGuarded(uint64_t entity,uint64_t box,uint64_t result,uint64_t region){__try{JesusWork(entity,box,result,region);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void JesusGuarded(uint64_t entity,uint64_t box,uint64_t result,uint64_t region){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{JesusWork(entity,box,result,region);}__except(game::FeatureFault("JesusGuarded",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline void JesusDetour(uint64_t a,uint64_t b,uint64_t c,const void* d,uint64_t e,const void* f,uint64_t g,uint64_t h,uint64_t i,uint64_t j,uint64_t k,uint64_t l,uint64_t m,uint64_t n,uint64_t o){
  // The game receives the addresses of local copies of the two 16-byte references (arg4 and arg6).
  MoveBCopy16 first{},second{};const bool copied=Read((uintptr_t)d,&first)&&Read((uintptr_t)f,&second);

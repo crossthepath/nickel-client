@@ -235,4 +235,4 @@ void ScriptsMove(uint64_t input,uint64_t state,uint64_t moveVec){if(input){game:
  if(moveVec){*(float*)moveVec=s2;*(float*)(moveVec+4)=f2;}}
 bool ScriptsJumpCancel(){return scriptJumpCancel.exchange(false);}
 void ScriptsJumpPost(uint64_t arg8){const float b=scriptJumpBoost.exchange(0.f);if(b!=0.f&&arg8)*(float*)(arg8+0x1c)+=b;}
-void ScriptsMoveGuarded(uint64_t input,uint64_t state,uint64_t movement){__try{ScriptsMove(input,state,movement);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+void ScriptsMoveGuarded(uint64_t input,uint64_t state,uint64_t movement){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{ScriptsMove(input,state,movement);}__except(game::FeatureFault("ScriptsMoveGuarded",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}

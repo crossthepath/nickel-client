@@ -49,5 +49,5 @@ inline void PhysicsWork(void* holder,void* actorPtr,void* posPtr,PhysicsToken* t
  Mat4 W{};if(!Floats(top,W.m,16))return;const Mat4 next=W*Translation(pos[0],pos[1],pos[2])*P*Binv*Translation(-pos[0],-pos[1],-pos[2]);
  token->w=top;memcpy(token->saved,W.m,64);memcpy((void*)top,next.m,64);token->on=true;}
 inline void PhysicsPre(void* holder,void* actor,void* pos,PhysicsToken* token){if(Physics().fault)return;__try{PhysicsWork(holder,actor,pos,token);}__except(EXCEPTION_EXECUTE_HANDLER){InterlockedExchange(&Physics().fault,1);token->on=false;}}
-inline void PhysicsPost(PhysicsToken* token){if(!token->on||!token->w)return;__try{memcpy((void*)token->w,token->saved,64);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void PhysicsPost(PhysicsToken* token){static volatile long reported_=0;if(!token->on||!token->w)return;__try{memcpy((void*)token->w,token->saved,64);}__except(game::FeatureFault("PhysicsPost",&reported_,GetExceptionInformation())){game::FeatureFlush();}}
 }

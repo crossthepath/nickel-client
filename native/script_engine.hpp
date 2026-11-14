@@ -447,7 +447,7 @@ void ScriptsTickWork(){
  uint64_t state{};if(local&&game::Read(c.actor+0x240,&state)&&state){float* v=reinterpret_cast<float*>(state+0x18);   // velocity: movement state +0x18 (see ReadPlayer in game_read.hpp)
   if(velocity)memcpy(v,v0,12);if(add)for(int i=0;i<3;++i)v[i]+=a0[i];if(jump)v[1]=std::max(v[1],.42f);}
  Fire("tick");}
-void ScriptsTick(){__try{ScriptsTickWork();}__except(EXCEPTION_EXECUTE_HANDLER){}}
+void ScriptsTick(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{ScriptsTickWork();}__except(game::FeatureFault("ScriptsTick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 
 // ---------------------------------------------------------------- commands (".name args" typed in chat, intercepted on send)
 std::vector<std::string> SplitWords(const std::string& line){std::vector<std::string> out;std::string cur;bool quote=false;for(char c:line){if(c=='"'){quote=!quote;continue;}if(c==' '&&!quote){if(!cur.empty())out.push_back(cur);cur.clear();}else cur+=c;}if(!cur.empty())out.push_back(cur);return out;}

@@ -1188,8 +1188,8 @@ inline void PfTickWork(){
    k.state=2;}
   else{PfExecClear(k.exec,&s);if(!k.search&&k.retry&&ActionMs(k.retryNs)>1000.0){k.retry=false;PfStartSearch(k,s,cfg,false);}k.state=k.search?1:2;}}
  PfPublish(k,s,cfg);PfRotate(cfg,out);}
-inline void PfSayStopped(){if(auto f=pfSay)f("Path Finder stopped after an error; it works again after restarting the game.");}   // outside the __try function (no unwinding there)
-inline void PfTick(){auto& sh=PathFinder();if(sh.fault)return;__try{PfTickWork();}__except(FaultLogFilter("Path Finder",GetExceptionInformation())){InterlockedExchange(&sh.fault,1);PfReleaseInputs(sh);PfSayStopped();}}
+inline void PfSayStopped(){if(auto f=pfSay)f("Path Finder stopped after an error; it works again in the next world you join.");}   // outside the __try function (no unwinding there)
+inline void PfTick(){auto& sh=PathFinder();if(game::FeatureStopped(&sh.fault))return;__try{PfTickWork();}__except(game::FeatureFault("Path Finder",&sh.fault,GetExceptionInformation())){game::FeatureFlush();PfReleaseInputs(sh);PfSayStopped();}}
 // SprintIntent: Pause On Input sampling, then the movement keys: the move vector goes from the steering yaw to the world and
 // back into the head yaw frame; bits 13..16 at +-0.3, sprint bit 8 / flag 2 when 0.9 x length <= forward, jump bits 7 / 26
 // (and 25 on the first frame) with flag 0x10 unless the jump goes through the jump hook, sneak bits 0 / 21 and flag 1.
@@ -1207,7 +1207,7 @@ inline void PfSprintWork(uint64_t input,uint64_t state,uint64_t movement){auto& 
  if(!hold){out=(jump&&!sh.lastJump.load()?1u<<25:0u)|(jump?0x4000080u:0u)|dir|(bits&0xf9fe1f7fu);f=(uint8_t)((f&0xef)|(jump?0x10:0));}
  out=(sprint?1u<<8:0u)|(out&0xfffffeffu);out=(out&0xffdffefeu)|(sneak?1u:0u)|(sneak?1u<<21:0u);bits=out;
  memcpy((void*)(input+4),v,8);memcpy((void*)(input+0x24),v,8);flags=(uint8_t)((f&0xfc)|(sprint?2:0)|(sneak?1:0));if(movement)memcpy((void*)movement,v,8);sh.lastJump=jump;}
-inline void PfSprint(uint64_t input,uint64_t state,uint64_t movement){auto& sh=PathFinder();if(sh.fault)return;__try{PfSprintWork(input,state,movement);}__except(FaultLogFilter("Path Finder (input)",GetExceptionInformation())){InterlockedExchange(&sh.fault,1);}}
+inline void PfSprint(uint64_t input,uint64_t state,uint64_t movement){auto& sh=PathFinder();if(game::FeatureStopped(&sh.fault))return;__try{PfSprintWork(input,state,movement);}__except(game::FeatureFault("Path Finder (input)",&sh.fault,GetExceptionInformation())){game::FeatureFlush();}}
 
 // ---- drawing (ScreenViewRender thread): appends world lines and the goal box
 inline void PfDraw(std::vector<WorldLine>& lines,std::vector<WorldBox>& boxes){auto& sh=PathFinder();std::lock_guard<std::mutex> l(sh.guard);if(!sh.enabled.load())return;const PfConfig& c=sh.drawCfg;const bool depth=!c.throughWalls;
@@ -1235,7 +1235,7 @@ inline bool PfChatCommand(const std::string& line){
  if(w.empty())return false;std::string c=PfLower(w[0]);if(c==".go")c=".goto";const bool num1=w.size()>1&&(std::isdigit((unsigned char)w[1][0])||w[1][0]=='-');
  if(c!=".goto"&&c!=".mine"&&c!=".wander"&&c!=".follow"&&c!=".tunnel"&&c!=".chop"&&c!=".path"&&c!=".stop"&&c!=".build")return false;
  if(!PathFinder().enabled.load()){PfMessage("Turn Path Finder on first (Movement > Path Finder).");return true;}
- if(PathFinder().fault){PfMessage("Path Finder stopped after an error; it works again after restarting the game.");return true;}
+ if(game::FeatureStopped(&PathFinder().fault)){PfMessage("Path Finder stopped after an error; it works again in the next world you join.");return true;}
  if(c==".stop"){PfStop();return true;}
  if(c==".build"){if(w.size()>1){PfMessage("Unexpected argument");return true;}PfBuild();return true;}   // no argument; the schematic is checked by the process
  if(c==".path"){const std::string sub=w.size()>1?PfLower(w[1]):std::string("status");if(sub=="stop")PfStop();else if(sub=="pause")PfPause();else if(sub=="resume")PfResume();
@@ -1264,7 +1264,7 @@ inline PcShared& PearlChaser(){static auto* s=new PcShared;return *s;}
 // AddActorPacket (0x0d): type string at +0x40, runtime id +0x38, position +0x60, velocity +0x6c.
 inline void PcReceiveWork(uintptr_t packet){auto& s=PearlChaser();if(!s.enabled.load()||PacketIdOf(packet)!=0x0d)return;char type[96]{};if(!Text(packet+0x40,type,sizeof(type)))return;int kind{};if(!TrajectoryKind(type,&kind)||kind!=3)return;
  PcShared::Seen e;if(!Read(packet+0x38,&e.id)||!Floats(packet+0x60,e.pos,3)||!Floats(packet+0x6c,e.vel,3))return;std::lock_guard<std::mutex> l(s.guard);if(s.seen.size()<64)s.seen.push_back(e);}
-inline void PearlChaserReceive(uintptr_t packet){__try{PcReceiveWork(packet);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void PearlChaserReceive(uintptr_t packet){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{PcReceiveWork(packet);}__except(game::FeatureFault("PearlChaserReceive",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline float PcDist(const float* a,const float* b){const float x=a[0]-b[0],y=a[1]-b[1],z=a[2]-b[2];return std::sqrt(x*x+y*y+z*z);}
 inline bool PcStartRaw(const Context& c,float* start){__try{reinterpret_cast<float*(*)(float*,uint64_t,float)>(c.base+0x2ceda40)(start,c.actor,1.0f);return Floats((uintptr_t)start,start,3);}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
 inline void PcFinish(int result){auto& s=PearlChaser();s.fixed=false;s.pitchKnown=false;if(result==0){s.seqAt=ActionNs();s.seqSet=true;}RotRelease(kRotPearlChaser);}

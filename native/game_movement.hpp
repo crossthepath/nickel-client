@@ -37,10 +37,10 @@ inline void StrafeWork(uint64_t input,uint64_t state,uint64_t flags){
  const float r=(yaw+90)*.0174532925f,f19=std::cos(r),f20=std::sin(r),a0=-inX/wish,a1=inZ/wish,dz=f19*a0+f20*a1,dx=f19*a1-f20*a0;
  const float target=fixed?speed:current;float change=std::fmax(-accel,target-current);change=std::fmin(accel,change);const float next=current+change;
  *v=dx*next;*z=dz*next;}
-inline void StrafeSprint(uint64_t input,uint64_t state,uint64_t flags){__try{StrafeWork(input,state,flags);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void StrafeSprint(uint64_t input,uint64_t state,uint64_t flags){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{StrafeWork(input,state,flags);}__except(game::FeatureFault("StrafeSprint",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 // PacketReceive: SetActorMotion targeting the local player -> knockback timestamp.
 inline void StrafeReceiveWork(uintptr_t packet,int id){if(id!=0x28)return;auto& s=Strafe();{std::lock_guard<std::mutex> lock(s.guard);if(!s.enabled)return;}
  uint64_t target{},mine{};if(!Read(packet+0x30,&target)||!LocalIdentity(&mine,nullptr,0)||target!=mine)return;std::lock_guard<std::mutex> lock(s.guard);s.knocked=true;s.knockedNs=MoveNowNs();}
 inline void MovementSprint(uint64_t input,uint64_t state,uint64_t flags){StrafeSprint(input,state,flags);}
-inline void MovementReceive(uintptr_t packet,int id){__try{StrafeReceiveWork(packet,id);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void MovementReceive(uintptr_t packet,int id){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{StrafeReceiveWork(packet,id);}__except(game::FeatureFault("MovementReceive",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 }

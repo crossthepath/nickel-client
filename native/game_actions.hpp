@@ -177,7 +177,7 @@ inline bool JumpRequest(uintptr_t actor){if(!ActionOnGround(actor))return false;
 inline void JumpInputWork(uint64_t input,uint64_t state){Context c{};uint64_t mine{};if(!input||!Local(&c)||!Read(c.actor+0x240,&mine)||mine!=state)return;auto& j=Jump();
  const bool was=j.pressed;j.pressed=false;if(was&&!((*(uint32_t*)(input+0x10)>>7)&1)){*(uint8_t*)input&=0x7f;*(uint8_t*)(input+0x60)&=0xef;}
  if(j.request.exchange(false)){*(uint8_t*)input|=0x80;*(uint8_t*)(input+0x60)|=0x10;j.pressed=true;}}
-inline void JumpInput(uint64_t input,uint64_t state){__try{JumpInputWork(input,state);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void JumpInput(uint64_t input,uint64_t state){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{JumpInputWork(input,state);}__except(game::FeatureFault("JumpInput",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline ActionStep StepJump(){return [](ActionCtx& x){return JumpRequest(x.actor)?1:2;};}
 inline bool ActionHasItem(const Context& c,uintptr_t actor,const std::string& name){int slot{};return ActionFind(c,actor,[&](uint64_t s){return ActionNameIs(s,name);},&slot);}
 
@@ -345,7 +345,7 @@ inline void PearlCatchStart(const ActionModules::Pearl& s){auto& m=ActionMods();
 inline void PearlCatchTickWork(){auto& m=ActionMods();if(!m.pearlActive)return;Context c{};if(!Local(&c))return;bool silent{};float aim{};{std::lock_guard<std::mutex> lock(m.guard);silent=m.pearl.silentAim;aim=m.pearl.aim;}
  RotRequest r;r.module=kRotPearlCatch;r.yaw=m.pearlTarget[0];r.pitch=m.pearlTarget[1];r.mode=silent?2:0;r.priority=3;r.maxStep=aim*90.f;r.hasMax=true;
  r.predicate=[](uintptr_t){return ActionMods().pearlActive.load();};RotSubmit(std::move(r));}
-inline void PearlCatchTick(){__try{PearlCatchTickWork();}__except(EXCEPTION_EXECUTE_HANDLER){}}
+inline void PearlCatchTick(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{PearlCatchTickWork();}__except(game::FeatureFault("PearlCatchTick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 
 // Auto Block Reset: feet = RenderPositionComponent - OffsetsComponent[0]. For n = Max Stack down to 1, the
 // cell at y-n must be placeable and the cells up to y-1 replaceable. Sequence: 6000 ms timeout, can-act
