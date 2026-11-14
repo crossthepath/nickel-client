@@ -729,7 +729,7 @@ const std::vector<std::string>& RegistryNames(bool blocks){
 // background the last state is kept (alt-tab, streams). Hidden elements are drawn into a list that is never rendered,
 // so their per-frame state keeps running.
 bool hudShown=true;
-ImDrawList* HudSink(){static ImDrawList* sink=nullptr;if(!sink)sink=IM_NEW(ImDrawList)(ImGui::GetDrawListSharedData());return sink;}
+ImDrawList* HudSink(){static ImDrawList* sink=nullptr;if(!sink)sink=IM_NEW(ImDrawList)(ImGui::GetDrawListSharedData());sink->_Data=ImGui::GetDrawListSharedData();return sink;}   // _Data refreshed: the ImGui context is recreated when the renderer restarts
 ImDrawList* HudList(){return hudShown?ImGui::GetBackgroundDrawList():HudSink();}
 void UpdateHudShown(){
  static ULONGLONG leftAt=0;const ULONGLONG now=GetTickCount64();
