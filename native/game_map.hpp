@@ -139,7 +139,11 @@ inline void(*volatile schematicSetBlock)(uint64_t)=nullptr;
 // Utility modules (Timer, ...): level tick subscribers.
 inline void(*volatile utilityTick)()=nullptr;
 inline thread_local void* currentTickLevel=nullptr;   // level of the current tick (client or local server)
-inline uint64_t TickDetour(void* level){currentTickLevel=level;auto rp=rotationPush;if(rp)rp(1);if(auto listener=levelTickListener)listener();if(auto u=utilityTick)u();if(rp)if(auto pop=rotationPop)pop();if(auto esp=blockEspTick)esp(level);if(!Map().fault)MapGuarded(level);if(!Chests().fault)ChestGuarded(level);if(!Sus().fault)SusGuarded(level);return tickOriginal(level);}
+// Singleplayer runs a client level and a local server level, each ticking on its own thread. Subscribers that act on
+// the local player (rotation stack, Freecam, utility modules) run on the client level tick only, as on a remote
+// server; when the level cannot be told (no player, read failure) they run, as before.
+inline bool ClientTickLevel(void* level){Context c{};uint64_t own{};if(!level||!Local(&c)||!Read(c.actor+0x200,&own)||!own)return true;return own==(uint64_t)level;}
+inline uint64_t TickDetour(void* level){currentTickLevel=level;if(ClientTickLevel(level)){auto rp=rotationPush;if(rp)rp(1);if(auto listener=levelTickListener)listener();if(auto u=utilityTick)u();if(rp)if(auto pop=rotationPop)pop();}if(auto esp=blockEspTick)esp(level);if(!Map().fault)MapGuarded(level);if(!Chests().fault)ChestGuarded(level);if(!Sus().fault)SusGuarded(level);return tickOriginal(level);}
 inline uint64_t SetBlockDetour(void* sub,uint8_t layer,uint16_t index,void* block){const uint64_t result=setBlockOriginal(sub,layer,index,block);if(auto esp=blockEspSetBlock)esp((uint64_t)sub);if(auto bed=bedSetBlock)bed((uint64_t)sub,layer,index);if(auto rg=regenSetBlock)rg((uint64_t)sub,layer,index);if(auto bf=baseSetBlock)bf((uint64_t)sub,(uint64_t)block);if(auto ss=schematicSetBlock)ss((uint64_t)sub);auto& shared=Map();if(shared.enabled&&!shared.fault){std::lock_guard<std::mutex> lock(shared.pendingGuard);if(shared.pending.size()<4096)shared.pending.push_back((uint64_t)sub);}
  auto& chests=Chests();if(chests.enabled&&!chests.fault){std::lock_guard<std::mutex> lock(chests.pendingGuard);if(chests.pending.size()<4096)chests.pending.push_back((uint64_t)sub);}
  auto& sus=Sus();if(sus.enabled&&!sus.fault){std::lock_guard<std::mutex> lock(sus.pendingGuard);if(sus.pending.size()<4096)sus.pending.push_back((uint64_t)sub);}return result;}
