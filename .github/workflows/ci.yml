@@ -35,6 +35,9 @@ jobs:
       - name: Catalogs in step
         run: python tools/sync_catalog.py --check
 
+      - name: Build inputs tracked
+        run: python tools/check_tracked_inputs.py
+
       - name: Configure
         run: cmake -S . -B build
 

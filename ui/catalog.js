@@ -12213,7 +12213,7 @@ window.NICKEL_CATALOG = {
     {
      "id": "mob_faces",
      "name": "Mob Faces",
-     "description": "Show mob faces instead of dots",
+     "description": "Show mob faces instead of dots (not available yet: mobs show as dots)",
      "kind": "bool",
      "minimum": 0,
      "maximum": 1,
