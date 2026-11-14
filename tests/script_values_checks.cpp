@@ -27,6 +27,10 @@ int main(){
  lua_pushstring(L,"1 2 3");Check(!Read(L,v),"a string is refused");
  lua_createtable(L,0,3);lua_pushstring(L,"a");lua_setfield(L,-2,"x");lua_pushnumber(L,2);lua_setfield(L,-2,"y");lua_pushnumber(L,3);lua_setfield(L,-2,"z");Check(!Read(L,v),"a non-numeric component is refused");
  lua_createtable(L,0,3);lua_pushstring(L,"5");lua_setfield(L,-2,"x");lua_pushnumber(L,2);lua_setfield(L,-2,"y");lua_pushnumber(L,3);lua_setfield(L,-2,"z");Check(!Read(L,v),"a numeric string is refused");
+ const double far15k=15000;PushXyz(L,&far15k,&two,&three);Check(!Read(L,v),"a velocity beyond 1e4 is refused");
+ PushXyz(L,&far15k,&two,&three);Check(ReadVectorStrict(L,-1,v,kPositionLimit)&&v[0]==15000,"a position at x = 15000 is accepted");lua_pop(L,1);
+ const double edge=3.1e7;PushXyz(L,&edge,&two,&three);Check(!ReadVectorStrict(L,-1,v,kPositionLimit),"a position beyond the world border is refused");lua_pop(L,1);
+ {float sum[3]{9000,0,0};const float add[3]{5000,-20000,1};AddVelocityClamped(sum,add);Check(sum[0]==10000&&sum[1]==-10000&&sum[2]==1,"added velocities stay within +-1e4");}
  lua_close(L);
  if(failures){std::printf("%d script value check(s) failed\n",failures);return 1;}
  std::printf("script value checks passed\n");return 0;

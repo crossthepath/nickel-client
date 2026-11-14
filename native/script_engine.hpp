@@ -235,14 +235,16 @@ int PlayerInLava(lua_State* L){return PlayerHas(L,game::Fnv("InLavaFlagComponent
 int PlayerSlot(lua_State* L){game::Context c{};uint64_t inv{};int32_t slot=0;if(game::Local(&c)&&game::Read(c.actor+0x5e0,&inv)&&inv)game::Read(inv+0x10,&slot);lua_pushnumber(L,slot+1);return 1;}
 // Player writes: requested here, applied during the tick (game thread).
 struct ScriptWrites{std::mutex guard;bool velocity=false,add=false,jump=false,swing=false,teleport=false;int slot=-1;float v[3]{},a[3]{},t[3]{};};ScriptWrites scriptWrites;
-int PlayerSetVelocity(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v))luaL_error(L,"vector with finite x, y and z expected");std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.velocity=true;memcpy(scriptWrites.v,v,12);return 0;}
-int PlayerAddVelocity(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v))luaL_error(L,"vector with finite x, y and z expected");std::lock_guard<std::mutex> lock(scriptWrites.guard);if(!scriptWrites.add){scriptWrites.add=true;memset(scriptWrites.a,0,12);}for(int i=0;i<3;++i)scriptWrites.a[i]+=v[i];return 0;}
-int PlayerTeleport(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v))luaL_error(L,"vector with finite x, y and z expected");
+// Requests made outside a world are dropped (docs/scripting.md); so are requests still pending when the client level changes.
+bool ScriptInWorld(){game::Context c{};return game::Local(&c);}
+int PlayerSetVelocity(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v))luaL_error(L,"vector with finite x, y and z expected");if(!ScriptInWorld())return 0;std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.velocity=true;memcpy(scriptWrites.v,v,12);return 0;}
+int PlayerAddVelocity(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v))luaL_error(L,"vector with finite x, y and z expected");if(!ScriptInWorld())return 0;std::lock_guard<std::mutex> lock(scriptWrites.guard);if(!scriptWrites.add){scriptWrites.add=true;memset(scriptWrites.a,0,12);}AddVelocityClamped(scriptWrites.a,v);return 0;}
+int PlayerTeleport(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v,kPositionLimit))luaL_error(L,"position with finite x, y and z within +-3e7 expected");
  game::Context c{};if(!game::Local(&c)){lua_pushboolean(L,0);lua_pushstring(L,"not in a world");return 2;}
  {std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.teleport=true;memcpy(scriptWrites.t,v,12);}lua_pushboolean(L,1);return 1;}   // feet position (as player.position), applied on the next tick
-int PlayerSetSlot(lua_State* L){const int slot=(int)luaL_checknumber(L,1);if(slot<1||slot>9)luaL_error(L,"slots are 1 to 9");std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.slot=slot-1;return 0;}
+int PlayerSetSlot(lua_State* L){const int slot=(int)luaL_checknumber(L,1);if(slot<1||slot>9)luaL_error(L,"slots are 1 to 9");if(!ScriptInWorld())return 0;std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.slot=slot-1;return 0;}
 int PlayerJump(lua_State* L){game::Player p{};const bool can=game::ReadPlayer(&p)&&p.onGround;if(can){std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.jump=true;}lua_pushboolean(L,can);return 1;}
-int PlayerSwing(lua_State* L){std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.swing=true;return 0;}
+int PlayerSwing(lua_State* L){if(!ScriptInWorld())return 0;std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.swing=true;return 0;}
 int Unsupported(lua_State* L){lua_pushnil(L);return 1;}
 int UnsupportedFalse(lua_State* L){lua_pushboolean(L,0);return 1;}
 int UnsupportedPair(lua_State* L){lua_pushboolean(L,0);lua_pushstring(L,"not available in Nickel yet");return 2;}
@@ -447,6 +449,7 @@ void ScriptsTickWork(){
  bool velocity=false,add=false,jump=false,swing=false,teleport=false;int slot=-1;float v0[3]{},a0[3]{},t0[3]{};
  {std::lock_guard<std::mutex> lock(scriptWrites.guard);velocity=scriptWrites.velocity;add=scriptWrites.add;jump=scriptWrites.jump;swing=scriptWrites.swing;teleport=scriptWrites.teleport;slot=scriptWrites.slot;memcpy(v0,scriptWrites.v,12);memcpy(a0,scriptWrites.a,12);memcpy(t0,scriptWrites.t,12);
   scriptWrites.velocity=scriptWrites.add=scriptWrites.jump=scriptWrites.swing=scriptWrites.teleport=false;scriptWrites.slot=-1;}
+ {static uint64_t lastLevel=0;uint64_t level{};if(!local||!game::Read(c.actor+0x200,&level)||level!=lastLevel){lastLevel=local?level:0;velocity=add=jump=swing=teleport=false;slot=-1;}}   // made in another world or outside one: dropped
  auto finite=[](const float* v){return std::isfinite(v[0])&&std::isfinite(v[1])&&std::isfinite(v[2]);};if(!finite(v0))velocity=false;if(!finite(a0))add=false;
  // hotbar switch as the action queue does it; an empty slot is not selected: SendMobEquipment needs an item, and the
  // server would keep the old one while the client shows the new slot
