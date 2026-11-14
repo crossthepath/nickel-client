@@ -1,0 +1,26 @@
+# Build output
+build/
+dist/
+desktop/bin/
+desktop/obj/
+**/__pycache__/
+node_modules/
+*.dmp
+
+# Local data and tools (not part of the public tree)
+reports/
+tools/*
+!tools/build_desktop.ps1
+!tools/build_native_catalog.py
+!tools/shader_inspect.cpp
+!tools/build_icon_font.py
+!tools/icon_table.py
+ui/*
+!ui/catalog.js
+!ui/assets/
+ui/assets/*
+!ui/assets/nickel-icons.ttf
+!ui/assets/LICENSE-lucide.txt
+!ui/assets/LICENSE-simple-icons.md
+
+.claude/

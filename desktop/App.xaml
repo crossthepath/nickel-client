@@ -1,0 +1,6 @@
+<Application x:Class="Nickel.Desktop.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <!-- Buttons, switches and transitions are built in MainWindow.xaml.cs. -->
+ <Application.Resources>
+  <SolidColorBrush x:Key="Accent" Color="#E8590F"/>
+ </Application.Resources>
+</Application>

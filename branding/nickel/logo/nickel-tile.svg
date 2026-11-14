@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Nickel"><title>Nickel</title>
+<defs><radialGradient id="nt" cx="256" cy="20" r="560" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FF9348"/><stop offset=".42" stop-color="#E8590F"/><stop offset=".78" stop-color="#B13704"/><stop offset="1" stop-color="#7E2602"/></radialGradient>
+<clipPath id="ntc"><rect width="512" height="512" rx="115"/></clipPath></defs>
+<g clip-path="url(#ntc)"><rect width="512" height="512" fill="url(#nt)"/><g stroke="#FFFFFF" stroke-width="2" fill="none" stroke-opacity=".16"><path d="M145.6 0V512M0 102.2H512M0 405.8H512M366.4 0V512"/><path d="M206 456A150 150 0 0 0 56 306M356 456A300 300 0 0 0 56 156"/></g>
+<path d="M-154.4 -197.8L745.6 702.2" stroke="#FFFFFF" stroke-width="2" stroke-opacity=".28" stroke-dasharray="5 7" fill="none"/></g>
+<g transform="translate(90.4 90.4) scale(6.9)"><path fill="#FFFFFF" fill-opacity=".62" d="M24 2L7 16L24 21Z"/><path fill="#FFFFFF" fill-opacity=".82" d="M24 2L41 16L24 21Z"/><path fill="#FFFFFF" d="M7 16L24 21L24 46Z"/><path fill="#FFFFFF" fill-opacity=".5" d="M41 16L24 21L24 46Z"/></g>
+</svg>
