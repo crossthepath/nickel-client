@@ -5,7 +5,7 @@
 // R->vtable[0x148](R,&{x,z}) -> subchunks [chunk+0x1c8, +0x1d0) of 0x68 bytes -> storage *(subchunk+0x30):
 // palette vtable[0xa8](S,&{size,data}), bits per block vtable[0xa0](S), words vtable[0x90](S,&{count,data})
 // -> block+0x68 = BlockLegacy: name at +0xe8, map colour float r,g,b,a at +0x168. Air or alpha <= 0 is
-// transparent; water is 0xFFFF4040. Block index = (x<<8)|(z<<4)|y. 1 ms budget per tick for subchunk reads;
+// transparent; water is 0xFFFF4040. Block index = (x<<8)|(z<<4)|y. Subchunk read budget per tick: 4 ms while visible chunks are unread, else 1 ms;
 // chunks are re-checked round-robin (layer pointers and palette size). Height Shading: 220, 180 when lower
 // than the north neighbour, 255 when higher; water shaded by depth. Outputs, under lock: a toroidal RGBA
 // ring of 16W x 16W texels (W = 2n+1, n = ceil(zoom/16)+1) for the HUD element, and a 16 x 16 pixel tile
@@ -27,7 +27,7 @@ struct MapShared{
  SRWLOCK lock=SRWLOCK_INIT;volatile long enabled=0,zoom=64,rotate=0,shading=1;
  std::vector<uint32_t> ring;int cells=0;uint64_t version=0;                                  // toroidal ring for the HUD element
  std::unordered_map<uint64_t,std::array<uint32_t,256>> store;uint64_t storeVersion=0;        // full-screen map: index z*16+x
- volatile long fault=0,ticks=0,chunksRead=0;int minimumY=0,dimension=0,subChunks=0;
+ volatile long fault=0,ticks=0,chunksRead=0,loadMs=-1;int minimumY=0,dimension=0,subChunks=0;   // loadMs: last time to read every visible chunk
  std::mutex pendingGuard;std::vector<uint64_t> pending;                                      // changed subchunks (hook #251)
 };
 inline MapShared& Map(){static MapShared* shared=new MapShared;return *shared;}
@@ -37,7 +37,7 @@ struct MapColumn{uint16_t color;uint8_t y,depth;};
 struct MapSub{uint64_t layer0=0,layer1=0,size0=0,size1=0;std::array<MapColumn,256> column{};};
 struct MapChunk{uint64_t chunk=0,begin=0;uint32_t count=0;bool read=false;uint64_t seen=0;std::vector<MapSub> subs;};
 struct MapColumns{uint32_t color[256];int height[256];uint8_t depth[256];};
-struct MapState{uint64_t level=0,tick=0;int n=-1,cells=0,cap=-2,shading=-1;size_t robin=0;std::vector<std::pair<int,int>> offsets;
+struct MapState{ULONGLONG loading=0;uint64_t level=0,tick=0;int n=-1,cells=0,cap=-2,shading=-1;size_t robin=0;std::vector<std::pair<int,int>> offsets;
  std::unordered_map<uint64_t,MapChunk> tracked;std::unordered_map<uint64_t,MapColumns> columns;std::unordered_map<uint64_t,uint16_t> blockIndex;
  std::vector<std::pair<uint32_t,uint8_t>> palette;std::vector<uint64_t> cellKey;std::vector<uint8_t> cellValid;};
 
@@ -52,16 +52,23 @@ inline uint16_t BlockColor(MapState& state,uint64_t block){
   else{float c[4];if(Floats(legacy+0x168,c,4)&&c[3]>0){auto channel=[](float v){return (uint32_t)std::clamp((int)(v*255+.5f),0,255);};index=(uint16_t)state.palette.size();state.palette.push_back({0xFF000000u|(channel(c[2])<<16)|(channel(c[1])<<8)|channel(c[0]),(uint8_t)0});}}}
  state.blockIndex.emplace(block,index);return index;
 }
+inline bool MapCopy(uint64_t from,void* to,size_t bytes){__try{memcpy(to,(const void*)from,bytes);return true;}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
+// One subchunk: palette and words are copied in one read each, then every column is scanned from the top down to its
+// first coloured block (water: the contiguous water below it gives the depth), instead of decoding all 4096 blocks.
 inline void ReadMapSub(const Context& context,MapState& state,MapSub& sub,uint64_t address){
  sub.column.fill(MapColumn{});sub.layer0=sub.layer1=sub.size0=sub.size1=0;if(!Read(address+0x30,&sub.layer0)||!Read(address+0x38,&sub.layer1))return;
  sub.size1=PaletteSize(context,sub.layer1);const uint64_t storage=sub.layer0;if(!storage)return;const uint64_t palette=Virtual(context,storage,0xa8),bitsOf=Virtual(context,storage,0xa0),wordsOf=Virtual(context,storage,0x90);if(!palette||!bitsOf||!wordsOf)return;
  uint64_t out[2]{};reinterpret_cast<void*(*)(uint64_t,uint64_t*)>(palette)(storage,out);sub.size0=out[0];if(!out[0]||!out[1])return;const uint32_t entries=(uint32_t)std::min<uint64_t>(out[0],4096);
- static uint16_t index[4096];bool any=false;for(uint32_t i=0;i<entries;++i){uint64_t block{};index[i]=Read(out[1]+8ull*i,&block)?BlockColor(state,block):0;any=any||index[i];}if(!any)return;
- auto apply=[&](uint32_t at,uint16_t color){if(!color)return;MapColumn& column=sub.column[at>>4];const uint8_t y=(uint8_t)(at&15);const bool water=state.palette[color].second!=0;const uint8_t depth=water?(uint8_t)((column.depth&&column.color&&column.y+1==y)?column.depth+1:1):0;column={color,y,depth};};
+ static uint16_t index[4096];static uint64_t blocks[4096];if(!MapCopy(out[1],blocks,8ull*entries))return;bool any=false;for(uint32_t i=0;i<entries;++i){index[i]=blocks[i]?BlockColor(state,blocks[i]):0;any=any||index[i];}if(!any)return;
+ auto water=[&](uint16_t color){return state.palette[color].second!=0;};
  const int bits=reinterpret_cast<int(*)(uint64_t)>(bitsOf)(storage);
- if(bits<=0){for(uint32_t at=0;at<4096;++at)apply(at,index[0]);return;}if(bits>32)return;
+ if(bits<=0){const uint16_t color=index[0];if(!color)return;for(auto& column:sub.column)column={color,(uint8_t)15,(uint8_t)(water(color)?16:0)};return;}if(bits>32)return;
  uint64_t words[2]{};reinterpret_cast<void*(*)(uint64_t,uint64_t*)>(wordsOf)(storage,words);if(!words[0]||!words[1])return;const uint32_t per=32/bits,mask=bits==32?0xffffffffu:((1u<<bits)-1);
- for(uint32_t at=0;at<4096;++at){const uint32_t word=at/per;if(word>=words[0])break;uint32_t value{};if(!Read(words[1]+4ull*word,&value))return;const uint32_t pick=(value>>((at%per)*bits))&mask;if(pick<entries)apply(at,index[pick]);}
+ static uint32_t packed[4096];const uint32_t count=(uint32_t)std::min<uint64_t>(words[0],4096);if(!MapCopy(words[1],packed,4ull*count))return;
+ auto at=[&](uint32_t i)->uint16_t{const uint32_t word=i/per;if(word>=count)return 0;const uint32_t pick=(packed[word]>>((i%per)*bits))&mask;return pick<entries?index[pick]:0;};
+ for(uint32_t c=0;c<256;++c){int y=15;uint16_t color=0;for(;y>=0;--y){color=at(c*16+(uint32_t)y);if(color)break;}if(!color)continue;uint8_t depth=0;
+  if(water(color)){depth=1;for(int below=y-1;below>=0;--below){const uint16_t under=at(c*16+(uint32_t)below);if(!under||!water(under))break;++depth;}}
+  sub.column[c]={color,(uint8_t)y,depth};}
 }
 inline void ComposeMap(MapState& state,const MapChunk& chunk,MapColumns& out,int minimumY){
  const int top=state.cap>=0?std::min<int>(state.cap+1,(int)chunk.count):(int)chunk.count;
@@ -99,12 +106,14 @@ inline void MapWork(void* levelPointer){
  std::unordered_set<uint64_t> compose,shade;
  const int cap=dimension==1?std::max(0,(by-minimumY)>>4):-1;if(cap!=state.cap){state.cap=cap;for(auto& entry:state.tracked)if(entry.second.read)compose.insert(entry.first);}
  if((int)shading!=state.shading){state.shading=shading;std::fill(state.cellValid.begin(),state.cellValid.end(),(uint8_t)0);}
- LARGE_INTEGER frequency{},start{};QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&start);auto late=[&]{LARGE_INTEGER now{};QueryPerformanceCounter(&now);return (now.QuadPart-start.QuadPart)*1000.0/frequency.QuadPart>1.0;};
+ double budget=1.0;LARGE_INTEGER frequency{},start{};QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&start);auto late=[&]{LARGE_INTEGER now{};QueryPerformanceCounter(&now);return (now.QuadPart-start.QuadPart)*1000.0/frequency.QuadPart>budget;};
  const uint64_t chunkAt=Virtual(context,region,0x148);if(!chunkAt)return;++state.tick;std::vector<uint64_t> visible;visible.reserve(state.offsets.size());
  for(auto& offset:state.offsets){int position[2]={(bx>>4)+offset.first,(bz>>4)+offset.second};const uint64_t chunk=reinterpret_cast<uint64_t(*)(uint64_t,int*)>(chunkAt)(region,position);if(!chunk)continue;
   uint64_t begin{},end{};if(!Read(chunk+0x1c8,&begin)||!Read(chunk+0x1d0,&end)||end<begin)continue;const uint32_t count=(uint32_t)std::min<uint64_t>((end-begin)/0x68,64);const uint64_t key=ChunkKey(position[0],position[1]);MapChunk& record=state.tracked[key];
   if(record.chunk!=chunk||record.begin!=begin||record.count!=count){record.chunk=chunk;record.begin=begin;record.count=count;record.read=false;record.subs.assign(count,MapSub{});}record.seen=state.tick;visible.push_back(key);}
  for(auto it=state.tracked.begin();it!=state.tracked.end();){if(it->second.seen==state.tick){++it;continue;}const uint64_t key=it->first;if(state.columns.erase(key)){shade.insert(key);shade.insert(ChunkKey((int)(key>>32),(int)(uint32_t)key+1));}it=state.tracked.erase(it);}
+ for(uint64_t key:visible)if(!state.tracked[key].read){budget=4.0;break;}   // 4 ms while visible chunks are still unread (first load, teleport), else 1 ms
+ if(budget>1.0&&!state.loading)state.loading=GetTickCount64();
  QueryPerformanceCounter(&start);   // the read budget starts here: walking the visible chunks above must not consume it
  {std::vector<uint64_t> changed;{std::lock_guard<std::mutex> lock(shared.pendingGuard);changed.swap(shared.pending);}
   if(!changed.empty())for(uint64_t key:visible){MapChunk& record=state.tracked[key];if(!record.read)continue;for(uint64_t address:changed)if(address>=record.begin&&address<record.begin+0x68ull*record.count&&(address-record.begin)%0x68==0){ReadMapSub(context,state,record.subs[(address-record.begin)/0x68],address);compose.insert(key);}}}
@@ -122,6 +131,7 @@ inline void MapWork(void* levelPointer){
  if(wrote||stored){AcquireSRWLockExclusive(&shared.lock);if(wrote)++shared.version;if(stored)++shared.storeVersion;
   if(shared.store.size()>0x4000){std::vector<std::pair<int64_t,uint64_t>> order;order.reserve(shared.store.size());for(auto& entry:shared.store){const int64_t dx=(int)(entry.first>>32)-(bx>>4),dz=(int)(uint32_t)entry.first-(bz>>4);order.push_back({dx*dx+dz*dz,entry.first});}std::nth_element(order.begin(),order.begin()+0x3800,order.end());for(size_t i=0x3800;i<order.size();++i)shared.store.erase(order[i].second);}
   shared.minimumY=minimumY;shared.dimension=dimension;ReleaseSRWLockExclusive(&shared.lock);}
+ if(state.loading){bool all=true;for(uint64_t key:visible)if(!state.tracked[key].read){all=false;break;}if(all){InterlockedExchange(&shared.loadMs,(long)(GetTickCount64()-state.loading));state.loading=0;}}
  InterlockedIncrement(&shared.ticks);
 }
 inline void MapGuarded(void* level){__try{MapWork(level);}__except(EXCEPTION_EXECUTE_HANDLER){InterlockedExchange(&Map().fault,1);}}
