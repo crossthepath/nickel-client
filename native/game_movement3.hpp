@@ -38,7 +38,7 @@ inline void Move3TickWork(){auto& m=Move3();std::lock_guard<std::mutex> l(m.guar
  if(m.bunny&&sv){const uintptr_t in=Move3Input(c);uint32_t bits{};uint8_t flags{};if(in&&Read(in+0x10,&bits)&&Read(in+0x60,&flags)&&!(flags&0x40)){
    const bool moving=(bits&(0xfu<<13))!=0;if(!(m.bunnyHold&&!(bits&0x80))&&!(m.bunnyMoving&&!moving)){JumpRequest(c.actor);if(m.bunnyModify)Move3Horizontal(c,sv,bits,m.bunnySpeed,false);}}}
  if(m.anchorArmed&&--m.anchorTicks<=0){m.anchorArmed=false;if(sv){float vy{};Read(sv+0x1c,&vy);*(float*)(sv+0x1c)=vy-m.anchorAmount;}}}
-inline void Move3Tick(){static volatile long stopped_=0;if(!stopped_)__try{Move3TickWork();}__except(game::FeatureFault("Move3Tick",&stopped_,GetExceptionInformation())){}}
+inline void Move3Tick(){static volatile long stopped_=0;if(!stopped_)__try{Move3TickWork();}__except(game::FeatureFault("Move3Tick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline bool Move3ReceiveWork(uintptr_t packet){auto& m=Move3();std::lock_guard<std::mutex> l(m.guard);if(!m.velocity||PacketIdOf(packet)!=0x28)return false;Context c{};uint64_t mine{},who{};
  if(!Local(&c)||!RuntimeId(c.actor,&mine)||!Read(packet+0x30,&who)||who!=mine)return false;
  if(m.chance){static std::mt19937_64 gen{std::random_device{}()};const int r=(int)(gen()%100);if(m.chanceAmount<=(float)r)return false;}

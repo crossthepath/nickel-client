@@ -98,10 +98,12 @@ inline int InstallEvents(void(*log)(const char*)){
   {0x23a6fb0,{0x4c,0x89,0xc1,0x4d,0x8b,0x01,0x48,0x8b,0x01,0x48,0x8b,0x80,0x98,0x07,0x00,0x00},(void*)StartGameDetour,(void**)&startGameOriginal},
   {0x23a7260,{0x4c,0x89,0xc1,0x4d,0x8b,0x01,0x48,0x8b,0x01,0x48,0x8b,0x80,0x08,0x07,0x00,0x00},(void*)LevelEventDetour,(void**)&levelEventOriginal}};
  for(auto& hook:hooks)for(int i=0;i<16;++i){uint8_t byte{};if(!Read(base+hook.rva+i,&byte)||byte!=hook.bytes[i]){if(log)log("Game events: unexpected bytes at a hook target, no game hook installed");return state;}}
- // all or nothing: on a failure every hook created so far is removed again (MH_RemoveHook also disables it)
- int created=0;for(auto& hook:hooks){if(MH_CreateHook((void*)(base+hook.rva),hook.detour,hook.original)!=MH_OK)break;++created;}
- bool ok=created==4;for(int i=0;ok&&i<4;++i)ok=MH_EnableHook((void*)(base+hooks[i].rva))==MH_OK;
- if(!ok){for(int i=0;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));if(log)log(created==4?"Game events: MinHook could not enable a hook, all removed":"Game events: MinHook could not create a hook, all removed");return state;}
+ // all or nothing: on a failure, hooks never enabled are removed and enabled ones are only disabled (their
+ // trampolines stay valid for a thread that may already be inside the detour)
+ int created=0,enabled=0;for(auto& hook:hooks){if(MH_CreateHook((void*)(base+hook.rva),hook.detour,hook.original)!=MH_OK)break;++created;}
+ if(created==4)for(auto& hook:hooks){if(MH_EnableHook((void*)(base+hook.rva))!=MH_OK)break;++enabled;}
+ if(enabled!=4){for(int i=0;i<enabled;++i)MH_DisableHook((void*)(base+hooks[i].rva));for(int i=enabled;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));
+  if(log)log("Game events: MinHook could not install every hook, none left active");return state;}
  if(log)log("Game events: attack, ActorEvent, StartGame and LevelEvent hooks installed");state=1;return state;
 }
 

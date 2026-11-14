@@ -60,7 +60,8 @@ inline int InstallReceiveHooks(void(*log)(const char*)){static int state=0;if(st
    for(int k=0;first&&k<12;++k){uint8_t b{};first=Read(base+rva+k,&b)&&b==head[k];}for(int k=0;second&&k<7;++k){uint8_t b{};second=Read(base+rva+k,&b)&&b==alt[k];}ok=first||second;}
   if(!ok||MH_CreateHook((void*)(base+rva),detours[i],(void**)&receiveOriginal[i])!=MH_OK){++skipped;continue;}
   if(MH_QueueEnableHook((void*)(base+rva))!=MH_OK){MH_RemoveHook((void*)(base+rva));receiveOriginal[i]=nullptr;++skipped;continue;}++created;}
- if(MH_ApplyQueued()!=MH_OK){for(int i=0;i<kReceiveCount;++i)if(receiveOriginal[i]){MH_RemoveHook((void*)(base+kReceiveTargets[i]));receiveOriginal[i]=nullptr;}
-  if(log)log("Packets: receive hooks could not be enabled, all removed");return state;}
+ if(MH_ApplyQueued()!=MH_OK){   // some may be live: disable them all, keep the trampolines (a thread may be inside a detour)
+  for(int i=0;i<kReceiveCount;++i)if(receiveOriginal[i])MH_QueueDisableHook((void*)(base+kReceiveTargets[i]));MH_ApplyQueued();
+  if(log)log("Packets: receive hooks could not be enabled, none left active");return state;}
  if(log){char line[128];snprintf(line,sizeof(line),"Packets: %d receive hooks installed, %d skipped",created,skipped);log(line);}state=1;return state;}
 }

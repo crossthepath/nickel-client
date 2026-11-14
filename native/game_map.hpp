@@ -155,10 +155,12 @@ inline int InstallMapHooks(void(*log)(const char*)){
   {0x2323c10,{0x55,0x56,0x57,0x53,0x48,0x81,0xec,0xb8,0x00,0x00,0x00,0x48,0x8d,0xac,0x24,0x80},(void*)TickDetour,(void**)&tickOriginal},
   {0x5cf63d0,{0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x88},(void*)SetBlockDetour,(void**)&setBlockOriginal}};
  for(auto& hook:hooks)for(int i=0;i<16;++i){uint8_t byte{};if(!Read(base+hook.rva+i,&byte)||byte!=hook.bytes[i]){if(log)log("MiniMap: unexpected bytes at a terrain hook target, no terrain hook installed");return state;}}
- // all or nothing: on a failure every hook created so far is removed again (MH_RemoveHook also disables it)
- int created=0;for(auto& hook:hooks){if(MH_CreateHook((void*)(base+hook.rva),hook.detour,hook.original)!=MH_OK)break;++created;}
- bool ok=created==2;for(int i=0;ok&&i<2;++i)ok=MH_EnableHook((void*)(base+hooks[i].rva))==MH_OK;
- if(!ok){for(int i=0;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));if(log)log("MiniMap: MinHook could not install the terrain hooks, all removed");return state;}
+ // all or nothing: on a failure, hooks never enabled are removed and enabled ones are only disabled (their
+ // trampolines stay valid for a thread that may already be inside the detour)
+ int created=0,enabled=0;for(auto& hook:hooks){if(MH_CreateHook((void*)(base+hook.rva),hook.detour,hook.original)!=MH_OK)break;++created;}
+ if(created==2)for(auto& hook:hooks){if(MH_EnableHook((void*)(base+hook.rva))!=MH_OK)break;++enabled;}
+ if(enabled!=2){for(int i=0;i<enabled;++i)MH_DisableHook((void*)(base+hooks[i].rva));for(int i=enabled;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));
+  if(log)log("MiniMap: MinHook could not install every hook, none left active");return state;}
  if(log)log("MiniMap: level tick and block change hooks installed");state=1;return state;
 }
 }

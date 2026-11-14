@@ -24,7 +24,7 @@ int main(){
  Check(stopped==1,"the faulting site is stopped");
  Check(logged.size()==1&&logged[0].find("Test subscriber: fault c0000005")==0,"one log line with the site and the exception code");
  // later calls skip the stopped site without calling it again or logging again
- for(int i=0;i<5;++i)game::GuardBool("Test subscriber",&stopped,Faulty,(uintptr_t)1);
+ for(int i=0;i<5;++i)Check(!game::GuardBool("Test subscriber",&stopped,Faulty,(uintptr_t)1),"a stopped site returns \"not cancelled\"");
  Check(calls==1,"a stopped site is not called again");
  Check(logged.size()==1,"no repeated log line");
  // another site keeps working and its result passes through
@@ -37,6 +37,9 @@ int main(){
  // void subscribers and software exceptions
  volatile long voidStopped=0;game::GuardVoid("Void subscriber",&voidStopped,FaultyVoid,1,2);game::GuardVoid("Void subscriber",&voidStopped,FaultyVoid,1,2);
  Check(voidStopped==1&&calls==2&&logged.size()==2&&logged[1].find("e0000001")!=std::string::npos,"void subscriber: logged once, stopped");
+ // a restore helper keeps running after its first fault: reported once, called every time
+ volatile long reported=0;for(int i=0;i<3;++i){__try{++calls;RaiseException(0xE0000002,0,0,nullptr);}__except(game::FeatureFault("Restore helper",&reported,GetExceptionInformation())){game::FeatureFlush();}}
+ Check(calls==5&&logged.size()==3&&logged[2].find("Restore helper: fault e0000002")==0,"restore helper: runs every time, logged once");
  if(failures){std::printf("%d fault boundary check(s) failed\n",failures);return 1;}
  std::printf("fault boundary checks passed\n");return 0;
 }

@@ -1264,7 +1264,7 @@ inline PcShared& PearlChaser(){static auto* s=new PcShared;return *s;}
 // AddActorPacket (0x0d): type string at +0x40, runtime id +0x38, position +0x60, velocity +0x6c.
 inline void PcReceiveWork(uintptr_t packet){auto& s=PearlChaser();if(!s.enabled.load()||PacketIdOf(packet)!=0x0d)return;char type[96]{};if(!Text(packet+0x40,type,sizeof(type)))return;int kind{};if(!TrajectoryKind(type,&kind)||kind!=3)return;
  PcShared::Seen e;if(!Read(packet+0x38,&e.id)||!Floats(packet+0x60,e.pos,3)||!Floats(packet+0x6c,e.vel,3))return;std::lock_guard<std::mutex> l(s.guard);if(s.seen.size()<64)s.seen.push_back(e);}
-inline void PearlChaserReceive(uintptr_t packet){static volatile long stopped_=0;if(!stopped_)__try{PcReceiveWork(packet);}__except(game::FeatureFault("PearlChaserReceive",&stopped_,GetExceptionInformation())){}}
+inline void PearlChaserReceive(uintptr_t packet){static volatile long stopped_=0;if(!stopped_)__try{PcReceiveWork(packet);}__except(game::FeatureFault("PearlChaserReceive",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline float PcDist(const float* a,const float* b){const float x=a[0]-b[0],y=a[1]-b[1],z=a[2]-b[2];return std::sqrt(x*x+y*y+z*z);}
 inline bool PcStartRaw(const Context& c,float* start){__try{reinterpret_cast<float*(*)(float*,uint64_t,float)>(c.base+0x2ceda40)(start,c.actor,1.0f);return Floats((uintptr_t)start,start,3);}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
 inline void PcFinish(int result){auto& s=PearlChaser();s.fixed=false;s.pitchKnown=false;if(result==0){s.seqAt=ActionNs();s.seqSet=true;}RotRelease(kRotPearlChaser);}
