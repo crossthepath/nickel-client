@@ -18,6 +18,7 @@ animated look with six themes.
 [![Website](https://img.shields.io/badge/Website-nickelclient.com-0F0F14)](https://nickelclient.com)
 [![Release](https://img.shields.io/github/v/release/crossthepath/nickel-client?include_prereleases&label=Release&color=FF8A3D)](https://github.com/crossthepath/nickel-client/releases/latest)
 [![Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/pn2FdFhY9j)
+[![License](https://img.shields.io/badge/License-GPL--3.0-23232C)](LICENSE)
 
 <img width="1026" alt="Nickel menu, Orange theme" src="docs/images/menu-orange.png" />
 
@@ -139,5 +140,6 @@ Website and documentation: [nickelclient.com](https://nickelclient.com). Questio
 
 ## License
 
-All rights reserved for now. Third-party code and assets keep their own licenses; see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Nickel is free software under the [GNU General Public License v3.0](LICENSE): you can use, study, share and
+modify it, and versions you distribute stay under the same license with their source. Third-party code and assets
+keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

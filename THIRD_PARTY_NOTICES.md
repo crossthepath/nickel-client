@@ -11,6 +11,10 @@ Nickel includes or links the components below. Each keeps its own license; the f
 
 Minecraft is a trademark of Microsoft Corporation. Nickel ships no Mojang or Microsoft assets.
 
+Nickel itself is licensed under the GNU General Public License v3.0 ([LICENSE](LICENSE)). The compiled shaders in
+`native/Assets/Shaders` (highlight and sky materials) were not written by the Nickel authors and are not covered by
+that license; they will be replaced by shaders written for Nickel.
+
 ## Dear ImGui
 
 ```text
