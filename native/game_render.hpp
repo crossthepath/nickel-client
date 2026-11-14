@@ -220,13 +220,16 @@ inline void* volatile screenViewCurrent=nullptr;   // ScreenView being rendered 
 // own slot. Written by the render thread only.
 constexpr int kScreenSlots=12;
 inline std::atomic<uint64_t> otherScreenHash[kScreenSlots]{},otherScreenAt[kScreenSlots]{};
+// Set by the overlay when the HUD is hidden (not playing: chat, pause, inventory...); the armor, item counter and
+// effect icons drawn by the game follow it.
+inline std::atomic<bool> hudHidden{false};
 inline void(*volatile screenNameLog)(const char*)=nullptr;
 inline uint64_t ScreenNameHash(const char* s){uint64_t h=1469598103934665603ull;for(;*s;++s){h^=(uint8_t)*s;h*=1099511628211ull;}return h;}
 inline void NoteOtherScreen(const char* name){const uint64_t h=ScreenNameHash(name),now=GetTickCount64();int slot=-1,oldest=0;
  for(int i=0;i<kScreenSlots;++i){if(otherScreenHash[i].load()==h){slot=i;break;}if(otherScreenAt[i].load()<otherScreenAt[oldest].load())oldest=i;}
  if(slot<0){slot=oldest;otherScreenAt[slot].store(0);otherScreenHash[slot].store(h);if(auto log=screenNameLog){char line[64];wsprintfA(line,"Screen: %s",name);log(line);}}
  otherScreenAt[slot].store(now);}
-inline void ScreenDetour(void* view,void* ui){screenViewCurrent=view;ReadScreenName(view);if(currentScreen[0]&&strcmp(currentScreen,"hud_screen")&&strcmp(currentScreen,"hud_crosshair_screen")&&strcmp(currentScreen,"debug_screen")&&strcmp(currentScreen,"toast_screen"))NoteOtherScreen(currentScreen);if(currentScreen[0])ScreenPublish(currentScreen);if(strcmp(currentScreen,"debug_screen")&&strcmp(currentScreen,"toast_screen")){if(auto u=screenUtility)u();auto rp=rotationPush;if(rp)rp(2);if(auto cs=combatScreen)cs(currentScreen);if(rp)if(auto pop=rotationPop)pop();if(auto inv=inventoryScreen)inv();}if(!Armor().fault)ArmorGuarded(view,ui);if(!Counter().fault)CounterGuarded(ui);if(!Icons().fault)IconGuarded(ui);if(!View().fault)ProjectorGuarded(ui);if(auto work=visualFiltersScreenWork.load(std::memory_order_acquire))work(ui);if(auto work=namesScreenWork.load(std::memory_order_acquire))work(ui);if(auto work=xrayScreenWork.load(std::memory_order_acquire))work();screenOriginal(view,ui);currentScreen[0]=0;}
+inline void ScreenDetour(void* view,void* ui){screenViewCurrent=view;ReadScreenName(view);if(currentScreen[0]&&strcmp(currentScreen,"hud_screen")&&strcmp(currentScreen,"hud_crosshair_screen")&&strcmp(currentScreen,"debug_screen")&&strcmp(currentScreen,"toast_screen"))NoteOtherScreen(currentScreen);if(currentScreen[0])ScreenPublish(currentScreen);if(strcmp(currentScreen,"debug_screen")&&strcmp(currentScreen,"toast_screen")){if(auto u=screenUtility)u();auto rp=rotationPush;if(rp)rp(2);if(auto cs=combatScreen)cs(currentScreen);if(rp)if(auto pop=rotationPop)pop();if(auto inv=inventoryScreen)inv();}if(!hudHidden.load(std::memory_order_relaxed)){if(!Armor().fault)ArmorGuarded(view,ui);if(!Counter().fault)CounterGuarded(ui);if(!Icons().fault)IconGuarded(ui);}if(!View().fault)ProjectorGuarded(ui);if(auto work=visualFiltersScreenWork.load(std::memory_order_acquire))work(ui);if(auto work=namesScreenWork.load(std::memory_order_acquire))work(ui);if(auto work=xrayScreenWork.load(std::memory_order_acquire))work();screenOriginal(view,ui);currentScreen[0]=0;}
 // 1: hook installed; -1: refused. Only tried once.
 inline int InstallScreenHook(void(*log)(const char*)){
  static int state=0;if(state)return state;state=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size)){if(log)log("Armor HUD: not the supported Minecraft image, no hook installed");return state;}

@@ -1188,7 +1188,8 @@ inline void PfTickWork(){
    k.state=2;}
   else{PfExecClear(k.exec,&s);if(!k.search&&k.retry&&ActionMs(k.retryNs)>1000.0){k.retry=false;PfStartSearch(k,s,cfg,false);}k.state=k.search?1:2;}}
  PfPublish(k,s,cfg);PfRotate(cfg,out);}
-inline void PfTick(){auto& sh=PathFinder();if(sh.fault)return;__try{PfTickWork();}__except(EXCEPTION_EXECUTE_HANDLER){InterlockedExchange(&sh.fault,1);PfReleaseInputs(sh);if(actionLog)actionLog("Path Finder: fault caught, module stopped until restart");}}
+inline void PfSayStopped(){if(auto f=pfSay)f("Path Finder stopped after an error; it works again after restarting the game.");}   // outside the __try function (no unwinding there)
+inline void PfTick(){auto& sh=PathFinder();if(sh.fault)return;__try{PfTickWork();}__except(FaultLogFilter("Path Finder",GetExceptionInformation())){InterlockedExchange(&sh.fault,1);PfReleaseInputs(sh);PfSayStopped();}}
 // SprintIntent: Pause On Input sampling, then the movement keys: the move vector goes from the steering yaw to the world and
 // back into the head yaw frame; bits 13..16 at +-0.3, sprint bit 8 / flag 2 when 0.9 x length <= forward, jump bits 7 / 26
 // (and 25 on the first frame) with flag 0x10 unless the jump goes through the jump hook, sneak bits 0 / 21 and flag 1.
@@ -1206,7 +1207,7 @@ inline void PfSprintWork(uint64_t input,uint64_t state,uint64_t movement){auto& 
  if(!hold){out=(jump&&!sh.lastJump.load()?1u<<25:0u)|(jump?0x4000080u:0u)|dir|(bits&0xf9fe1f7fu);f=(uint8_t)((f&0xef)|(jump?0x10:0));}
  out=(sprint?1u<<8:0u)|(out&0xfffffeffu);out=(out&0xffdffefeu)|(sneak?1u:0u)|(sneak?1u<<21:0u);bits=out;
  memcpy((void*)(input+4),v,8);memcpy((void*)(input+0x24),v,8);flags=(uint8_t)((f&0xfc)|(sprint?2:0)|(sneak?1:0));if(movement)memcpy((void*)movement,v,8);sh.lastJump=jump;}
-inline void PfSprint(uint64_t input,uint64_t state,uint64_t movement){auto& sh=PathFinder();if(sh.fault)return;__try{PfSprintWork(input,state,movement);}__except(EXCEPTION_EXECUTE_HANDLER){InterlockedExchange(&sh.fault,1);}}
+inline void PfSprint(uint64_t input,uint64_t state,uint64_t movement){auto& sh=PathFinder();if(sh.fault)return;__try{PfSprintWork(input,state,movement);}__except(FaultLogFilter("Path Finder (input)",GetExceptionInformation())){InterlockedExchange(&sh.fault,1);}}
 
 // ---- drawing (ScreenViewRender thread): appends world lines and the goal box
 inline void PfDraw(std::vector<WorldLine>& lines,std::vector<WorldBox>& boxes){auto& sh=PathFinder();std::lock_guard<std::mutex> l(sh.guard);if(!sh.enabled.load())return;const PfConfig& c=sh.drawCfg;const bool depth=!c.throughWalls;
@@ -1231,9 +1232,10 @@ inline void PfStatus(std::string* state,std::string* process,std::string* detail
 // Chat command (line starts with '.'): returns true when it was a path finder command.
 inline bool PfChatCommand(const std::string& line){
  std::vector<std::string> w;{std::string cur;for(char ch:line){if(ch==' '||ch==(char)9){if(!cur.empty())w.push_back(cur);cur.clear();}else cur+=ch;}if(!cur.empty())w.push_back(cur);}
- if(w.empty())return false;const std::string c=PfLower(w[0]);const bool num1=w.size()>1&&(std::isdigit((unsigned char)w[1][0])||w[1][0]=='-');
+ if(w.empty())return false;std::string c=PfLower(w[0]);if(c==".go")c=".goto";const bool num1=w.size()>1&&(std::isdigit((unsigned char)w[1][0])||w[1][0]=='-');
  if(c!=".goto"&&c!=".mine"&&c!=".wander"&&c!=".follow"&&c!=".tunnel"&&c!=".chop"&&c!=".path"&&c!=".stop"&&c!=".build")return false;
- if(!PathFinder().enabled.load()){PfMessage("Turn Path Finder on first.");return true;}
+ if(!PathFinder().enabled.load()){PfMessage("Turn Path Finder on first (Movement > Path Finder).");return true;}
+ if(PathFinder().fault){PfMessage("Path Finder stopped after an error; it works again after restarting the game.");return true;}
  if(c==".stop"){PfStop();return true;}
  if(c==".build"){if(w.size()>1){PfMessage("Unexpected argument");return true;}PfBuild();return true;}   // no argument; the schematic is checked by the process
  if(c==".path"){const std::string sub=w.size()>1?PfLower(w[1]):std::string("status");if(sub=="stop")PfStop();else if(sub=="pause")PfPause();else if(sub=="resume")PfResume();

@@ -30,7 +30,9 @@ if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/vendor/imgui/imgui.cpp")
   target_compile_definitions(nickel_overlay PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
   # /EHa: a fault caught by __try/__except also unwinds C++ objects (lock_guard locks are released). With /EHsc a lock
   # stayed held after "Rotations: fault caught" and froze the game.
-  target_compile_options(nickel_overlay PRIVATE /bigobj /EHa)
+  target_compile_options(nickel_overlay PRIVATE /bigobj /EHa /Zi)
+  # Program database next to the DLL (not shipped): turns the "module+offset" of a logged fault into a function and line.
+  target_link_options(nickel_overlay PRIVATE /DEBUG /OPT:REF /OPT:ICF)
   target_link_libraries(nickel_overlay PRIVATE minhook Luau.VM Luau.Compiler d3d11 d3d12 dxgi dcomp d3dcompiler windowscodecs ole32 windowsapp winhttp)
   set_target_properties(nickel_overlay PROPERTIES OUTPUT_NAME "Nickel.Overlay")
   if(MSVC)

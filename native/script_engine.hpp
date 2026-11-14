@@ -428,7 +428,7 @@ void ScriptsFrame(std::vector<std::string>& drawn){
   auto& place=Place(id.c_str(),20,200);m.fx=place.x;m.fy=place.y;m.fs=place.scale;m.fw=m.hudW*place.scale;m.fh=m.hudH*place.scale;m.frame=true;place.lo=ImVec2(m.fx,m.fy);place.hi=ImVec2(m.fx+m.fw,m.fy+m.fh);drawn.push_back(id);}}
  scriptDraw.d=ImGui::GetBackgroundDrawList();scriptDraw.world=true;
  Dispatch("render3d",[](lua_State* L){lua_newtable(L);luaL_getmetatable(L,"NickelWorldDraw");lua_setmetatable(L,-2);return 1;},[](lua_State*,int){});
- scriptDraw.world=false;
+ scriptDraw.world=false;scriptDraw.d=HudList();   // script HUDs hide outside play, world drawing stays
  Dispatch("render2d",[](lua_State* L){lua_newtable(L);luaL_getmetatable(L,"NickelScreenDraw");lua_setmetatable(L,-2);return 1;},[](lua_State*,int){});
  scriptDraw.d=nullptr;
  for(auto& sp:scripts){Script& s=*sp;s.frameMs=s.frameMs*.9+s.frameSum*1000*.1;s.frameSum=0;}
