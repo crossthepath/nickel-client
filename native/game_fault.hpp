@@ -29,9 +29,10 @@ inline int FeatureFault(const char* where,volatile long* stopped,EXCEPTION_POINT
  if(e&&e->ExceptionRecord)faultRecord={where,e->ExceptionRecord->ExceptionCode,reinterpret_cast<uintptr_t>(e->ExceptionRecord->ExceptionAddress),true};
  return EXCEPTION_EXECUTE_HANDLER;}
 
-// Writes the recorded fault, if any (call from the __except block).
+// Writes the recorded fault, if any (call from the __except block). Without a log yet, the record stays pending and the
+// next flush on this thread writes it.
 inline void FeatureFlush(){
- FaultRecord r=faultRecord;faultRecord.pending=false;if(!r.pending)return;auto log=faultLog;if(!log)return;
+ FaultRecord r=faultRecord;if(!r.pending)return;auto log=faultLog;if(!log)return;faultRecord.pending=false;
  HMODULE mod{};char name[MAX_PATH]="?";
  if(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCSTR>(r.address),&mod))GetModuleFileNameA(mod,name,MAX_PATH);
  const char* base=strrchr(name,'\\');char line[400];

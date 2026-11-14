@@ -1189,7 +1189,7 @@ inline void PfTickWork(){
   else{PfExecClear(k.exec,&s);if(!k.search&&k.retry&&ActionMs(k.retryNs)>1000.0){k.retry=false;PfStartSearch(k,s,cfg,false);}k.state=k.search?1:2;}}
  PfPublish(k,s,cfg);PfRotate(cfg,out);}
 inline void PfSayStopped(){if(auto f=pfSay)f("Path Finder stopped after an error; it works again after restarting the game.");}   // outside the __try function (no unwinding there)
-inline void PfTick(){auto& sh=PathFinder();if(sh.fault)return;__try{PfTickWork();}__except(FaultLogFilter("Path Finder",GetExceptionInformation())){InterlockedExchange(&sh.fault,1);PfReleaseInputs(sh);PfSayStopped();}}
+inline void PfTick(){auto& sh=PathFinder();if(sh.fault)return;__try{PfTickWork();}__except(game::FeatureFault("Path Finder",&sh.fault,GetExceptionInformation())){game::FeatureFlush();PfReleaseInputs(sh);PfSayStopped();}}
 // SprintIntent: Pause On Input sampling, then the movement keys: the move vector goes from the steering yaw to the world and
 // back into the head yaw frame; bits 13..16 at +-0.3, sprint bit 8 / flag 2 when 0.9 x length <= forward, jump bits 7 / 26
 // (and 25 on the first frame) with flag 0x10 unless the jump goes through the jump hook, sneak bits 0 / 21 and flag 1.
@@ -1207,7 +1207,7 @@ inline void PfSprintWork(uint64_t input,uint64_t state,uint64_t movement){auto& 
  if(!hold){out=(jump&&!sh.lastJump.load()?1u<<25:0u)|(jump?0x4000080u:0u)|dir|(bits&0xf9fe1f7fu);f=(uint8_t)((f&0xef)|(jump?0x10:0));}
  out=(sprint?1u<<8:0u)|(out&0xfffffeffu);out=(out&0xffdffefeu)|(sneak?1u:0u)|(sneak?1u<<21:0u);bits=out;
  memcpy((void*)(input+4),v,8);memcpy((void*)(input+0x24),v,8);flags=(uint8_t)((f&0xfc)|(sprint?2:0)|(sneak?1:0));if(movement)memcpy((void*)movement,v,8);sh.lastJump=jump;}
-inline void PfSprint(uint64_t input,uint64_t state,uint64_t movement){auto& sh=PathFinder();if(sh.fault)return;__try{PfSprintWork(input,state,movement);}__except(FaultLogFilter("Path Finder (input)",GetExceptionInformation())){InterlockedExchange(&sh.fault,1);}}
+inline void PfSprint(uint64_t input,uint64_t state,uint64_t movement){auto& sh=PathFinder();if(sh.fault)return;__try{PfSprintWork(input,state,movement);}__except(game::FeatureFault("Path Finder (input)",&sh.fault,GetExceptionInformation())){game::FeatureFlush();}}
 
 // ---- drawing (ScreenViewRender thread): appends world lines and the goal box
 inline void PfDraw(std::vector<WorldLine>& lines,std::vector<WorldBox>& boxes){auto& sh=PathFinder();std::lock_guard<std::mutex> l(sh.guard);if(!sh.enabled.load())return;const PfConfig& c=sh.drawCfg;const bool depth=!c.throughWalls;

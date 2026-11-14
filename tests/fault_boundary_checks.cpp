@@ -40,6 +40,10 @@ int main(){
  // a restore helper keeps running after its first fault: reported once, called every time
  volatile long reported=0;for(int i=0;i<3;++i){__try{++calls;RaiseException(0xE0000002,0,0,nullptr);}__except(game::FeatureFault("Restore helper",&reported,GetExceptionInformation())){game::FeatureFlush();}}
  Check(calls==5&&logged.size()==3&&logged[2].find("Restore helper: fault e0000002")==0,"restore helper: runs every time, logged once");
+ // a fault before the log is set is written by the next flush instead of being lost
+ game::faultLog=nullptr;volatile long early=0;game::GuardVoid("Early subscriber",&early,FaultyVoid,1,2);
+ game::faultLog=Log;game::FeatureFlush();
+ Check(logged.size()==4&&logged[3].find("Early subscriber: fault e0000001")==0,"a fault recorded before the log exists is written later");
  if(failures){std::printf("%d fault boundary check(s) failed\n",failures);return 1;}
  std::printf("fault boundary checks passed\n");return 0;
 }
