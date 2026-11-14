@@ -26,6 +26,7 @@ int main(){
  PushXyz(L,&one,&two,&huge);Check(!Read(L,v),"an out-of-range value is refused");
  lua_pushstring(L,"1 2 3");Check(!Read(L,v),"a string is refused");
  lua_createtable(L,0,3);lua_pushstring(L,"a");lua_setfield(L,-2,"x");lua_pushnumber(L,2);lua_setfield(L,-2,"y");lua_pushnumber(L,3);lua_setfield(L,-2,"z");Check(!Read(L,v),"a non-numeric component is refused");
+ lua_createtable(L,0,3);lua_pushstring(L,"5");lua_setfield(L,-2,"x");lua_pushnumber(L,2);lua_setfield(L,-2,"y");lua_pushnumber(L,3);lua_setfield(L,-2,"z");Check(!Read(L,v),"a numeric string is refused");
  lua_close(L);
  if(failures){std::printf("%d script value check(s) failed\n",failures);return 1;}
  std::printf("script value checks passed\n");return 0;

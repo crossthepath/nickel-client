@@ -7,7 +7,8 @@
 inline constexpr double kVectorLimit=1.0e4;
 inline bool ReadVectorStrict(lua_State* L,int idx,float out[3]){double v[3]{};
  if(lua_isvector(L,idx)){const float* f=lua_tovector(L,idx);for(int i=0;i<3;++i)v[i]=f[i];}
- else if(lua_istable(L,idx)){const char* k[]={"x","y","z"};for(int i=0;i<3;++i){lua_rawgetfield(L,idx,k[i]);if(!lua_isnumber(L,-1)){lua_pop(L,1);lua_rawgeti(L,idx,i+1);}
-  const bool number=lua_isnumber(L,-1)!=0;v[i]=number?lua_tonumber(L,-1):NAN;lua_pop(L,1);if(!number)return false;}}
+ else if(lua_istable(L,idx)){const char* k[]={"x","y","z"};for(int i=0;i<3;++i){lua_rawgetfield(L,idx,k[i]);if(lua_type(L,-1)!=LUA_TNUMBER){lua_pop(L,1);lua_rawgeti(L,idx,i+1);}
+  const bool number=lua_type(L,-1)==LUA_TNUMBER;   // real numbers only, not numeric strings
+ v[i]=number?lua_tonumber(L,-1):NAN;lua_pop(L,1);if(!number)return false;}}
  else return false;
  for(int i=0;i<3;++i){if(!std::isfinite(v[i])||std::fabs(v[i])>kVectorLimit)return false;out[i]=(float)v[i];}return true;}
