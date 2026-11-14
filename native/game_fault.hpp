@@ -1,8 +1,8 @@
 #pragma once
 // Fault boundaries for code that runs from game hooks: fail closed for the feature, fail open for the game.
 // A guarded site keeps a "stopped" flag; its first fault is logged once (exception code, module + offset) and the site
-// is skipped for the rest of the world, while the game's own code keeps running. Joining a world (StartGame) gives every
-// stopped site one more chance, so a fault while a world is torn down does not disable a feature until restart. The flag is per call site, so one faulty
+// is skipped for the rest of the world, while the game's own code keeps running. Joining a world (StartGame, or a new client
+// level seen by the level tick hook) gives every stopped site one more chance, so a fault while a world is torn down does not disable a feature until restart. The flag is per call site, so one faulty
 // subscriber never disables the others. These helpers hold no C++ objects, as __try requires.
 //
 //   static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{Work();}
