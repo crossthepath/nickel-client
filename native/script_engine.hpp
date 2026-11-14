@@ -63,6 +63,7 @@ ImVec4 ReadColor(lua_State* L,int idx,ImVec4 fallback=ImVec4(1,1,1,1)){if(!lua_i
  const char* keys[]={"r","g","b","a"};for(int i=0;i<4;++i){lua_rawgetfield(L,idx,keys[i]);if(lua_isnumber(L,-1))v[i]=(float)std::clamp(lua_tonumber(L,-1),0.0,1.0);lua_pop(L,1);}return ImVec4(v[0],v[1],v[2],v[3]);}
 bool ReadVector(lua_State* L,int idx,float out[3]){if(lua_isvector(L,idx)){const float* v=lua_tovector(L,idx);out[0]=v[0];out[1]=v[1];out[2]=v[2];return true;}
  if(lua_istable(L,idx)){const char* k[]={"x","y","z"};for(int i=0;i<3;++i){lua_rawgetfield(L,idx,k[i]);if(!lua_isnumber(L,-1)){lua_pop(L,1);lua_rawgeti(L,idx,i+1);}out[i]=(float)lua_tonumber(L,-1);lua_pop(L,1);}return true;}return false;}
+#include "script_values.hpp"   // ReadVectorStrict (tested without the game)
 int OptInt(lua_State* L,int idx,const char* key,int fallback){if(!lua_istable(L,idx))return fallback;lua_rawgetfield(L,idx,key);const int v=lua_isnumber(L,-1)?(int)lua_tonumber(L,-1):fallback;lua_pop(L,1);return v;}
 double OptNum(lua_State* L,int idx,const char* key,double fallback){if(!lua_istable(L,idx))return fallback;lua_rawgetfield(L,idx,key);const double v=lua_isnumber(L,-1)?lua_tonumber(L,-1):fallback;lua_pop(L,1);return v;}
 bool OptBool(lua_State* L,int idx,const char* key,bool fallback){if(!lua_istable(L,idx))return fallback;lua_rawgetfield(L,idx,key);const bool v=lua_isboolean(L,-1)?lua_toboolean(L,-1)!=0:fallback;lua_pop(L,1);return v;}
@@ -233,13 +234,17 @@ int PlayerInWater(lua_State* L){return PlayerHas(L,0x78e89f39u);}
 int PlayerInLava(lua_State* L){return PlayerHas(L,game::Fnv("InLavaFlagComponent"));}
 int PlayerSlot(lua_State* L){game::Context c{};uint64_t inv{};int32_t slot=0;if(game::Local(&c)&&game::Read(c.actor+0x5e0,&inv)&&inv)game::Read(inv+0x10,&slot);lua_pushnumber(L,slot+1);return 1;}
 // Player writes: requested here, applied during the tick (game thread).
-struct ScriptWrites{std::mutex guard;bool velocity=false,add=false,teleport=false,jump=false,swing=false;int slot=-1;float v[3]{},a[3]{},t[3]{};};ScriptWrites scriptWrites;
-int PlayerSetVelocity(lua_State* L){float v[3];if(!ReadVector(L,1,v))luaL_error(L,"vector expected");std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.velocity=true;memcpy(scriptWrites.v,v,12);return 0;}
-int PlayerAddVelocity(lua_State* L){float v[3];if(!ReadVector(L,1,v))luaL_error(L,"vector expected");std::lock_guard<std::mutex> lock(scriptWrites.guard);if(!scriptWrites.add){scriptWrites.add=true;memset(scriptWrites.a,0,12);}for(int i=0;i<3;++i)scriptWrites.a[i]+=v[i];return 0;}
-int PlayerTeleport(lua_State* L){float v[3];if(!ReadVector(L,1,v))luaL_error(L,"vector expected");std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.teleport=true;memcpy(scriptWrites.t,v,12);return 0;}
-int PlayerSetSlot(lua_State* L){const int slot=(int)luaL_checknumber(L,1);if(slot<1||slot>9)luaL_error(L,"slots are 1 to 9");std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.slot=slot-1;return 0;}
+struct ScriptWrites{std::mutex guard;bool velocity=false,add=false,jump=false,swing=false,teleport=false;int slot=-1;float v[3]{},a[3]{},t[3]{};};ScriptWrites scriptWrites;
+// Requests made outside a world are dropped (docs/scripting.md); so are requests still pending when the client level changes.
+bool ScriptInWorld(){game::Context c{};return game::Local(&c);}
+int PlayerSetVelocity(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v))luaL_error(L,"vector with finite x, y and z expected");if(!ScriptInWorld())return 0;std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.velocity=true;memcpy(scriptWrites.v,v,12);return 0;}
+int PlayerAddVelocity(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v))luaL_error(L,"vector with finite x, y and z expected");if(!ScriptInWorld())return 0;std::lock_guard<std::mutex> lock(scriptWrites.guard);if(!scriptWrites.add){scriptWrites.add=true;memset(scriptWrites.a,0,12);}AddVelocityClamped(scriptWrites.a,v);return 0;}
+int PlayerTeleport(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v,kPositionLimit))luaL_error(L,"position with finite x, y and z within +-3e7 expected");
+ game::Context c{};if(!game::Local(&c)){lua_pushboolean(L,0);lua_pushstring(L,"not in a world");return 2;}
+ {std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.teleport=true;memcpy(scriptWrites.t,v,12);}lua_pushboolean(L,1);return 1;}   // feet position (as player.position), applied on the next tick
+int PlayerSetSlot(lua_State* L){const int slot=(int)luaL_checknumber(L,1);if(slot<1||slot>9)luaL_error(L,"slots are 1 to 9");if(!ScriptInWorld())return 0;std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.slot=slot-1;return 0;}
 int PlayerJump(lua_State* L){game::Player p{};const bool can=game::ReadPlayer(&p)&&p.onGround;if(can){std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.jump=true;}lua_pushboolean(L,can);return 1;}
-int PlayerSwing(lua_State* L){std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.swing=true;return 0;}
+int PlayerSwing(lua_State* L){if(!ScriptInWorld())return 0;std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.swing=true;return 0;}
 int Unsupported(lua_State* L){lua_pushnil(L);return 1;}
 int UnsupportedFalse(lua_State* L){lua_pushboolean(L,0);return 1;}
 int UnsupportedPair(lua_State* L){lua_pushboolean(L,0);lua_pushstring(L,"not available in Nickel yet");return 2;}
@@ -271,7 +276,7 @@ int WorldTarget(lua_State* L){const float range=(float)OptNum(L,1,"range",6);con
  int best=-1;float bestD=1e9f;for(int i=0;i<n;++i){if(list[i].local||!(list[i].health!=0))continue;const float dx=list[i].pos[0]-eye[0],dy=list[i].pos[1]+.9f-eye[1],dz=list[i].pos[2]-eye[2],d=std::sqrt(dx*dx+dy*dy+dz*dz);if(d<=range&&d<bestD){bestD=d;best=i;}}
  if(best<0)lua_pushnil(L);else PushEntity(L,list[best]);return 1;}
 int WorldDimension(lua_State* L){int d=-1;static const char* n[]={"Overworld","Nether","TheEnd"};if(game::ReadDimension(&d)&&d>=0&&d<3)lua_pushstring(L,n[d]);else lua_pushnil(L);return 1;}
-int WorldTime(lua_State* L){lua_pushnumber(L,0);return 1;}
+int WorldTime(lua_State* L){lua_pushnil(L);return 1;}   // the world time is not read yet: nil, never a made-up value
 int PlayerLookingAt(lua_State* L){game::DebugInfo d{};if(!game::ReadDebug(&d,true)){lua_pushnil(L);return 1;}lua_createtable(L,0,4);
  static const char* faces[]={"Down","Up","North","South","West","East"};if(d.target==1){lua_pushstring(L,"block");lua_setfield(L,-2,"type");const float b[3]={(float)d.block[0],(float)d.block[1],(float)d.block[2]};PushVector(L,b);lua_setfield(L,-2,"block");PushVector(L,b);lua_setfield(L,-2,"position");if(d.face<6){lua_pushstring(L,faces[d.face]);lua_setfield(L,-2,"face");}}
  else if(d.target==2){lua_pushstring(L,"entity");lua_setfield(L,-2,"type");}else{lua_pushstring(L,"none");lua_setfield(L,-2,"type");}return 1;}
@@ -441,9 +446,19 @@ void ScriptsTickWork(){
  InterlockedIncrement(&scriptTicks);ScriptsHealthWatch();ScriptsPathWatch();game::Context c{};const bool local=game::Local(&c);
  std::vector<std::pair<int,std::string>> queue;{std::lock_guard<std::mutex> lock(scriptChatGuard);queue.swap(scriptChatQueue);}
  if(local)for(auto& q:queue){if(q.first==0)game::ClientMessage(c,q.second);else if(q.first==1)game::SendChat(c,q.second);else game::SendCommand(c,q.second);}
- bool velocity=false,add=false,jump=false;float v0[3]{},a0[3]{};
- {std::lock_guard<std::mutex> lock(scriptWrites.guard);velocity=scriptWrites.velocity;add=scriptWrites.add;jump=scriptWrites.jump;memcpy(v0,scriptWrites.v,12);memcpy(a0,scriptWrites.a,12);
-  scriptWrites.velocity=scriptWrites.add=scriptWrites.jump=scriptWrites.teleport=scriptWrites.swing=false;scriptWrites.slot=-1;}
+ bool velocity=false,add=false,jump=false,swing=false,teleport=false;int slot=-1;float v0[3]{},a0[3]{},t0[3]{};
+ {std::lock_guard<std::mutex> lock(scriptWrites.guard);velocity=scriptWrites.velocity;add=scriptWrites.add;jump=scriptWrites.jump;swing=scriptWrites.swing;teleport=scriptWrites.teleport;slot=scriptWrites.slot;memcpy(v0,scriptWrites.v,12);memcpy(a0,scriptWrites.a,12);memcpy(t0,scriptWrites.t,12);
+  scriptWrites.velocity=scriptWrites.add=scriptWrites.jump=scriptWrites.swing=scriptWrites.teleport=false;scriptWrites.slot=-1;}
+ {static uint64_t lastLevel=0;uint64_t level{};if(!local||!game::Read(c.actor+0x200,&level)||level!=lastLevel){lastLevel=local?level:0;velocity=add=jump=swing=teleport=false;slot=-1;}}   // made in another world or outside one: dropped
+ auto finite=[](const float* v){return std::isfinite(v[0])&&std::isfinite(v[1])&&std::isfinite(v[2]);};if(!finite(v0))velocity=false;if(!finite(a0))add=false;
+ // hotbar switch as the action queue does it; an empty slot is not selected: SendMobEquipment needs an item, and the
+ // server would keep the old one while the client shows the new slot
+ if(local&&slot>=0&&slot<9)if(int32_t* sel=game::ActionSelected(c.actor))if(*sel!=slot&&game::ActionItem(game::ActionStackAt(c,game::ActionContainer(c.actor),slot))){*sel=slot;game::SendMobEquipment(c,c.actor,slot);}
+ if(local&&swing)game::ActionSwing(c,c.actor,4);   // arm swing, as Auto Clicker
+ // teleport: the local move of Look TP (position, previous position, velocity cleared, collision box moved), with the
+ // feet position turned into the eye-level position the movement state holds. Servers may refuse long moves.
+ if(local&&teleport&&finite(t0)){float lift=1.62f;uintptr_t off{};if(game::Element(c.registry,c.entity,"OffsetsComponent",0x44,&off))game::Floats(off,&lift,1);
+  if(std::isfinite(lift)&&lift>=0.f&&lift<8.f){const float dest[3]={t0[0],t0[1]+lift,t0[2]};game::LookTpMove(c.actor,dest);}}
  uint64_t state{};if(local&&game::Read(c.actor+0x240,&state)&&state){float* v=reinterpret_cast<float*>(state+0x18);   // velocity: movement state +0x18 (see ReadPlayer in game_read.hpp)
   if(velocity)memcpy(v,v0,12);if(add)for(int i=0;i<3;++i)v[i]+=a0[i];if(jump)v[1]=std::max(v[1],.42f);}
  Fire("tick");}
