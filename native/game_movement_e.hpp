@@ -151,7 +151,7 @@ inline uint64_t PfKey(const PfP& p){return ((uint64_t)(uint32_t)(p.x&0x3ffffff)<
 // Record fields: passable, solid = standable, top = standing height, speed factor, climbable, closed door, replaceable,
 // place = full solid face to place against, gravity, avoid = hazard, cls = liquid (1 water, 2 lava), hard = hardness.
 struct PfRec{uint8_t known=0,passable=0,solid=0,climb=0,door=0,replace=0,place=0,gravity=0,avoid=0,cls=0;float top=1.f,speed=1.f,hard=-1.f;uint64_t block=0;};
-struct PfWorld{Context c{};uintptr_t actor=0;uint64_t region=0,chunkAt=0,layerAt=0,fetch=0,gm=0;int ocx=0,ocz=0,radius=8,minY=-64,maxY=319;bool edge=false;   // edge: a query reached an unloaded chunk or the Cache Radius
+struct PfWorld{Context c{};uintptr_t actor=0;uint64_t region=0,chunkAt=0,layerAt=0,fetch=0,gm=0,level=0;int ocx=0,ocz=0,radius=8,minY=-64,maxY=319;bool edge=false;   // edge: a query reached an unloaded chunk or the Cache Radius
  std::unordered_map<uint64_t,PfRec> cells,byBlock;std::unordered_map<uint64_t,BbCost> breakCost;std::unordered_map<uint64_t,int8_t> chunks;std::vector<std::string> protectedNames;};
 inline uint64_t PfBlockRaw(const Context& c,uint64_t region,int x,int y,int z){const int32_t p[3]={x,y,z};__try{return RegionBlock(c,region,p);}__except(EXCEPTION_EXECUTE_HANDLER){return 0;}}
 inline uint64_t PfLayerRaw(uint64_t fn,uint64_t region,int x,int y,int z){const int32_t p[3]={x,y,z};__try{return reinterpret_cast<uint64_t(*)(uint64_t,const int32_t*)>(fn)(region,p);}__except(EXCEPTION_EXECUTE_HANDLER){return 0;}}
@@ -185,7 +185,7 @@ inline PfRec PfClassify(PfWorld& w,uint64_t block,const PfP& p){
  PfRec r;uint8_t a{},b{};if(!block||!BlockFlags(block,&a,&b))return r;std::string n;XrayBlockName((uintptr_t)block,&n);r.known=1;r.block=block;
  uint8_t mat=3;if(!(b&2)){if((uint8_t)(a-8)<2)mat=2;else if(a==0)mat=0;else if(a==10)mat=4;else mat=(b&0x10)?1:5;}
  const bool f21=(b>>4)&1,f22=(b>>2)&1,f23=b&1,f24=(b>>5)&1;bool open=false;const bool hasOpen=PfOpenBit(w.c,block,&open);
- BbCtx x;x.c=w.c;x.actor=w.actor;x.region=w.region;x.gm=w.gm;const BbCost bc=BbCostOf(x,w.breakCost,block);
+ BbCtx x;x.c=w.c;x.actor=w.actor;x.region=w.region;x.gm=w.gm;const BbCost bc=w.gm?BbCostOf(x,w.breakCost,block):BbCost{};
  std::vector<PfBox> shapes;PfShapes(w,p,shapes);const PfProps pr=PfBlockProps(n);
  float top=0,area=0;if(!shapes.empty()){float mnx=shapes[0].v[0],mnz=shapes[0].v[2],mxx=shapes[0].v[3],mxz=shapes[0].v[5];top=shapes[0].v[4];
   for(auto& s:shapes){top=std::max(top,s.v[4]);mnx=std::min(mnx,s.v[0]);mnz=std::min(mnz,s.v[2]);mxx=std::max(mxx,s.v[3]);mxz=std::max(mxz,s.v[5]);}area=(mxx-mnx)*(mxz-mnz);}
@@ -219,6 +219,7 @@ inline const PfRec& PfRecAt(PfWorld& w,const PfP& p){
 inline void PfWorldBegin(PfWorld& w,const Context& c,const PfConfig& cfg,int px,int pz){
  w.cells.clear();w.chunks.clear();w.byBlock.clear();w.breakCost.clear();w.protectedNames.clear();w.edge=false;w.c=c;w.actor=c.actor;w.region=ActorRegion(c);
  w.chunkAt=w.region?Virtual(c,w.region,0x148):0;w.layerAt=w.region?Virtual0(c,w.region,0x28):0;w.fetch=w.region?Virtual0(c,w.region,0xb0):0;uint64_t gm{};Read(c.actor+0xac8,&gm);w.gm=gm;
+ uint64_t level{};Read(c.actor+0x200,&level);w.level=level;
  int16_t lowest{};if(w.region&&Read(w.region+0x3a,&lowest)){w.minY=lowest;w.maxY=lowest+383;}w.ocx=px>>4;w.ocz=pz>>4;w.radius=std::max(2,cfg.cacheRadius);
  for(auto& t:cfg.protectedBlocks){const std::string id=PfFullId(t);if(id.size()>10)w.protectedNames.push_back(id);}}
 // ============================================================================================ move generation
@@ -1240,7 +1241,13 @@ inline void PfTickWork(){
  if(!was){k.planAt=PfNow();k.stuck.clear();k.spawners.clear();k.tick=0;k.eatCool=true;k.eatCoolNs=PfNow();}was=true;   // a fresh controller: replan and eat timers start now
  PfConfig cfg;std::deque<PfCommandRequest> cmds;{std::lock_guard<std::mutex> l(sh.guard);cfg=sh.cfg;cmds.swap(sh.queue);}sh.pauseOnInput=cfg.pauseOnInput;
  PfSelf s;if(!PfReadSelf(s)){PfReset(k,nullptr);return;}
- if(k.world.region!=s.region||!k.world.region)PfWorldBegin(k.world,s.c,cfg,s.cell.x,s.cell.z);
+ // A new local player or client level (leaving a world, joining or switching servers) ends the running process: the
+ // cached world, its game mode and its block pointers belong to the old level, and the game's destroy-rate call on a stale
+ // game mode jumped through a null pointer (an uncatchable Control Flow Guard fail-fast, crash of 14/11/2026).
+ uint64_t level{},gm{};Read(s.actor+0x200,&level);Read(s.actor+0xac8,&gm);
+ const bool moved=k.world.region&&(k.world.actor!=s.actor||k.world.level!=level);
+ if(moved&&k.proc!=kPfNone){PfReset(k,nullptr);PfMessage("Stopped pathing: the world changed.");}
+ if(moved||k.world.region!=s.region||!k.world.region||k.world.gm!=gm)PfWorldBegin(k.world,s.c,cfg,s.cell.x,s.cell.z);
  ++k.tick;PfDeathWatch(k,s);
  for(auto& c:cmds)PfApply(k,s,cfg,c);
  PfOut out;
