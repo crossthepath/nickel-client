@@ -38,7 +38,7 @@ public static class SelfCheck
  public static int Run()
  {
   var report=Path.Combine(AppContext.BaseDirectory,"self-check.json");
-  try{var native=NativeLoader.Payload();if(native.Length<512||native[0]!=77||native[1]!=90)throw new Exception("Native payload missing.");var catalog=Catalog.Load();if(catalog.Modules.Count!=164||catalog.Modules.Sum(m=>m.Settings.Count)!=774)throw new Exception("Catalogue counts differ.");if(catalog.Modules.Select(m=>m.Id).Distinct().Count()!=164)throw new Exception("Duplicate module ID.");if(!catalog.Modules.Any(m=>m.Id=="flight"&&m.Settings.Count==3))throw new Exception("Flight schema missing.");File.WriteAllText(report,JsonSerializer.Serialize(new{status="passed",modules=164,settings=774,native_payload_bytes=native.Length,mode="offline_no_game_access"}));return 0;}
+  try{var native=NativeLoader.Payload();if(native.Length<512||native[0]!=77||native[1]!=90)throw new Exception("Native payload missing.");var catalog=Catalog.Load();if(catalog.Modules.Count!=164||catalog.Modules.Sum(m=>m.Settings.Count)!=774)throw new Exception("Catalogue counts differ.");if(catalog.Modules.Select(m=>m.Id).Distinct().Count()!=164)throw new Exception("Duplicate module ID.");if(!catalog.Modules.Any(m=>m.Id=="flight"&&m.Settings.Count==3))throw new Exception("Flight schema missing.");if(ReleaseTrust.SelfTest() is string trust)throw new Exception("Update checks: "+trust);File.WriteAllText(report,JsonSerializer.Serialize(new{status="passed",modules=164,settings=774,native_payload_bytes=native.Length,mode="offline_no_game_access"}));return 0;}
   catch(Exception error){File.WriteAllText(report,JsonSerializer.Serialize(new{status="failed",message=error.Message}));return 1;}
  }
 }

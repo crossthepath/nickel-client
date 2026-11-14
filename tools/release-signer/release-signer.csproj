@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Signs Nickel releases (see Program.cs). The launcher verifies them with desktop/ReleaseTrust.cs. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../desktop/ReleaseTrust.cs" Link="ReleaseTrust.cs"/>
+  </ItemGroup>
+</Project>
