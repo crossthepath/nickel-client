@@ -3,8 +3,9 @@ $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $ProjectRoot
 function Check-BuildExit { if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" } }
-# The module catalog (native/generated_catalog.hpp) is committed; it is only regenerated when the local research data exists.
-if (Test-Path -LiteralPath 'live-capture-v21') { python tools/build_native_catalog.py; Check-BuildExit }
+# native/generated_catalog.hpp is the module catalog; ui/catalog.js must match it (python tools/sync_catalog.py).
+python tools/sync_catalog.py --check
+Check-BuildExit
 cmake -S . -B build
 Check-BuildExit
 cmake --build build --config Release --target nickel_overlay nickel_overlay_probe

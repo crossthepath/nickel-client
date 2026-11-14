@@ -11,7 +11,8 @@ node_modules/
 reports/
 tools/*
 !tools/build_desktop.ps1
-!tools/build_native_catalog.py
+!tools/sync_catalog.py
+!tools/check_tracked_inputs.py
 !tools/shader_inspect.cpp
 !tools/build_icon_font.py
 !tools/icon_table.py
