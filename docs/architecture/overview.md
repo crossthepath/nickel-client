@@ -18,7 +18,7 @@ Nickel.exe (desktop/, WPF)
 | `native/` | The overlay: renderer hooks, the in-game menu and HUD, every module (`game_*.hpp`), scripting and schematics. |
 | `include/nickel/`, `src/` | Game-independent rules shared with the tests: projection, entity and filter rules, camera math. |
 | `tests/` | Unit checks for the shared rules and renderer probes (DX11 and DX12). |
-| `ui/catalog.js` | Module names, categories and descriptions; `tools/build_native_catalog.py` turns it into `native/generated_catalog.hpp`. |
+| `ui/catalog.js` | Module list for the launcher, written from `native/generated_catalog.hpp` by `tools/sync_catalog.py`. |
 | `branding/` | Logos and the [brand guide](../../branding/nickel/README.md). |
 | `tools/` | Build scripts. |
 

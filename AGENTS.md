@@ -22,14 +22,14 @@ human contributors and to coding agents alike.
 - Modules that click, attack or turn the view pause while the Nickel menu is open.
 - Read settings in the menu thread and hand them to game-thread code as a snapshot; never read ImGui state from a
   game thread.
-- Keep shared values in one place: the module catalog (`native/generated_catalog.hpp`, generated from
-  `ui/catalog.js`), the theme table (`native/theme.hpp` and `desktop/Theme.cs` stay in sync), the product name.
+- Keep shared values in one place: the module catalog (`native/generated_catalog.hpp`; `ui/catalog.js` is written from it by
+  `tools/sync_catalog.py`), the theme table (`native/theme.hpp` and `desktop/Theme.cs` stay in sync), the product name.
 - Ship original art only. Never commit Mojang or Microsoft assets, other clients' assets, game binaries, captures,
   decompilations, credentials or recordings.
 
 ## Code style
 
-- C++20, one feature per `native/game_<feature>.hpp` header where possible; UI code lives in `native/menu.cpp`,
+- C++17 (as built by `CMakeLists.txt`), one feature per `native/game_<feature>.hpp` header where possible; UI code lives in `native/menu.cpp`,
   `native/theme.hpp` and the `hud_*.hpp` headers.
 - Write short, clear English comments. The first line of a file says what it owns; important functions and structs get
   one sentence on their role or contract. Explain why, not history: no dates, test logs or session notes.

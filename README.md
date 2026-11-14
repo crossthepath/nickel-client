@@ -11,7 +11,7 @@
 > progress. Play in your own worlds, or on servers that allow it, at your own risk.
 
 A launcher and an in-game menu for Minecraft: Bedrock Edition. Press Right Shift in game for
-150 modules, 26 HUD elements you lay out yourself, Luau scripting, schematics and configs, all under one
+151 modules (three still marked "Soon"), 26 HUD elements you lay out yourself, Luau scripting, schematics and configs, all under one
 animated look with six themes.
 
 [![Download](https://img.shields.io/badge/Download-Nickel.exe-FF8A3D?logo=windows&logoColor=white)](https://nickelclient.com/download)
@@ -30,14 +30,17 @@ animated look with six themes.
 ## Download
 
 Download **`Nickel.exe`** from [nickelclient.com](https://nickelclient.com/download) or from the
-[latest release](https://github.com/crossthepath/nickel-client/releases/latest). It is one file, with nothing to install:
+[latest release](https://github.com/crossthepath/nickel-client/releases/latest). It is one file; it needs the
+[.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0), which Windows offers to install on the first
+start when it is missing:
 
 1. Open Minecraft: Bedrock Edition.
 2. Start `Nickel.exe` and press **Load**.
 3. Press **Right Shift** in a world to open the menu.
 
 The launcher updates itself: **Settings → Check for updates** downloads the newest version and asks you to restart
-it. Your settings, configs, scripts and schematics stay in `%APPDATA%\Nickel`.
+it. Updates are signed and checked before they replace the launcher. Module settings, configs, scripts and schematics
+stay in `%APPDATA%\Nickel`; the launcher's own options are kept in a `data` folder next to `Nickel.exe`.
 
 Nickel targets Minecraft: Bedrock Edition **1.26.62** for Windows 10 and 11 (x64). No Mojang
 assets are shipped. The [documentation](https://nickelclient.com/docs/) covers every screen and module.
@@ -70,7 +73,7 @@ dist/Nickel/Nickel.exe --load-pid <Minecraft PID>
 | **Combat** | 25 modules: Aim Assist, Kill Aura, Reach, Criticals, Anti Bot, Teams… |
 | **Movement** | 33 modules: Flight, Step, Spider, Bunny Hop, Velocity, Strafe… |
 | **Player** | 18 modules: Auto Armor, Auto Totem, Auto Respawn, Fast Use, Anti AFK… |
-| **Visuals** | 45 modules: ESP, Chams, Nametags, Xray, Block and Chest ESP, Freecam, Item Physics, Custom Sky… |
+| **Visuals** | 46 modules: ESP, Chams, Nametags, Xray, Block and Chest ESP, Freecam, Item Physics, Custom Sky… |
 | **Utility** | 29 modules: Scaffold, Nuker, Bed Breaker, Air Place, Base Finder, Timer, Blink… |
 | **HUD** | 26 elements: keystrokes, CPS, armor, target, module list, minimap, Spotify… placed with the layout editor. |
 | **Scripting** | Your own modules, settings, commands and events in [Luau](https://luau.org), loaded from `%APPDATA%\Nickel\scripts` and reloaded live. |
@@ -117,7 +120,7 @@ Built on these libraries:
 | [Satoshi](https://www.fontshare.com/fonts/satoshi) | The typeface, by Indian Type Foundry. |
 
 Layout: `native/` (the overlay), `desktop/` (the launcher), `include/` and `src/` (shared rules),
-`tests/`, `tools/` (build scripts), `ui/catalog.js` (module descriptions), `branding/` (logos and the brand guide).
+`tests/`, `tools/` (build scripts), `native/generated_catalog.hpp` (the module catalog), `branding/` (logos and the brand guide).
 
 ## Contributing
 

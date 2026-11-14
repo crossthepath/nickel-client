@@ -1,0 +1,75 @@
+# Windows build and offline checks for every push and pull request. Nothing here runs Minecraft: game behavior is
+# validated by hand (see docs/releasing.md), and the report says so.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Catalogs in step
+        run: python tools/sync_catalog.py --check
+
+      - name: Configure
+        run: cmake -S . -B build
+
+      - name: Build overlay and checks
+        run: cmake --build build --config Release --parallel
+
+      - name: Offline tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Launcher and self-test
+        shell: pwsh
+        run: |
+          dotnet publish desktop/Nickel.Desktop.csproj -c Release -o dist/Nickel
+          $check = Start-Process -FilePath dist/Nickel/Nickel.exe -ArgumentList '--self-test' -Wait -PassThru
+          Get-Content dist/Nickel/self-check.json
+          if ($check.ExitCode -ne 0) { throw 'Launcher self-test failed' }
+
+      - name: Build report
+        shell: pwsh
+        run: |
+          $report = [ordered]@{
+            commit = '${{ github.sha }}'
+            launcher_sha256 = (Get-FileHash dist/Nickel/Nickel.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            overlay_sha256 = (Get-FileHash build/Release/Nickel.Overlay.dll -Algorithm SHA256).Hash.ToLowerInvariant()
+            offline_tests = 'passed'
+            launcher_self_test = 'passed'
+            minecraft_tested = $false
+          }
+          $report | ConvertTo-Json | Set-Content build-report.json
+          Get-Content build-report.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nickel-${{ github.sha }}
+          path: |
+            dist/Nickel/Nickel.exe
+            build-report.json
+          retention-days: 14

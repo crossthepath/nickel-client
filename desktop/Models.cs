@@ -5,8 +5,8 @@ namespace Nickel.Desktop;
 public sealed class SettingDefinition
 {
  public string Id{get;set;}="";public string Name{get;set;}="";public string Description{get;set;}="";
- public string Kind{get;set;}="unresolved";public double Min{get;set;}public double Max{get;set;}public double Step{get;set;}
- public JsonElement Default{get;set;}public List<string> Options{get;set;}=[];
+ public string Kind{get;set;}="";public double Minimum{get;set;}public double Maximum{get;set;}public double Step{get;set;}
+ public double Number{get;set;}public string Text{get;set;}="";public List<string> Options{get;set;}=[];
 }
 public sealed class ModuleDefinition
 {
@@ -35,10 +35,12 @@ public sealed class Preferences
 }
 public static class SelfCheck
 {
+ /// <summary>Counts of ui/catalog.js, written from native/generated_catalog.hpp (python tools/sync_catalog.py).</summary>
+ private const int ExpectedModules=177,ExpectedSettings=915;
  public static int Run()
  {
   var report=Path.Combine(AppContext.BaseDirectory,"self-check.json");
-  try{var native=NativeLoader.Payload();if(native.Length<512||native[0]!=77||native[1]!=90)throw new Exception("Native payload missing.");var catalog=Catalog.Load();if(catalog.Modules.Count!=164||catalog.Modules.Sum(m=>m.Settings.Count)!=774)throw new Exception("Catalogue counts differ.");if(catalog.Modules.Select(m=>m.Id).Distinct().Count()!=164)throw new Exception("Duplicate module ID.");if(!catalog.Modules.Any(m=>m.Id=="flight"&&m.Settings.Count==3))throw new Exception("Flight schema missing.");if(ReleaseTrust.SelfTest() is string trust)throw new Exception("Update checks: "+trust);File.WriteAllText(report,JsonSerializer.Serialize(new{status="passed",modules=164,settings=774,native_payload_bytes=native.Length,mode="offline_no_game_access"}));return 0;}
+  try{var native=NativeLoader.Payload();if(native.Length<512||native[0]!=77||native[1]!=90)throw new Exception("Native payload missing.");var catalog=Catalog.Load();if(catalog.Modules.Count!=ExpectedModules||catalog.Modules.Sum(m=>m.Settings.Count)!=ExpectedSettings)throw new Exception("Catalogue counts differ.");if(catalog.Modules.Select(m=>m.Id).Distinct().Count()!=catalog.Modules.Count)throw new Exception("Duplicate module ID.");if(!catalog.Modules.Any(m=>m.Id=="flight"&&m.Settings.Count==3))throw new Exception("Flight schema missing.");if(ReleaseTrust.SelfTest() is string trust)throw new Exception("Update checks: "+trust);File.WriteAllText(report,JsonSerializer.Serialize(new{status="passed",modules=ExpectedModules,settings=ExpectedSettings,native_payload_bytes=native.Length,mode="offline_no_game_access"}));return 0;}
   catch(Exception error){File.WriteAllText(report,JsonSerializer.Serialize(new{status="failed",message=error.Message}));return 1;}
  }
 }
