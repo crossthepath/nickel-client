@@ -234,11 +234,12 @@ int PlayerInWater(lua_State* L){return PlayerHas(L,0x78e89f39u);}
 int PlayerInLava(lua_State* L){return PlayerHas(L,game::Fnv("InLavaFlagComponent"));}
 int PlayerSlot(lua_State* L){game::Context c{};uint64_t inv{};int32_t slot=0;if(game::Local(&c)&&game::Read(c.actor+0x5e0,&inv)&&inv)game::Read(inv+0x10,&slot);lua_pushnumber(L,slot+1);return 1;}
 // Player writes: requested here, applied during the tick (game thread).
-struct ScriptWrites{std::mutex guard;bool velocity=false,add=false,jump=false,swing=false;int slot=-1;float v[3]{},a[3]{};};ScriptWrites scriptWrites;
+struct ScriptWrites{std::mutex guard;bool velocity=false,add=false,jump=false,swing=false,teleport=false;int slot=-1;float v[3]{},a[3]{},t[3]{};};ScriptWrites scriptWrites;
 int PlayerSetVelocity(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v))luaL_error(L,"vector with finite x, y and z expected");std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.velocity=true;memcpy(scriptWrites.v,v,12);return 0;}
 int PlayerAddVelocity(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v))luaL_error(L,"vector with finite x, y and z expected");std::lock_guard<std::mutex> lock(scriptWrites.guard);if(!scriptWrites.add){scriptWrites.add=true;memset(scriptWrites.a,0,12);}for(int i=0;i<3;++i)scriptWrites.a[i]+=v[i];return 0;}
 int PlayerTeleport(lua_State* L){float v[3];if(!ReadVectorStrict(L,1,v))luaL_error(L,"vector with finite x, y and z expected");
- lua_pushboolean(L,0);lua_pushstring(L,"player.teleport is not available in Nickel yet");return 2;}   // no verified game path: reported, never silently ignored
+ game::Context c{};if(!game::Local(&c)){lua_pushboolean(L,0);lua_pushstring(L,"not in a world");return 2;}
+ {std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.teleport=true;memcpy(scriptWrites.t,v,12);}lua_pushboolean(L,1);return 1;}   // feet position (as player.position), applied on the next tick
 int PlayerSetSlot(lua_State* L){const int slot=(int)luaL_checknumber(L,1);if(slot<1||slot>9)luaL_error(L,"slots are 1 to 9");std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.slot=slot-1;return 0;}
 int PlayerJump(lua_State* L){game::Player p{};const bool can=game::ReadPlayer(&p)&&p.onGround;if(can){std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.jump=true;}lua_pushboolean(L,can);return 1;}
 int PlayerSwing(lua_State* L){std::lock_guard<std::mutex> lock(scriptWrites.guard);scriptWrites.swing=true;return 0;}
@@ -443,12 +444,16 @@ void ScriptsTickWork(){
  InterlockedIncrement(&scriptTicks);ScriptsHealthWatch();ScriptsPathWatch();game::Context c{};const bool local=game::Local(&c);
  std::vector<std::pair<int,std::string>> queue;{std::lock_guard<std::mutex> lock(scriptChatGuard);queue.swap(scriptChatQueue);}
  if(local)for(auto& q:queue){if(q.first==0)game::ClientMessage(c,q.second);else if(q.first==1)game::SendChat(c,q.second);else game::SendCommand(c,q.second);}
- bool velocity=false,add=false,jump=false,swing=false;int slot=-1;float v0[3]{},a0[3]{};
- {std::lock_guard<std::mutex> lock(scriptWrites.guard);velocity=scriptWrites.velocity;add=scriptWrites.add;jump=scriptWrites.jump;swing=scriptWrites.swing;slot=scriptWrites.slot;memcpy(v0,scriptWrites.v,12);memcpy(a0,scriptWrites.a,12);
-  scriptWrites.velocity=scriptWrites.add=scriptWrites.jump=scriptWrites.swing=false;scriptWrites.slot=-1;}
+ bool velocity=false,add=false,jump=false,swing=false,teleport=false;int slot=-1;float v0[3]{},a0[3]{},t0[3]{};
+ {std::lock_guard<std::mutex> lock(scriptWrites.guard);velocity=scriptWrites.velocity;add=scriptWrites.add;jump=scriptWrites.jump;swing=scriptWrites.swing;teleport=scriptWrites.teleport;slot=scriptWrites.slot;memcpy(v0,scriptWrites.v,12);memcpy(a0,scriptWrites.a,12);memcpy(t0,scriptWrites.t,12);
+  scriptWrites.velocity=scriptWrites.add=scriptWrites.jump=scriptWrites.swing=scriptWrites.teleport=false;scriptWrites.slot=-1;}
  auto finite=[](const float* v){return std::isfinite(v[0])&&std::isfinite(v[1])&&std::isfinite(v[2]);};if(!finite(v0))velocity=false;if(!finite(a0))add=false;
  if(local&&slot>=0&&slot<9)if(int32_t* sel=game::ActionSelected(c.actor))if(*sel!=slot){*sel=slot;game::SendMobEquipment(c,c.actor,slot);}   // as the hotbar switch of the action queue
  if(local&&swing)game::ActionSwing(c,c.actor,4);   // arm swing, as Auto Clicker
+ // teleport: the local move of Look TP (position, previous position, velocity cleared, collision box moved), with the
+ // feet position turned into the eye-level position the movement state holds. Servers may refuse long moves.
+ if(local&&teleport&&finite(t0)){float lift=1.62f;uintptr_t off{};if(game::Element(c.registry,c.entity,"OffsetsComponent",0x44,&off))game::Floats(off,&lift,1);
+  if(std::isfinite(lift)&&lift>=0.f&&lift<8.f){const float dest[3]={t0[0],t0[1]+lift,t0[2]};game::LookTpMove(c.actor,dest);}}
  uint64_t state{};if(local&&game::Read(c.actor+0x240,&state)&&state){float* v=reinterpret_cast<float*>(state+0x18);   // velocity: movement state +0x18 (see ReadPlayer in game_read.hpp)
   if(velocity)memcpy(v,v0,12);if(add)for(int i=0;i<3;++i)v[i]+=a0[i];if(jump)v[1]=std::max(v[1],.42f);}
  Fire("tick");}
