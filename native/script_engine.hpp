@@ -448,7 +448,9 @@ void ScriptsTickWork(){
  {std::lock_guard<std::mutex> lock(scriptWrites.guard);velocity=scriptWrites.velocity;add=scriptWrites.add;jump=scriptWrites.jump;swing=scriptWrites.swing;teleport=scriptWrites.teleport;slot=scriptWrites.slot;memcpy(v0,scriptWrites.v,12);memcpy(a0,scriptWrites.a,12);memcpy(t0,scriptWrites.t,12);
   scriptWrites.velocity=scriptWrites.add=scriptWrites.jump=scriptWrites.swing=scriptWrites.teleport=false;scriptWrites.slot=-1;}
  auto finite=[](const float* v){return std::isfinite(v[0])&&std::isfinite(v[1])&&std::isfinite(v[2]);};if(!finite(v0))velocity=false;if(!finite(a0))add=false;
- if(local&&slot>=0&&slot<9)if(int32_t* sel=game::ActionSelected(c.actor))if(*sel!=slot){*sel=slot;game::SendMobEquipment(c,c.actor,slot);}   // as the hotbar switch of the action queue
+ // hotbar switch as the action queue does it; an empty slot is not selected: SendMobEquipment needs an item, and the
+ // server would keep the old one while the client shows the new slot
+ if(local&&slot>=0&&slot<9)if(int32_t* sel=game::ActionSelected(c.actor))if(*sel!=slot&&game::ActionItem(game::ActionStackAt(c,game::ActionContainer(c.actor),slot))){*sel=slot;game::SendMobEquipment(c,c.actor,slot);}
  if(local&&swing)game::ActionSwing(c,c.actor,4);   // arm swing, as Auto Clicker
  // teleport: the local move of Look TP (position, previous position, velocity cleared, collision box moved), with the
  // feet position turned into the eye-level position the movement state holds. Servers may refuse long moves.

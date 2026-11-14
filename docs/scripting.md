@@ -9,7 +9,7 @@ or still pending when the world is left, is dropped.
 | `player.setVelocity(v)` | a vector or `{x, y, z}` of real numbers, all present, finite, within ±10000 | sets the velocity (blocks per tick) |
 | `player.addVelocity(v)` | same | adds to the velocity; several calls in one tick add up |
 | `player.jump()` | — | returns whether the player stands on the ground; if so, jumps |
-| `player.setSlot(n)` | `1` to `9` | selects that hotbar slot and tells the server |
+| `player.setSlot(n)` | `1` to `9` | selects that hotbar slot and tells the server; an empty slot is not selected |
 | `player.swing()` | — | swings the arm |
 | `player.teleport(v)` | same as `setVelocity`, a feet position like `player.position()` | returns `true` when queued, or `false` and a reason outside a world; moves the player there and clears the velocity |
 
