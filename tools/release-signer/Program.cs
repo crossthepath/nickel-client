@@ -3,12 +3,19 @@
 //   sign <Nickel.exe> <version> <private.pem> <out-folder> [channel]
 //                                              writes release-manifest.json and release-manifest.sig (base64, DER)
 //   verify <out-folder> [Nickel.exe]           checks the pair against the key pinned in ReleaseTrust.cs (and the file)
+//   self-test                                  runs the launcher's offline update checks
 // Keep the private key out of the repository and backed up offline: a lost key means shipping a launcher with a new one.
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Nickel.Desktop;
 
+if (args.Length == 1 && args[0] == "self-test")   // the launcher's update checks, without the launcher (CI, offline)
+{
+ var failure = ReleaseTrust.SelfTest();
+ Console.WriteLine(failure == null ? "update checks passed" : "FAILED: " + failure);
+ return failure == null ? 0 : 4;
+}
 if (args.Length >= 2 && args[0] == "keygen")
 {
  if (File.Exists(args[1])) { Console.Error.WriteLine("Refusing to overwrite an existing key."); return 1; }

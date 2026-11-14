@@ -35,6 +35,7 @@ nPyPtAPFFv7Bbrw0skygiWqt6xC0HMHVzYyFtKyPC7rek9TwENLS46xh3A==
  public static string? Problem(ReleaseManifest m)
  {
   if (m.Product != "Nickel" || m.File != "Nickel.exe") return "product or file name is not Nickel / Nickel.exe";
+  if (m.Channel is not ("beta" or "stable")) return "channel is not beta or stable";
   if (m.Size < MinSize || m.Size > MaxSize) return $"size {m.Size} is outside {MinSize}..{MaxSize}";
   if (m.Sha256.Length != 64 || !m.Sha256.All(Uri.IsHexDigit)) return "sha256 is not 64 hex digits";
   if (!IsVersion(m.Version) || m.Version.StartsWith('v') || m.Version.StartsWith('V')) return $"version \"{m.Version}\" is not a Semantic Version";
@@ -77,6 +78,30 @@ nPyPtAPFFv7Bbrw0skygiWqt6xC0HMHVzYyFtKyPC7rek9TwENLS46xh3A==
   if (file.Length != manifest.Size) return false;
   return HashMatches(SHA256.HashData(file), manifest);
  }
+ /// <summary>Accepted channels: "stable" always; "beta" only for a pre-release launcher (a stable launcher never moves
+ /// back to a beta).</summary>
+ public static bool ChannelAccepted(string channel, string launcherVersion) => channel == "stable" || (channel == "beta" && launcherVersion.Contains('-'));
+
+ /// <summary>Puts the verified download in place of <paramref name="current"/>: the bytes are checked again through a handle
+ /// that lets the rename happen but no other writer in, the current file is renamed to .old, and put back if the swap
+ /// fails. Throws when the bytes do not match; nothing is changed then.</summary>
+ public static void SwapVerified(string download, string current, ReleaseManifest manifest)
+ {
+  using var hold = new FileStream(download, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+  if (hold.Length != manifest.Size || !HashMatches(SHA256.HashData(hold), manifest))
+   throw new InvalidOperationException("The downloaded file does not match the signed release. Nothing was installed.");
+  var old = current + ".old";
+  if (File.Exists(old)) File.Delete(old);
+  File.Move(current, old);   // Windows allows renaming a running EXE
+  try { File.Move(download, current); }
+  catch (Exception swap)
+  {
+   try { File.Move(old, current, overwrite: true); }
+   catch (Exception restore) { throw new AggregateException("The update failed and the previous launcher could not be put back; rename Nickel.exe.old to Nickel.exe.", swap, restore); }
+   throw;
+  }
+ }
+
  public static bool HashMatches(byte[] sha256, ReleaseManifest manifest) => string.Equals(Convert.ToHexString(sha256), manifest.Sha256, StringComparison.OrdinalIgnoreCase);
 
  // ---- versions: Semantic Versioning 2.0 ("1.2.3", "1.2.3-beta.2", "+build" ignored), with an optional leading "v"
@@ -137,6 +162,25 @@ nPyPtAPFFv7Bbrw0skygiWqt6xC0HMHVzYyFtKyPC7rek9TwENLS46xh3A==
                                m with { Size = MaxSize + 1 }, m with { Sha256 = "zz" }, m with { Version = "1.0", Tag = "v1.0" }, m with { Version = "v1.0.1", Tag = "vv1.0.1" } })
    { var b = Serialize(bad); if (Verify(b, Sig(key, b), pub) != null) return $"a malformed manifest is accepted: {Encoding.UTF8.GetString(b)}"; }
    var large = new byte[MaxManifestBytes + 1]; if (Verify(large, Sig(key, large), pub) != null) return "an oversized manifest is accepted";
+   var trailing = bytes.Concat("{}"u8.ToArray()).ToArray(); if (Verify(trailing, Sig(key, trailing), pub) != null) return "a manifest with trailing data is accepted";
+   if (Verify(bytes, Encoding.ASCII.GetBytes(" " + Encoding.ASCII.GetString(Sig(key, bytes)) + "\r\n"), pub) is null) return "a signature with surrounding whitespace is refused";
+   if (Verify(bytes, new byte[1025], pub) != null) return "an oversized signature is accepted";
+   using (var p384 = ECDsa.Create(ECCurve.NamedCurves.nistP384)) if (Verify(bytes, Sig(p384, bytes), p384.ExportSubjectPublicKeyInfoPem()) != null) return "a key on another curve is accepted";
+   { var b = Serialize(m with { Channel = "nightly" }); if (Verify(b, Sig(key, b), pub) != null) return "an unknown channel is accepted"; }
+   if (!ChannelAccepted("beta", "1.0.0-beta") || !ChannelAccepted("stable", "1.0.0-beta") || ChannelAccepted("beta", "1.0.0") || !ChannelAccepted("stable", "1.0.0")) return "the channel rule is wrong";
+   // swap: a wrong file changes nothing; a right one is swapped in and the previous file kept as .old
+   var dir = Path.Combine(Path.GetTempPath(), $"nickel-swap-{Guid.NewGuid():N}"); Directory.CreateDirectory(dir);
+   try
+   {
+    var current = Path.Combine(dir, "Nickel.exe"); var download = Path.Combine(dir, "download.exe");
+    var good = new byte[MinSize + 5]; RandomNumberGenerator.Fill(good); var gm = m with { Size = good.Length, Sha256 = Convert.ToHexString(SHA256.HashData(good)) };
+    File.WriteAllText(current, "old launcher"); var bad = (byte[])good.Clone(); bad[7] ^= 1; File.WriteAllBytes(download, bad);
+    try { SwapVerified(download, current, gm); return "a mismatching download was swapped in"; } catch (InvalidOperationException) { }
+    if (File.ReadAllText(current) != "old launcher" || File.Exists(current + ".old")) return "a refused swap changed files";
+    File.WriteAllBytes(download, good); SwapVerified(download, current, gm);
+    if (!File.ReadAllBytes(current).AsSpan().SequenceEqual(good) || File.ReadAllText(current + ".old") != "old launcher" || File.Exists(download)) return "the verified swap did not happen";
+   }
+   finally { try { Directory.Delete(dir, true); } catch { } }
    body[body.Length / 2] ^= 1; File.WriteAllBytes(path, body);
    if (Matches(path, m)) return "a file modified by one byte is accepted";
    File.WriteAllBytes(path, body.AsSpan(0, body.Length - 1).ToArray());
