@@ -48,9 +48,9 @@
 // movement key the player holds (the held-keys word at +0x10, not the effective word the modules write). Rotations: Visible = mode 1, Silent = mode 2, priority 3; Smoothing s > 0 (visible only) gives speed
 // max(30 - 27 s, 3) on a persistent request.
 // Processes (one tick each, giving: continue / finished / failed, a goal or none, break and place permissions, a status):
-//   Goto (position, near, column, level, waypoint, last death, nearest axis): a block goal inside a solid block with room
-//   above moves on top of it, one in the air moves down to the ground up to 3 below, and one that cannot be stood in (lava,
-//   unbreakable block, no room, nothing to stand on) is refused with the reason. Done when arrived (search cell or feet
+//   Goto (position, near, column, level, waypoint, last death, nearest axis): a block goal inside a block is dug into, one
+//   in the air moves down to the ground up to 3 below, and one that cannot be stood in (lava, unbreakable block, no room,
+//   nothing to stand on) is refused with the reason. Done when arrived (search cell or feet
 //   cell); fails at once when proven unreachable or given up by the watchdog, else on the third no-path, saying why.
 //   Wander: random column goal at radius x 0.5..1 in a random direction, renewed when reached or without a path.
 //   Follow: the named player's cell (kept while the player is airborne); stop within Follow Distance (1.5 more to start
@@ -360,7 +360,7 @@ struct PfStep{PfP from,to;uint8_t type=0;double cost=0;PfP brk[4];uint8_t nbrk=0
 inline PfStep PfStepOf(const PfP& from,const PfMove& m){PfStep s;s.from=from;s.to=m.pos;s.type=m.type;s.cost=m.cost;s.nbrk=std::min<uint8_t>(m.res.nbreaks,4);
  for(int i=0;i<s.nbrk;++i)s.brk[i]=PfP{m.res.breaks[i][0],m.res.breaks[i][1],m.res.breaks[i][2]};s.hasPlace=m.res.support;s.place=m.res.supportCell;s.hasDoor=m.res.door;s.door=m.res.doorCell;s.bucket=m.res.bucket;return s;}
 struct PfSearch{PfView view;PfGoal goal;PfP start;std::vector<PfNode> nodes;std::unordered_map<uint64_t,uint32_t> index;std::vector<PfHeapEntry> heap;
- int status=0;uint32_t endNode=0;double bestVal[7]{};uint32_t bestNode[7]{};double greed=1.25;int64_t began=0;double maxMs=2000;int cap=0;std::vector<PfStep> moves;
+ int status=0;bool grounded=false;uint32_t endNode=0;double bestVal[7]{};uint32_t bestNode[7]{};double greed=1.25;int64_t began=0;double maxMs=2000;int cap=0;std::vector<PfStep> moves;
  std::vector<std::array<float,3>> sample;};
 inline bool PfHeapLess(const PfHeapEntry& a,const PfHeapEntry& b){if(a.f!=b.f)return a.f>b.f;return a.h>b.h;}   // std heap: "less" = worse
 inline void PfBest(PfSearch& S,uint32_t i){const PfNode& n=S.nodes[i];static const double div[7]={1.5,0,2.5,3.0,0,5.0,10.0};
@@ -752,45 +752,49 @@ inline double PfGoalEntry(PfView& v,const PfGoal& g){if(!(g.kind==0||(g.kind==1&
 inline std::string PfGoalProblem(PfView& v,const PfP& p){const PfRec& r=PfRc(v,p);if(!r.known)return {};const std::string at=PfCellText(p);
  if(r.cls==2&&!v.o.lava)return at+" is in lava";
  auto blocked=[&](const PfP& q){const PfRec& b=PfRc(v,q);return b.known&&!PfFree(v,q)&&!(b.door&&v.o.doors)&&PfBreakCost(v,q)>=kPfInf;};
- if(blocked(p))return at+(v.o.brk?" is inside a block the path finder cannot break":" is inside a block and Allow Break is off");
+ if(blocked(p))return at+(v.o.brk?" is inside a block the path finder cannot break":" is inside a block and Allow Break is off (to stand on it: .goto "+PfCellText(PfAdd(p,0,1,0))+")");
  if(blocked(PfAdd(p,0,1,0)))return "there is no room to stand at "+at+(v.o.brk?" (the block above cannot be broken)":" (solid block above, Allow Break is off)");
  if(PfFree(v,p)&&!PfStand(v,PfAdd(p,0,-1,0))&&!PfSwim(v,p)&&!PfClimb(v,p)&&!(v.o.place&&v.o.blocks>0))return at+" is in the air with nothing to stand on";
  return {};}
-// A block goal typed one off: a solid block with room above -> stand on it; a cell in the air -> the ground up to 3 below.
+// A block goal in the air (nothing to stand on, no water or ladder) can never be a stand cell: it moves to the ground up to
+// 3 below. A goal inside a block is kept as typed: reaching it means digging into it (as Baritone's block goal).
 // Returns the note to tell the player, empty when the goal is kept.
 inline std::string PfSnapGoal(PfController& k,const PfSelf& s,const PfConfig& cfg,PfGoal& g){
  if(g.kind!=0)return {};PfWorldBegin(k.world,s.c,cfg,s.cell.x,s.cell.z);PfView v;v.w=&k.world;PfBuildOpt(k,s,cfg,v.o);
  const PfP p=g.p;const PfRec& r=PfRc(v,p);if(!r.known)return {};
- if(r.solid&&!r.passable&&!r.avoid&&PfPass2(v,PfAdd(p,0,1,0))){g.p=PfAdd(p,0,1,0);return PfCellText(p)+" is a block, standing on it at "+PfCellText(g.p);}
  if(PfPass2(v,p)&&!PfStand(v,PfAdd(p,0,-1,0))&&!PfSwim(v,p)&&!PfClimb(v,p))
   for(int d=1;d<=3;++d){const PfP q=PfAdd(p,0,-d,0);if(!PfFree(v,q))break;if(PfStand(v,PfAdd(q,0,-1,0))||PfSwim(v,q)||PfClimb(v,q)){g.p=q;return PfCellText(p)+" is in the air, going to the ground below at "+PfCellText(q);}}
  return {};}
 inline void PfStartSearch(PfController& k,const PfSelf& s,const PfConfig& cfg,bool replan,const PfP* from=nullptr){
  PfWorldBegin(k.world,s.c,cfg,s.cell.x,s.cell.z);auto S=std::make_unique<PfSearch>();S->view.w=&k.world;PfBuildOpt(k,s,cfg,S->view.o);k.lastOpt=S->view.o;
- S->goal=k.goal;S->goal.extra=PfGoalEntry(S->view,S->goal);S->start=from?*from:PfStartCell(k,s);k.contSearch=from!=nullptr;if(!from)k.contPending=false;S->greed=std::max(1.0,(double)cfg.searchGreed);S->maxMs=std::max(250,cfg.searchTime);S->cap=S->view.o.blocks;S->view.regions=k.mobRegions;
+ S->goal=k.goal;S->goal.extra=PfGoalEntry(S->view,S->goal);S->start=from?*from:PfStartCell(k,s);k.contSearch=from!=nullptr;if(!from)k.contPending=false;S->grounded=!from&&(s.onGround||s.inWater||s.climb);S->greed=std::max(1.0,(double)cfg.searchGreed);S->maxMs=std::max(250,cfg.searchTime);S->cap=S->view.o.blocks;S->view.regions=k.mobRegions;
  for(auto& x:k.stuck)if(k.tick-x.at<=1200)S->view.regions.push_back({x.p,0,20.0});
  PfSearchBegin(*S);k.search=std::move(S);k.replanSearch=replan;if(!replan){k.path.clear();k.hasPath=false;k.pathComplete=false;}}
 // New search from the current position, at least 500 ms after the previous one (the path is followed meanwhile).
 inline void PfReplan(PfController& k,const PfSelf& s,const PfConfig& cfg){if(!k.hasGoal||(k.search&&!k.replanSearch))return;const int64_t now=PfNow();if(ActionMs(k.planAt)<=500.0)return;k.planAt=now;PfStartSearch(k,s,cfg,true);}
 // Progress watchdog (every tick a path is followed): progress = entering a cell not visited in the last 600 ticks, or the goal
-// estimate improving by a block. 200 ticks of steering without progress (breaking, placing, doors and searches do not count)
+// estimate improving by a block; any progress clears the count. 200 ticks of steering without progress (breaking, placing, doors and searches do not count)
 // mark the next step's cell as stuck and start a new search; the third time in a row the process is told the goal cannot be
 // reached, with the place and the move that kept failing.
 inline void PfWatch(PfController& k,const PfSelf& s,const PfConfig& cfg,const PfP& cell,const PfOut& out){
  bool progress=false;const uint64_t key=PfKey(cell);auto f=k.visited.find(key);if(f==k.visited.end()||k.tick-f->second>600)progress=true;k.visited[key]=k.tick;
  if(k.visited.size()>4096)for(auto it=k.visited.begin();it!=k.visited.end();)if(k.tick-it->second>600)it=k.visited.erase(it);else ++it;
  const double h=k.goal.h(cell);if(h<k.progBest-kPfSprint){k.progBest=h;progress=true;k.progFires=0;k.gotoS.fails=0;}
- if(progress){k.progTicks=0;return;}
+ if(progress){k.progTicks=0;k.progFires=0;return;}
  if(out.acted||out.status==1||k.path.empty()||k.search)return;
  if(++k.progTicks<200)return;
  k.progTicks=0;const PfStep& st=k.path[0];
  if(++k.progFires>=3){k.progFires=0;k.giveUp=true;k.noPath=true;
   k.failReason="no progress for 30 s around "+PfCellText(cell)+", the next move ("+PfMoveName(st.type)+" to "+PfCellText(st.to)+") keeps failing";return;}
  PfStuckAdd(k,st.to);k.planAt=0;PfReplan(k,s,cfg);}
+// Proof of unreachability: every cell reachable from the player's own standing cell (not a later segment's start, not a
+// cell in the air) was expanded without reaching an unloaded chunk or the Cache Radius, and no placement budget pruned a
+// route (nodes are keyed by position only, so a cheaper route with more placed blocks can hide one within the budget).
+inline bool PfProven(const PfSearch& S,const PfWorld& w,bool continued){return S.status==2&&!w.edge&&!continued&&S.grounded&&S.nodes.size()>1&&(S.cap==0||!S.view.o.place);}
 // Search result: a full or partial path replaces the current one; no path at all tells the process (no path notification).
 inline void PfFinishSearch(PfController& k,const PfSelf& s,bool){
  PfSearch& S=*k.search;bool ok=false,complete=false;
- const bool proven=S.status==2&&!k.world.edge;   // every reachable cell was expanded without leaving the loaded area
+ const bool proven=PfProven(S,k.world,k.contSearch);
  if(S.status==1){ok=PfBuildPath(S,S.endNode);complete=ok;}else if(!proven&&PfPartial(S))ok=true;
  {auto& sh=PathFinder();std::lock_guard<std::mutex> l(sh.guard);sh.thinkPoints=S.sample;}
  const bool cont=k.contSearch;k.contSearch=false;
