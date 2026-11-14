@@ -35,7 +35,7 @@ void DrawCrosshair(){
  const ImU32 fill=targeting?color("target_color","#ff4040ff"):color("color","#ffffffff");const bool outline=Flag(*mod,"outline",true);const ImU32 edge=color("outline_color","#000000cc");
  const float ot=outline?std::fmax(1.f,std::round(num("outline_thickness",.5f)*scale)):0.f,t=std::fmax(1.f,std::round(num("thickness",1)*scale)),size=std::fmax(1.f,std::round(num("size",5)*scale)),gap=std::round((num("gap",2)+crosshairState.gap)*scale);
  const ImVec2 screen=ImGui::GetIO().DisplaySize;const float half=std::floor(t*.5f),x0=std::floor(screen.x*.5f)-half,y0=std::floor(screen.y*.5f)-half,x1=x0+t,y1=y0+t;
- auto* d=ImGui::GetBackgroundDrawList();std::vector<ImVec4> rects;
+ auto* d=HudList();std::vector<ImVec4> rects;
  auto rectangles=[&]{if(ot>0)for(auto& r:rects)d->AddRectFilled(ImVec2(r.x-ot,r.y-ot),ImVec2(r.z+ot,r.w+ot),edge);for(auto& r:rects)d->AddRectFilled(ImVec2(r.x,r.y),ImVec2(r.z,r.w),fill);};
  std::string shape="Cross";if(auto st=Find(*mod,"shape"))shape=st->text;const ImVec2 middle((x0+x1)*.5f,(y0+y1)*.5f);
  if(shape=="Cross"||shape=="T"){

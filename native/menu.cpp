@@ -723,6 +723,26 @@ const std::vector<std::string>& RegistryNames(bool blocks){
  static std::vector<std::string> names[2];static double next[2]={0,0};auto& list=names[blocks?1:0];if(ImGui::GetTime()<next[blocks?1:0])return list;next[blocks?1:0]=ImGui::GetTime()+3;
  static char raw[4096][64];const int count=game::ReadRegistryNames(raw,4096,blocks);list.clear();for(int i=0;i<count;++i)list.push_back(raw[i]);std::sort(list.begin(),list.end());list.erase(std::unique(list.begin(),list.end()),list.end());return list;
 }
+// The HUD (Nickel's elements, script HUDs, custom crosshair, subtitles and the armor / effect / item icons drawn by the
+// game) shows only while playing: in a world, with the game owning the mouse. Chat, pause, inventory and the other game
+// screens hide it; the Nickel menu, the HUD editor and the full-screen map keep it. While the game window is in the
+// background the last state is kept (alt-tab, streams). Hidden elements are drawn into a list that is never rendered,
+// so their per-frame state keeps running.
+bool hudShown=true;
+ImDrawList* HudSink(){static ImDrawList* sink=nullptr;if(!sink)sink=IM_NEW(ImDrawList)(ImGui::GetDrawListSharedData());return sink;}
+ImDrawList* HudList(){return hudShown?ImGui::GetBackgroundDrawList():HudSink();}
+void UpdateHudShown(){
+ static ULONGLONG leftAt=0;const ULONGLONG now=GetTickCount64();
+ const HWND root=gameWindowForKeys?GetAncestor(gameWindowForKeys,GA_ROOT):nullptr;const bool focused=!root||GetForegroundWindow()==root;
+ game::Context c{};bool playing=hudShown;
+ if(opened||hudEditing||mapOpen||waypointsOpen||OwnProbe())playing=true;
+ else if(!game::Local(&c))playing=false;
+ else if(focused)playing=Playing();
+ // hide 120 ms after leaving play (no flicker when the game briefly shows the cursor); show at once
+ if(playing){leftAt=0;hudShown=true;}else{if(!leftAt)leftAt=now;if(now-leftAt>=120)hudShown=false;}
+ game::hudHidden.store(!hudShown,std::memory_order_relaxed);
+ if(!hudShown){auto* sink=HudSink();sink->_ResetForNewFrame();sink->PushClipRectFullScreen();sink->PushTextureID(ImGui::GetIO().Fonts->TexID);}
+}
 #include "script_engine.hpp"
 #include "hud_crosshair.hpp"
 #include "hud_subtitles.hpp"
@@ -746,7 +766,8 @@ std::string ExtraInfo(const Module& item){
  return {};
 }
 void DrawHud(ImTextureID logo){
- auto& io=ImGui::GetIO();auto* d=ImGui::GetBackgroundDrawList();float stack=10;std::vector<std::string> drawn;ScriptsFrame(drawn);DrawCrosshair();lyricsLog=WriteLog;DrawSubtitles(drawn);
+ UpdateHudShown();ImDrawList* const worldList=ImGui::GetBackgroundDrawList();
+ auto& io=ImGui::GetIO();ImDrawList* d=HudList();float stack=10;std::vector<std::string> drawn;ScriptsFrame(drawn);DrawCrosshair();lyricsLog=WriteLog;DrawSubtitles(drawn);
  // Motion Blur pixel shader: reprojection between adjacent camera frames.
  // The hand/body exclusion mask is not implemented.
  bool motionCameraWanted=false;
@@ -1132,6 +1153,7 @@ void DrawHud(ImTextureID logo){
    auto column=[&](const std::vector<std::string>& lines,bool rightSide){float y=pad;for(auto& text:lines){if(text.empty()){y+=row;continue;}const float w=hudWidth(regular,font,text.c_str()),x=rightSide?io.DisplaySize.x-pad-w-2*pad:pad;d->AddRectFilled(ImVec2(x,y),ImVec2(x+w+2*pad,y+row),IM_COL32(0,0,0,back));
      if(shadow)hudText(regular,font,ImVec2(x+pad+shade,y+(row-font)/2+shade),text.c_str(),IM_COL32(0,0,0,160));hudText(regular,font,ImVec2(x+pad,y+(row-font)/2),text.c_str(),IM_COL32(224,224,224,255));y+=row;}};
    column(left,false);column(right,true);}}
+ d=worldList;   // module work and world visuals: drawn in every game screen
  // ---- Visuals: View Model, Block Hit, Item Inspect, No Armor, Third Person Nametags, Block Outline (native/game_hand.hpp).
  // This only passes the settings to the game's render thread and installs the hooks on first activation.
  // Item Inspect is a trigger: enabling it (V by default) plays the animation, then turns the module off.
@@ -2225,6 +2247,7 @@ void DrawHud(ImTextureID logo){
       hudText(bold,size,ImVec2(at.x-w/2+1,at.y-size/2+1),number.text,IM_COL32(0,0,0,(int)(180*alpha*color.w)));hudText(bold,size,ImVec2(at.x-w/2,at.y-size/2),number.text,tone(color,alpha));}}}}
   game::SubmitWorld(std::move(worldFrame));
  }
+ d=HudList();   // HUD elements again: hidden outside play
  // ---- MiniMap: square of Size (+17 with coordinates), anchored at (0.985, 0.02), Background Color fill.
  // Terrain is a 16W x 16W texel ring buffer filled on the game thread (game_map.hpp), drawn as 1 to 4 quads at
  // (Size/2)/Zoom px per block, north up or view direction up (Rotate With Player). Mobs: face from the embedded atlas
