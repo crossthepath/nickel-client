@@ -29,8 +29,8 @@ struct Movement2{std::mutex guard;bool noJumpDelay=false,highJump=false,antiImmo
  int noFallMode=0;std::atomic<bool> glideWindow{false},glideSent{false};
  std::atomic<bool> flyAssist{false};};   // noFallMode: 0 Glide, 1 Packet; flyAssist: a module lifts the player
 inline Movement2& Move2(){static auto* m=new Movement2;return *m;}
-inline void Move2JumpPre(uint64_t arg7,uint64_t){static volatile long stopped_=0;auto& m=Move2();if(m.noJumpDelay&&arg7)if(!stopped_)__try{*(int32_t*)(arg7+0x10)=0;}__except(game::FeatureFault("Move2JumpPre",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
-inline void Move2JumpPost(uint64_t arg8){static volatile long stopped_=0;auto& m=Move2();if(!m.highJump||!arg8)return;Context c{};if(!Local(&c))return;if(!stopped_)__try{*(float*)(arg8+0x1c)+=m.strength;}__except(game::FeatureFault("Move2JumpPost",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
+inline void Move2JumpPre(uint64_t arg7,uint64_t){static volatile long stopped_=0;auto& m=Move2();if(m.noJumpDelay&&arg7)if(!game::FeatureStopped(&stopped_))__try{*(int32_t*)(arg7+0x10)=0;}__except(game::FeatureFault("Move2JumpPre",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
+inline void Move2JumpPost(uint64_t arg8){static volatile long stopped_=0;auto& m=Move2();if(!m.highJump||!arg8)return;Context c{};if(!Local(&c))return;if(!game::FeatureStopped(&stopped_))__try{*(float*)(arg8+0x1c)+=m.strength;}__except(game::FeatureFault("Move2JumpPost",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline bool Move2Has(const Context& c,uint32_t component){uintptr_t storage{};uint32_t packed{};return Storage(c.registry,component,&storage)&&Packed(storage,c.entity,&packed);}
 inline float Move2FallDistance(const Context& c){uintptr_t storage{},element{};float fall=0;if(Storage(c.registry,0xce6b34f6u,&storage)&&InStorage(storage,c.entity,8,&element))Read(element,&fall);return fall;}   // FallDistanceComponent
 // Distance from the feet down to the first non-air block under the player's box (every column the box covers: a box on
@@ -52,7 +52,7 @@ inline void Move2GlideSend(uintptr_t packet){auto& m=Move2();uint64_t& bits=*(ui
 inline void Move2TickWork(){auto& m=Move2();const bool glide=m.noFall&&m.noFallMode==0;if(!glide)m.glideWindow=false;if(!m.antiImmobile&&!glide)return;Context c{};if(!Local(&c))return;
  if(glide)Move2GlideTick(c);
  if(!m.antiImmobile)return;uintptr_t f{};if(Element(c.registry,c.entity,"ActorDataFlagComponent",0x18,&f)){uint64_t v{};if(Read(f,&v)&&(v&(1ull<<16)))*(uint64_t*)f=v&~(1ull<<16);}}
-inline void Move2Tick(){static volatile long stopped_=0;if(!stopped_)__try{Move2TickWork();}__except(game::FeatureFault("Move2Tick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
+inline void Move2Tick(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{Move2TickWork();}__except(game::FeatureFault("Move2Tick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline void Move2SendWork(uintptr_t packet){auto& m=Move2();if(!m.noFall||PacketIdOf(packet)!=0x90)return;if(m.noFallMode==0){Move2GlideSend(packet);return;}const bool b=m.flip;m.flip=!b;if(!b){Read(packet+0x3c,&m.savedY);return;}
  Context c{};if(!Local(&c))return;const uint64_t region=ActorRegion(c);float x{},y{},z{};Read(packet+0x38,&x);Read(packet+0x3c,&y);Read(packet+0x40,&z);
  if(region){const int32_t pos[3]={(int32_t)std::floor(x),(int32_t)std::floor(y+1.f),(int32_t)std::floor(z)};const uint64_t block=RegionBlock(c,region,pos);uint64_t legacy{};uint8_t flag{};if(block&&Read(block+0x68,&legacy)&&legacy&&Read(legacy+0x28,&flag)&&flag)return;}
@@ -60,5 +60,5 @@ inline void Move2SendWork(uintptr_t packet){auto& m=Move2();if(!m.noFall||Packet
   uintptr_t f{};uint64_t flags{};if(Element(c.registry,c.entity,"ActorDataFlagComponent",0x18,&f)&&Read(f,&flags)&&(flags&(1ull<<32)))return;
   if(Move2Has(c,0x78e89f39u)||Move2Has(c,0x832a2768u))return;}
  *(float*)(packet+0x3c)=m.savedY+.1f;*(uint64_t*)(packet+0x48)=0;*(uint32_t*)(packet+0x50)=0;*(uint64_t*)(packet+0x88)&=~(0xfull<<10);}
-inline bool Move2Send(uintptr_t packet){static volatile long stopped_=0;if(!stopped_)__try{Move2SendWork(packet);}__except(game::FeatureFault("Move2Send",&stopped_,GetExceptionInformation())){game::FeatureFlush();}return false;}
+inline bool Move2Send(uintptr_t packet){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{Move2SendWork(packet);}__except(game::FeatureFault("Move2Send",&stopped_,GetExceptionInformation())){game::FeatureFlush();}return false;}
 }

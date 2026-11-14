@@ -44,5 +44,5 @@ inline void AirPlaceWork(){
    uint8_t* t=NewUseTransaction(c,stack);*(int32_t*)(t+0x68)=0;memcpy(t+0x70,place.nb,12);*(int32_t*)(t+0x7c)=runtime;*(int32_t*)(t+0x84)=slot;*(uint8_t*)(t+0x88)=0;*(uint8_t*)(t+0x80)=place.face;
    memcpy(t+0xf0,eye,12);const float rel[3]={place.hit[0]-place.nb[0],place.hit[1]-place.nb[1],place.hit[2]-place.nb[2]};memcpy(t+0xfc,rel,12);SendUseTransaction(c,c.actor,t);ok=true;}}
  if(ok){std::lock_guard<std::mutex> l(s.guard);memcpy(s.placed,cell,12);s.placedValid=true;s.lastNs=AirNowNs();s.wasHeld=true;}}
-inline void AirPlaceTick(){static volatile long stopped_=0;if(!stopped_)__try{AirPlaceWork();}__except(game::FeatureFault("AirPlaceTick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
+inline void AirPlaceTick(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{AirPlaceWork();}__except(game::FeatureFault("AirPlaceTick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 }

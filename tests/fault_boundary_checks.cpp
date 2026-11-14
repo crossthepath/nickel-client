@@ -21,7 +21,7 @@ int main(){
  volatile long stopped=0,healthyStopped=0;
  // first call faults: handled, reported once, the site stops
  Check(!game::GuardBool("Test subscriber",&stopped,Faulty,(uintptr_t)1),"a faulting subscriber returns \"not cancelled\"");
- Check(stopped==1,"the faulting site is stopped");
+ Check(game::FeatureStopped(&stopped),"the faulting site is stopped");
  Check(logged.size()==1&&logged[0].find("Test subscriber: fault c0000005")==0,"one log line with the site and the exception code");
  // later calls skip the stopped site without calling it again or logging again
  for(int i=0;i<5;++i)Check(!game::GuardBool("Test subscriber",&stopped,Faulty,(uintptr_t)1),"a stopped site returns \"not cancelled\"");
@@ -36,7 +36,7 @@ int main(){
  Check(!game::GuardBool("None",&noneStopped,none,(uintptr_t)1),"a null subscriber does nothing");
  // void subscribers and software exceptions
  volatile long voidStopped=0;game::GuardVoid("Void subscriber",&voidStopped,FaultyVoid,1,2);game::GuardVoid("Void subscriber",&voidStopped,FaultyVoid,1,2);
- Check(voidStopped==1&&calls==2&&logged.size()==2&&logged[1].find("e0000001")!=std::string::npos,"void subscriber: logged once, stopped");
+ Check(game::FeatureStopped(&voidStopped)&&calls==2&&logged.size()==2&&logged[1].find("e0000001")!=std::string::npos,"void subscriber: logged once, stopped");
  // a restore helper keeps running after its first fault: reported once, called every time
  volatile long reported=0;for(int i=0;i<3;++i){__try{++calls;RaiseException(0xE0000002,0,0,nullptr);}__except(game::FeatureFault("Restore helper",&reported,GetExceptionInformation())){game::FeatureFlush();}}
  Check(calls==5&&logged.size()==3&&logged[2].find("Restore helper: fault e0000002")==0,"restore helper: runs every time, logged once");
@@ -44,6 +44,11 @@ int main(){
  game::faultLog=nullptr;volatile long early=0;game::GuardVoid("Early subscriber",&early,FaultyVoid,1,2);
  game::faultLog=Log;game::FeatureFlush();
  Check(logged.size()==4&&logged[3].find("Early subscriber: fault e0000001")==0,"a fault recorded before the log exists is written later");
+ // a new world gives a stopped site one more chance; its next fault is reported again
+ game::FeatureNewWorld();
+ Check(!game::FeatureStopped(&stopped),"a stopped site runs again in the next world");
+ game::GuardBool("Test subscriber",&stopped,Faulty,(uintptr_t)1);
+ Check(calls==7&&game::FeatureStopped(&stopped)&&logged.size()==5&&logged[4].find("Test subscriber: fault c0000005")==0,"the site faults again: stopped and logged once more");
  if(failures){std::printf("%d fault boundary check(s) failed\n",failures);return 1;}
  std::printf("fault boundary checks passed\n");return 0;
 }

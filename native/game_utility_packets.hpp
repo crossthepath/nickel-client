@@ -128,7 +128,7 @@ inline void InstaPacketPost(uint64_t gm,float d){auto& s=InstaBreak();int64_t ms
 // PacketSendEvent: copy every PlayerAuthInputPacket the game sends; credit -1.
 inline void InstaPacketSendWork(uintptr_t packet){auto& s=InstaBreak();{std::lock_guard<std::mutex> lock(s.guard);if(!s.enabled||s.client)return;}if(s.sending)return;
  uint64_t t{},g{};if(!Read(packet,&t)||!t||!Read(t+8,&g)||!g||reinterpret_cast<int(*)(uintptr_t)>(g)(packet)!=0x90)return;InstaSnapshot(s.snapshot,packet);s.hasSnapshot=true;s.tickSent=0;s.budget=(s.budget>1?s.budget:1)-1;}
-inline void InstaPacketSend(uintptr_t packet){static volatile long stopped_=0;if(!stopped_)__try{InstaPacketSendWork(packet);}__except(game::FeatureFault("InstaPacketSend",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
+inline void InstaPacketSend(uintptr_t packet){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{InstaPacketSendWork(packet);}__except(game::FeatureFault("InstaPacketSend",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 
 // ---- subscribers of the shared hooks
 inline bool(*volatile actionReceive)(uintptr_t)=nullptr;   // MobEquipment for the action queue (game_actions.hpp)
@@ -142,11 +142,11 @@ inline void(*volatile autoToolDestroy)(uint64_t,const int32_t*)=nullptr;   // Au
 inline bool(*volatile combatReceiveCancel)(uintptr_t)=nullptr;   // Combat: true cancels the packet (Auto Mace)
 inline bool UtilityReceiveWork(uintptr_t packet){if(auto mr=movementReceive)mr(packet,PacketIdOf(packet));if(auto pc=pearlChaserReceive)pc(packet);if(auto pr=playerReceive)if(pr(packet))return true;if(auto pc=playerReceiveC)if(pc(packet))return true;if(auto vr=velocityReceive)if(vr(packet))return true;if(auto sr=scriptReceive)if(sr(packet))return true;if(auto cr=combatReceiveCancel)if(cr(packet))return true;if(auto a=actionReceive)if(a(packet))return true;if(auto inv=inventoryReceive)if(inv(packet))return true;NickHiderWork(packet);const bool cancel=AutoSignReceiveWork(packet);if(!cancel)PacketLoggerWork(packet,false);return cancel;}
 inline bool UtilityReceive(uintptr_t packet){__try{return UtilityReceiveWork(packet);}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
-inline void PacketLoggerSend(uintptr_t packet){static volatile long stopped_=0;if(!stopped_)__try{PacketLoggerWork(packet,true);}__except(game::FeatureFault("PacketLoggerSend",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
+inline void PacketLoggerSend(uintptr_t packet){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{PacketLoggerWork(packet,true);}__except(game::FeatureFault("PacketLoggerSend",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 
 // BuildBlock (hook #28, MC 0x376b1f0) and ContinueDestroyBlock (hook #27, MC 0x376a590) hooks.
 using BuildBlockFunction=uint64_t(*)(uint64_t,int32_t*,uint8_t,uint8_t,uint64_t);inline BuildBlockFunction buildBlockOriginal=nullptr;
-inline void AutoSignBuildGuarded(const int32_t* pos,uint8_t face){static volatile long stopped_=0;if(!stopped_)__try{AutoSignBuildWork(pos,face);}__except(game::FeatureFault("AutoSignBuildGuarded",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
+inline void AutoSignBuildGuarded(const int32_t* pos,uint8_t face){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{AutoSignBuildWork(pos,face);}__except(game::FeatureFault("AutoSignBuildGuarded",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline bool(*volatile buildCancel)()=nullptr;   // Schematics: normal placement is cancelled during Auto place
 inline void(*volatile buildObserve)(const int32_t* pos,uint8_t face)=nullptr;   // Combat: Auto Anchor remembers placed anchors
 inline uint64_t BuildBlockDetour(uint64_t gm,int32_t* pos,uint8_t face,uint8_t r9,uint64_t a5){AutoSignBuildGuarded(pos,face);if(auto bo=buildObserve)bo(pos,face);if(auto bc=buildCancel)if(bc())return 0;return buildBlockOriginal(gm,pos,face,r9,a5);}

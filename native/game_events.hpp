@@ -87,7 +87,7 @@ inline void ActorEventDetour(void* self,void* sender,void* callback,void* shared
 inline PacketFunction levelEventOriginal=nullptr;
 // #195 0x23a7260: LevelEventPacket receive (id 0x19); packet +0x30 event id, +0x34 position, +0x40 data
 inline void LevelEventDetour(void* self,void* sender,void* callback,void* shared){if(ReceiveFilter(shared))return;uint64_t packet{};static volatile long stopped=0;if(Read((uintptr_t)shared,&packet)&&packet)GuardVoid("LevelEvent: health prediction",&stopped,predictLevelEvent,packet);levelEventOriginal(self,sender,callback,shared);}
-inline void StartGameDetour(void* self,void* sender,void* callback,void* shared){if(ReceiveFilter(shared))return;{auto& events=Shared();std::lock_guard<std::mutex> lock(events.guard);++events.worldSerial;events.packets.clear();}startGameOriginal(self,sender,callback,shared);}
+inline void StartGameDetour(void* self,void* sender,void* callback,void* shared){if(ReceiveFilter(shared))return;FeatureNewWorld();{auto& events=Shared();std::lock_guard<std::mutex> lock(events.guard);++events.worldSerial;events.packets.clear();}startGameOriginal(self,sender,callback,shared);}
 // 1: hooks installed; -1: refused (wrong game build, unexpected bytes or MinHook failure). Only tried once.
 inline int InstallEvents(void(*log)(const char*)){
  static int state=0;if(state)return state;state=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size)){if(log)log("Game events: not the supported Minecraft image, no game hook installed");return state;}

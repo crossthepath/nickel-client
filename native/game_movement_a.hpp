@@ -54,7 +54,7 @@ inline void SpeedApplyWork(){
  const bool ground=LocalHas(c,0xc29078a0u);if(mode==2&&!ground)return;if(mode==1&&ground)return;
  uintptr_t storage{},element{};float old{};if(!Storage(c.registry,0x39cf8d64u,&storage)||!InStorage(storage,c.entity,0x28,&element)||!Read(element+0xc,&old))return;
  *reinterpret_cast<float*>(element+0xc)=s.speedValue;}
-inline void SpeedApply(){static volatile long stopped_=0;if(!stopped_)__try{SpeedApplyWork();}__except(game::FeatureFault("SpeedApply",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
+inline void SpeedApply(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{SpeedApplyWork();}__except(game::FeatureFault("SpeedApply",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 using SpeedSystemFunction=uint64_t(*)(void*);
 inline SpeedSystemFunction speedOriginalA=nullptr,speedOriginalB=nullptr;
 inline uint64_t SpeedDetourA(void* self){const uint64_t result=speedOriginalA(self);SpeedApply();return result;}
@@ -84,7 +84,7 @@ inline void MoveATickWork(){
  if(stop){const uintptr_t in=Move3Input(c);uint32_t bits{};uint64_t sv{};
   if(in&&Read(in+0x10,&bits)){const bool moving=(bits&(0xfu<<13))!=0;
    if(!moving&&Read(c.actor+0x240,&sv)&&sv){*reinterpret_cast<float*>(sv+0x18)=0;*reinterpret_cast<float*>(sv+0x20)=0;}}}}
-inline void MoveATick(){static volatile long stopped_=0;if(!stopped_)__try{MoveATickWork();}__except(game::FeatureFault("MoveATick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
+inline void MoveATick(){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{MoveATickWork();}__except(game::FeatureFault("MoveATick",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 
 // ---- Auto Sprint (SprintIntent) ----
 inline void MoveASetAutoSprint(bool on){auto& s=MoveA();if(s.autoSprint.exchange(on)!=on)s.sprintState=0;}   // enable and disable both reset the state
@@ -137,7 +137,7 @@ inline void InventorySprintWork(uint64_t input,uint64_t state,uint64_t vector){
  uint8_t flags{};Read(input+0x60,&flags);*reinterpret_cast<uint8_t*>(input+0x60)=(uint8_t)((flags&0xed)|((uint8_t)sprint<<1)|((uint8_t)jump<<4));
  *reinterpret_cast<float*>(vector)=x;*reinterpret_cast<float*>(vector+4)=z;
  st.x=x;st.z=z;st.w=w;st.s=s;st.a=a;st.d=d;st.jump=jump;st.sprint=sprint;st.valid=true;st.front=front;st.previous=jump;}
-inline void InventorySprint(uint64_t input,uint64_t state,uint64_t vector){static volatile long stopped_=0;if(!stopped_)__try{InventorySprintWork(input,state,vector);}__except(game::FeatureFault("InventorySprint",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
+inline void InventorySprint(uint64_t input,uint64_t state,uint64_t vector){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{InventorySprintWork(input,state,vector);}__except(game::FeatureFault("InventorySprint",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline void InventoryBit(uintptr_t packet,int bit,bool on){if(bit<0||bit>=0x42)return;uint64_t* word=reinterpret_cast<uint64_t*>(packet+0x88)+(bit>>6);const uint64_t mask=1ull<<(bit&63);if(on)*word|=mask;else *word&=~mask;}
 inline void InventorySendWork(uintptr_t packet){
  if(!MoveA().inventory||PacketIdOf(packet)!=0x90)return;auto& m=InventoryMove();std::lock_guard<std::mutex> l(m.guard);if(!m.state.valid)return;
@@ -146,7 +146,7 @@ inline void InventorySendWork(uintptr_t packet){
   InventoryBit(packet,3,st.jump);InventoryBit(packet,6,st.jump);InventoryBit(packet,0x3d,st.jump);InventoryBit(packet,0x3c,st.front);InventoryBit(packet,4,st.sprint);
   *reinterpret_cast<float*>(packet+0x64)=st.x;*reinterpret_cast<float*>(packet+0x68)=st.z;*reinterpret_cast<float*>(packet+0x80)=st.x;*reinterpret_cast<float*>(packet+0x84)=st.z;return;}
  m.state=InventoryMoveState{};}
-inline void InventorySend(uintptr_t packet){static volatile long stopped_=0;if(!stopped_)__try{InventorySendWork(packet);}__except(game::FeatureFault("InventorySend",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
+inline void InventorySend(uintptr_t packet){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{InventorySendWork(packet);}__except(game::FeatureFault("InventorySend",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 // Send dispatcher replacing MoveSendAll in game::sendMovement (the packet cannot be cancelled by Inventory Move).
 inline bool MoveASendAll(uintptr_t packet){InventorySend(packet);return MoveSendAll(packet);}
 
