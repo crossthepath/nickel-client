@@ -6,7 +6,7 @@ manifest's size and SHA-256. Downloads come over HTTPS from nickelclient.com or 
 
 ## Steps
 
-1. Set the version in `desktop/Updater.cs` (`Version`) and `desktop/Nickel.Desktop.csproj` (`<Version>`), for example
+1. Set `<Version>` in `desktop/Nickel.Desktop.csproj` (the launcher reads its version from it), for example
    `1.0.1-beta`. Versions follow Semantic Versioning: `1.0.1-beta` < `1.0.1-beta.2` < `1.0.1`.
 2. Build and run the checks:
    ```sh
@@ -16,7 +16,7 @@ manifest's size and SHA-256. Downloads come over HTTPS from nickelclient.com or 
 3. Sign the build with the private release key (kept offline, never committed):
    ```sh
    dotnet run --project tools/release-signer -c Release -- sign dist/Nickel/Nickel.exe 1.0.1-beta <private.pem> dist/release
-   dotnet run --project tools/release-signer -c Release -- verify dist/release
+   dotnet run --project tools/release-signer -c Release -- verify dist/release dist/Nickel/Nickel.exe
    ```
 4. Publish the GitHub release `v1.0.1-beta` with three assets: `Nickel.exe`, `release-manifest.json`,
    `release-manifest.sig`. Mark it as the latest release.
