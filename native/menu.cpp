@@ -726,9 +726,18 @@ const std::vector<std::string>& RegistryNames(bool blocks){
 // The HUD (Nickel's elements, script HUDs, custom crosshair, subtitles and the armor / effect / item icons drawn by the
 // game) shows only while playing: in a world, with the game owning the mouse. Chat, pause, inventory and the other game
 // screens hide it; the Nickel menu, the HUD editor and the full-screen map keep it. While the game window is in the
-// background the last state is kept (alt-tab, streams). Hidden elements are drawn into a list that is never rendered,
-// so their per-frame state keeps running.
+// background the last state is kept (alt-tab, streams) unless the game draws one of its menu screens: a singleplayer
+// game pauses when it loses the focus, and its pause screen hides the HUD like any other. Hidden elements are drawn
+// into a list that is never rendered, so their per-frame state keeps running.
 bool hudShown=true;
+// True when the game drew one of its menu screens (pause, chat, inventory, death, disconnect, start) in the last 250 ms
+// (names seen by the screen render hook, game_render.hpp NoteOtherScreen).
+bool GameMenuScreenShown(){
+ static const uint64_t menus[]={game::ScreenNameHash("pause_screen"),game::ScreenNameHash("chat_screen"),game::ScreenNameHash("inventory_screen"),
+  game::ScreenNameHash("death_screen"),game::ScreenNameHash("disconnect_screen"),game::ScreenNameHash("start_screen")};
+ const ULONGLONG now=GetTickCount64();
+ for(int i=0;i<game::kScreenSlots;++i){const ULONGLONG at=game::otherScreenAt[i].load();if(!at||now-at>250)continue;const uint64_t h=game::otherScreenHash[i].load();for(uint64_t m:menus)if(h==m)return true;}
+ return false;}
 ImDrawList* HudSink(){static ImDrawList* sink=nullptr;if(!sink)sink=IM_NEW(ImDrawList)(ImGui::GetDrawListSharedData());sink->_Data=ImGui::GetDrawListSharedData();return sink;}   // _Data refreshed: the ImGui context is recreated when the renderer restarts
 ImDrawList* HudList(){return hudShown?ImGui::GetBackgroundDrawList():HudSink();}
 void UpdateHudShown(){
@@ -737,6 +746,7 @@ void UpdateHudShown(){
  game::Context c{};bool playing=hudShown;
  if(opened||hudEditing||mapOpen||waypointsOpen||OwnProbe())playing=true;
  else if(!game::Local(&c))playing=false;
+ else if(GameMenuScreenShown())playing=false;   // focused or not: a pause / chat / inventory screen is on
  else if(focused)playing=Playing();
  // hide 120 ms after leaving play (no flicker when the game briefly shows the cursor); show at once
  if(playing){leftAt=0;hudShown=true;}else{if(!leftAt)leftAt=now;if(now-leftAt>=120)hudShown=false;}
