@@ -129,7 +129,7 @@ constexpr int kRotPathFinder=19,kRotPearlChaser=20,kActPathFinder=18,kActPearlCh
 // ============================================================================================ settings and shared state
 struct PfConfig{bool allowBreak=true,allowPlace=true,allowParkour=true,allowSprint=true,avoidMobs=true,pauseOnInput=true,bucketClutch=true,fastMine=false,stopWhenFull=true,saveTools=true,autoEat=true,renderPath=true,showThinking=true,throughWalls=true,silentRotations=false;
  int maxFall=3,maxClutchFall=40,searchTime=2000,cacheRadius=8,wanderRadius=96,junkMode=0;float smoothing=50,turnSpeed=45,searchGreed=1.25f,followDistance=3;
- std::vector<std::string> throwaway,protectedBlocks,mineBlocks,junkItems,waypoints;float pathColor[4]{.4f,.8f,1,1},thinkingColor[4]{1,.8f,.3f,.6f},goalColor[4]{.4f,1,.502f,1};};
+ std::vector<std::string> throwaway,protectedBlocks,mineBlocks,junkItems,waypoints;float pathColor[4]{1,.541f,.239f,1},thinkingColor[4]{1,.541f,.239f,.5f},goalColor[4]{1,.698f,.478f,1};};
 struct PfCommandRequest{int kind=0;int pos[3]{};int radius=0;std::string name;int count=0;std::vector<std::string> blocks;};   // 1 goto 2 follow 3 mine 4 wander 5 tunnel 6 chop 7 stop 8 pause 9 resume 10 recalculate 11 goto death 12 goto axis 13 build
 struct PfShared{std::mutex guard;PfConfig cfg;std::atomic<bool> enabled{false};std::deque<PfCommandRequest> queue;
  int state=0,process=0,remaining=0;std::string detail;   // status: 0 Idle 1 Planning 2 Moving 3 Acting 4 Paused
@@ -1302,11 +1302,24 @@ inline void PfSprintWork(uint64_t input,uint64_t state,uint64_t movement){auto& 
 inline void PfSprint(uint64_t input,uint64_t state,uint64_t movement){auto& sh=PathFinder();if(game::FeatureStopped(&sh.fault))return;__try{PfSprintWork(input,state,movement);}__except(game::FeatureFault("Path Finder (input)",&sh.fault,GetExceptionInformation())){game::FeatureFlush();}}
 
 // ---- drawing (ScreenViewRender thread): appends world lines and the goal box
-inline void PfDraw(std::vector<WorldLine>& lines,std::vector<WorldBox>& boxes){auto& sh=PathFinder();std::lock_guard<std::mutex> l(sh.guard);if(!sh.enabled.load())return;const PfConfig& c=sh.drawCfg;const bool depth=!c.throughWalls;
- auto line=[&](const std::array<float,3>& a,const std::array<float,3>& b,const float* col,float th){WorldLine w{};memcpy(w.a,a.data(),12);memcpy(w.b,b.data(),12);memcpy(w.colorA,col,16);memcpy(w.colorB,col,16);w.thickness=th;w.depth=depth;lines.push_back(w);};
- for(size_t i=1;i<sh.pathPoints.size();++i)line(sh.pathPoints[i-1],sh.pathPoints[i],c.pathColor,2.f);
- if(c.showThinking)for(auto& p:sh.thinkPoints)line(p,std::array<float,3>{p[0],p[1]+.4f,p[2]},c.thinkingColor,1.f);
- if(sh.hasGoal){WorldBox b{};memcpy(b.low,sh.goalBox,12);memcpy(b.high,sh.goalBox+3,12);memcpy(b.color,c.goalColor,16);b.depth=depth;boxes.push_back(b);}}
+// Path: a flat ribbon 0.16 wide just above the walking surface with a thin centre line, both fading towards the end of
+// the path; goal: a frame on its floor, a faint fill and a vertical beam fading upwards (taller for a column goal);
+// thinking: short faint ticks. Colours come from the settings (Nickel orange by default).
+inline void PfDraw(std::vector<WorldLine>& lines,std::vector<WorldBox>& boxes,std::vector<WorldQuad>& quads){auto& sh=PathFinder();std::lock_guard<std::mutex> l(sh.guard);if(!sh.enabled.load())return;
+ const PfConfig& c=sh.drawCfg;const bool depth=!c.throughWalls;(void)boxes;
+ auto tint=[](const float* base,float a,float* out){out[0]=base[0];out[1]=base[1];out[2]=base[2];out[3]=base[3]*a;};
+ auto line=[&](const float* a,const float* b,const float* colA,const float* colB,float th){WorldLine w{};memcpy(w.a,a,12);memcpy(w.b,b,12);memcpy(w.colorA,colA,16);memcpy(w.colorB,colB,16);w.thickness=th;w.depth=depth;lines.push_back(w);};
+ auto quad=[&](const float p[4][3],const float* col){WorldQuad q{};memcpy(q.p,p,sizeof(q.p));memcpy(q.color,col,16);q.depth=depth;quads.push_back(q);};
+ const size_t n=sh.pathPoints.size();
+ for(size_t i=1;i<n;++i){const auto& a=sh.pathPoints[i-1];const auto& b=sh.pathPoints[i];const float fa=1.f-.6f*(float)(i-1)/(float)(n-1),fb=1.f-.6f*(float)i/(float)(n-1);
+  const float A[3]={a[0],a[1]-.07f,a[2]},B[3]={b[0],b[1]-.07f,b[2]};float dx=B[0]-A[0],dz=B[2]-A[2];const float len=std::sqrt(dx*dx+dz*dz);float px=.08f,pz=0;if(len>.001f){px=-dz/len*.08f;pz=dx/len*.08f;}
+  const float P[4][3]={{A[0]+px,A[1],A[2]+pz},{B[0]+px,B[1],B[2]+pz},{B[0]-px,B[1],B[2]-pz},{A[0]-px,A[1],A[2]-pz}};float fill[4];tint(c.pathColor,.35f*(fa+fb)*.5f,fill);quad(P,fill);
+  float ca[4],cb[4];tint(c.pathColor,fa,ca);tint(c.pathColor,fb,cb);const float lA[3]={A[0],A[1]+.01f,A[2]},lB[3]={B[0],B[1]+.01f,B[2]};line(lA,lB,ca,cb,2.f);}
+ if(c.showThinking){float tc[4];tint(c.thinkingColor,.6f,tc);for(auto& p:sh.thinkPoints){const float a[3]={p[0],p[1]-.05f,p[2]},b[3]={p[0],p[1]+.15f,p[2]};line(a,b,tc,tc,1.f);}}
+ if(sh.hasGoal){const float* g=sh.goalBox;const float x0=g[0]+.06f,x1=g[3]-.06f,z0=g[2]+.06f,z1=g[5]-.06f,y=g[1]+.02f,cx=(g[0]+g[3])*.5f,cz=(g[2]+g[5])*.5f,tall=g[4]-g[1]>1.5f?6.f:2.5f;
+  float edge[4],fill[4],beamA[4],beamB[4];tint(c.goalColor,1.f,edge);tint(c.goalColor,.18f,fill);tint(c.goalColor,.85f,beamA);tint(c.goalColor,0.f,beamB);
+  const float F[4][3]={{x0,y,z0},{x1,y,z0},{x1,y,z1},{x0,y,z1}};quad(F,fill);for(int k=0;k<4;++k)line(F[k],F[(k+1)%4],edge,edge,2.5f);
+  const float b0[3]={cx,y,cz},b1[3]={cx,y+tall,cz};line(b0,b1,beamA,beamB,3.f);}}
 
 // ---- commands and script API (callable from any thread)
 inline void PfQueue(PfCommandRequest r){auto& sh=PathFinder();std::lock_guard<std::mutex> l(sh.guard);if(sh.queue.size()<32)sh.queue.push_back(std::move(r));}

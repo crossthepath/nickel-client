@@ -26,6 +26,18 @@ inline bool SkinSavePng(const std::wstring& path,const uint8_t* rgba,UINT w,UINT
  std::vector<uint8_t> bgra(rgba,rgba+(size_t)w*h*4);for(size_t i=0;i+3<bgra.size();i+=4)std::swap(bgra[i],bgra[i+2]);
  return SUCCEEDED(fr->WritePixels(h,w*4,w*h*4,bgra.data()))&&SUCCEEDED(fr->Commit())&&SUCCEEDED(e->Commit());}
 inline std::wstring SkinWide(const std::string& t){int n=MultiByteToWideChar(CP_UTF8,0,t.c_str(),-1,nullptr,0);std::wstring w(n>0?n-1:0,L'\0');if(n>0)MultiByteToWideChar(CP_UTF8,0,t.c_str(),-1,w.data(),n);return w;}
+// MiniMap player heads: the 8 x 8 face of a player's skin (scaled down from larger skins) with the hat layer over it, from
+// the level's player list like Skin Stealer. out = 64 opaque RGBA pixels. False when the player or the skin is unavailable.
+inline bool SkinFaceOf(const Context& c,uint64_t actor,uint8_t* out){
+ uintptr_t reg{},el{};uint32_t en{};uint64_t unique{},level{};if(!ActorEntity(actor,&reg,&en)||!Element(reg,en,"ActorUniqueIDComponent",8,&el)||!Read(el,&unique)||!Read(c.actor+0x200,&level)||!level)return false;
+ const uint64_t listOf=Virtual0(c,level,0x9f8);uint64_t list{},head{},node{},entry=0;if(!listOf||!CallGetter(listOf,level,&list)||!list||!Read(list+8,&head)||!head||!Read(head,&node))return false;
+ for(int guard=0;guard<4096&&node&&node!=head;++guard){uint64_t key{};if(Read(node+0x20,&key)&&key==unique){entry=node+0x20;break;}if(!Read(node,&node))break;}
+ uint64_t skin{},data{},size{};int32_t format{};uint32_t w{},h{};
+ if(!entry||!Read(entry+0xa0,&skin)||!skin||!Read(skin+0x80,&format)||format!=4||!Read(skin+0x84,&w)||!Read(skin+0x88,&h)||w<64||h<32||w>1024||h>1024||!Read(skin+0xa0,&data)||!data||!Read(skin+0xa8,&size)||size<(uint64_t)w*h*4)return false;
+ const uint64_t f=w/64;
+ for(int y=0;y<8;++y)for(int x=0;x<8;++x){uint32_t base{},hat{};const uint64_t row=(8*f+y*f)*w;if(!Read(data+4*(row+8*f+x*f),&base)||!Read(data+4*(row+40*f+x*f),&hat))return false;
+  const uint32_t px=(hat>>24)>=128?hat:base;memcpy(out+4*(y*8+x),&px,4);out[4*(y*8+x)+3]=255;}
+ return true;}
 inline void SkinStealerWork(){Context c{};if(!Local(&c))return;uint64_t level{},hit{},holder{},actor{};int32_t kind{};uint32_t entity{};uintptr_t owners{},slot{};
  auto say=[&](const std::string& text){ClientMessage(c,text);};
  bool target=Read(c.actor+0x200,&level)&&level;if(target){const uint64_t get=Virtual0(c,level,0xa78);target=get&&CallGetter(get,level,&hit)&&hit&&Read(hit+0x18,&kind)&&kind==1&&Read(hit+0x38,&holder)&&holder&&Read(hit+0x48,&entity);}

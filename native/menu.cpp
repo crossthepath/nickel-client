@@ -1,4 +1,5 @@
 #include "menu_icons.hpp"
+#include "hud_map_faces.hpp"
 #include "icon_codepoints.hpp"
 #include "game_sky.hpp"
 #include "game_block_esp.hpp"
@@ -2031,7 +2032,7 @@ void DrawHud(ImTextureID logo){
    if(useHitbox&&live){std::vector<game::WorldLine> boxes;if(game::HitboxLines(origin,boxes))worldFrame.lines.insert(worldFrame.lines.end(),boxes.begin(),boxes.end());}
   if(useBacktrackBox&&live){std::vector<game::WorldLine> ghost;if(game::BacktrackLines(origin,ghost))worldFrame.lines.insert(worldFrame.lines.end(),ghost.begin(),ghost.end());}
   if(useMlgBox&&live){std::vector<game::WorldLine> rescue;if(game::AutoMlgLines(origin,rescue))worldFrame.lines.insert(worldFrame.lines.end(),rescue.begin(),rescue.end());}
-  if(usePf&&live)game::PfDraw(worldFrame.lines,worldFrame.boxes);
+  if(usePf&&live)game::PfDraw(worldFrame.lines,worldFrame.boxes,worldFrame.quads);
    if(useChests&&live){std::vector<std::array<float,6>> chests;{auto& shared=game::Chests();AcquireSRWLockShared(&shared.lock);chests=shared.boxes;ReleaseSRWLockShared(&shared.lock);}
     const ImVec4 fill=colorOf(chestEsp,"fill",ImVec4(1,1,0,.25f)),ink=colorOf(chestEsp,"outline",ImVec4(1,1,0,1));const bool outline=Flag(*chestEsp,"draw_outline",true);const float thickness=num(*chestEsp,"thickness",1.5f);const auto edge=rgba(ink,1);
     for(const auto& c:chests){game::WorldBox box{};box.low[0]=c[0];box.low[1]=c[1];box.low[2]=c[2];box.high[0]=c[3];box.high[1]=c[4];box.high[2]=c[5];box.color[0]=fill.x;box.color[1]=fill.y;box.color[2]=fill.z;box.color[3]=fill.w;box.depth=false;worldFrame.boxes.push_back(box);
@@ -2261,7 +2262,7 @@ void DrawHud(ImTextureID logo){
  // ---- MiniMap: square of Size (+17 with coordinates), anchored at (0.985, 0.02), Background Color fill.
  // Terrain is a 16W x 16W texel ring buffer filled on the game thread (game_map.hpp), drawn as 1 to 4 quads at
  // (Size/2)/Zoom px per block, north up or view direction up (Rotate With Player). Mobs: face from the embedded atlas
- // (10 x 9 cells of 64 px) with half-size Icon Size / 2 and a frame in the type colour, otherwise a dot of radius
+ // built from the game's own textures (hud_map_faces.hpp) with half-size Icon Size / 2 and a frame in the type colour, otherwise a dot of radius
  // Icon Size x 0.3. Compass N / E / S / W at 12, white arrow, 2 px black border (alpha 220), coordinates at 14 below.
  // Terrain is uploaded to the GPU at most five times per second.
  static Module* minimap=ModuleById("minimap");static bool mapKeyChecked=false;
@@ -2270,7 +2271,8 @@ void DrawHud(ImTextureID logo){
  if(minimap&&minimap->enabled){
   game::Player player{};float yaw=0;const bool live=game::ReadPlayer(&player)&&game::ReadYaw(&yaw);auto& map=game::Map();
   if(live){static bool hooked=false;if(!hooked){hooked=true;game::InstallMapHooks(WriteLog);}static bool told=false,first=false;if(map.fault&&!told){told=true;if(WriteLog)WriteLog("MiniMap: a fault was caught while reading the terrain; the terrain is disabled until the game restarts");}
-   if(!first&&map.chunksRead&&WriteLog){first=true;char line[120]{};snprintf(line,sizeof(line),"MiniMap: first terrain chunks read (%ld), lowest Y %d, dimension %d",map.chunksRead,map.minimumY,map.dimension);WriteLog(line);}}
+   if(!first&&map.chunksRead&&WriteLog){first=true;char line[120]{};snprintf(line,sizeof(line),"MiniMap: first terrain chunks read (%ld), lowest Y %d, dimension %d",map.chunksRead,map.minimumY,map.dimension);WriteLog(line);}
+   static long loadTold=-1;static int loadLines=0;const long loadMs=map.loadMs;if(loadMs>=50&&loadMs!=loadTold&&loadLines<8&&WriteLog){loadTold=loadMs;++loadLines;char line[96]{};snprintf(line,sizeof(line),"MiniMap: every visible chunk read in %ld ms",loadMs);WriteLog(line);}}
   auto pick=[&](const char* id,ImVec4 fallback){auto setting=Find(*minimap,id);return setting&&setting->kind=="color"&&setting->text.size()==9?ParseColor(setting->text):fallback;};
   if(live||hudEditing){
    auto& place=Place("minimap",io.DisplaySize.x-170,10);const float k=place.scale,size=num(*minimap,"size",144)*k,opacity=num(*minimap,"opacity",100)/100,zoom=std::max(1.f,num(*minimap,"zoom",64));
@@ -2290,13 +2292,16 @@ void DrawHud(ImTextureID logo){
      for(int i=0;i<nx;++i)for(int j=0;j<nz;++j){const float x0=xs[i],x1=xs[i+1],z0=zs[j],z1=zs[j+1],ox=std::floor((x0+x1)/2/period)*period,oz=std::floor((z0+z1)/2/period)*period,u0=(x0-ox)/period,u1=(x1-ox)/period,v0=(z0-oz)/period,v1=(z1-oz)/period;
       d->AddImageQuad(GetImage(2),screen(x0,z0),screen(x1,z0),screen(x1,z1),screen(x0,z1),ImVec2(u0,v0),ImVec2(u1,v0),ImVec2(u1,v1),ImVec2(u0,v1),tint);}}}
    if(live){static game::Mob mobs[128];static int count=0;static double next=0;if(ImGui::GetTime()>=next){next=ImGui::GetTime()+.1;count=game::ReadMobs(mobs,128,zoom*1.42f+1);}
-    // mob faces: drawn from image 4 when an atlas is loaded there. No atlas is shipped (it would be game textures), so
-    // mobs are drawn as dots until one is built from the player's own Minecraft resources.
-    static const int faces[][2]={{0x130a,0},{0x130b,1},{0x130c,2},{0x130d,3},{0x530e,4},{0x100030f,5},{0x1000373,5},{0x1310,6},{0x2311,7},{0x1312,8},{0x8113,9},{0x314,10},{0x315,11},{0x5316,12},{0x205317,13},{0x131c,14},{0x131d,15},{0x531e,16},{0x231f,17},{0x205318,18},{0x205319,19},{0x21531a,20},{0x21531b,21},{0x30b20,22},{0xb21,23},{0x110b22,24},{0x40b23,25},{0x10b24,26},{0xb25,27},{0xb26,28},{0x40b27,29},{0x40b28,30},{0xb29,31},{0xb2a,32},{0xb2b,33},{0x30b2c,34},{0x30b74,34},{0xb2d,35},{0x110b2e,36},{0x30b2f,37},{0x110b30,38},{0xb31,39},{0xb32,40},{0x10b34,41},{0xb35,42},{0xb36,43},{0x40b37,44},{0xb39,45},{0x10b3a,46},{0xb3b,47},{0x134a,48},{0x534b,49},{0xb68,50},{0xb69,51},{0x236c,52},{0x236d,53},{0x30b6e,54},{0x236f,55},{0x2370,56},{0x1371,57},{0xb72,58},{0x376,59},{0x1379,60},{0x17a,61},{0x17b,62},{0x137c,63},{0x137d,64},{0x10b7e,65},{0x17f,66},{0x1380,67},{0x2381,68},{0x1382,69},{0xb83,70},{0x1384,71},{0x2385,72},{0x186,73},{0x139d,74},{0x138a,75},{0x138b,76},{0xb8c,77},{0x138e,78},{0x110b90,79},{0x1393,80},{0x394,81},{0x2395,82},{0x12396,83},{0x110b97,84},{0x11398,85},{0xb99,86}};
-    const float icon=num(*minimap,"icon_size",10)*k;const bool wantFaces=Flag(*minimap,"mob_faces",true)&&GetImage&&GetImage(4);
+    // faces: built from the game's own entity textures and the players' skins (hud_map_faces.hpp, image 4); a mob
+    // whose face cannot be built stays a dot.
+    const bool wantFaces=Flag(*minimap,"mob_faces",true)&&GetImage&&UpdateImage;auto& atlas=mapfaces::Faces();
+    if(wantFaces){icons::ReadPackFile=ReadPackFileForIcons;game::Context fc{};const bool local=game::Local(&fc);atlas.Work(2,[&](uint64_t actor){return local?game::EntityId(fc,actor):std::string();},WriteLog);
+     if(atlas.dirty&&ImGui::GetTime()-atlas.uploaded>.2){atlas.dirty=false;atlas.uploaded=ImGui::GetTime();UpdateImage(4,atlas.pixels.data(),mapfaces::Atlas::Size,mapfaces::Atlas::Size);}}
+    auto faceUv=[](int cell,ImVec2* uv0,ImVec2* uv1){const float n=(float)mapfaces::Atlas::PerRow,c=(float)(cell%mapfaces::Atlas::PerRow),r=(float)(cell/mapfaces::Atlas::PerRow);*uv0=ImVec2(c/n,r/n);*uv1=ImVec2((c+1)/n,(r+1)/n);};
+    const float icon=num(*minimap,"icon_size",10)*k;
     for(int i=0;i<count;++i){const bool hostile=mobs[i].hostile;if(!Flag(*minimap,hostile?"show_hostile_mobs":"show_passive_mobs",true))continue;const ImVec2 way=project(mobs[i].dx,mobs[i].dz),at(centre.x+way.x*scale,centre.y+way.y*scale);if(std::fabs(at.x-centre.x)>size/2-icon/2||std::fabs(at.y-centre.y)>size/2-icon/2)continue;
-     ImVec4 color=pick(hostile?"hostile_color":"passive_color",ImVec4(1,1,1,1));color.w*=opacity;const ImU32 ink=ImGui::ColorConvertFloat4ToU32(color);int face=-1;if(wantFaces)for(auto& entry:faces)if(entry[0]==mobs[i].type){face=entry[1];break;}
-     if(face>=0){const int column=face%10,row=face/10;const ImVec2 uv0((column+1/128.f)/10,(row+1/128.f)/9),uv1((column+1-1/128.f)/10,(row+1-1/128.f)/9),lo(at.x-icon/2,at.y-icon/2),hi(at.x+icon/2,at.y+icon/2);d->AddImage(GetImage(4),lo,hi,uv0,uv1,IM_COL32(255,255,255,(int)(255*opacity)));d->AddRect(lo,hi,ink,0,0,k);}
+     ImVec4 color=pick(hostile?"hostile_color":"passive_color",ImVec4(1,1,1,1));color.w*=opacity;const ImU32 ink=ImGui::ColorConvertFloat4ToU32(color);const int face=wantFaces?atlas.Mob(mobs[i].type,mobs[i].actor):-1;
+     if(face>=0&&GetImage(4)){ImVec2 uv0,uv1;faceUv(face,&uv0,&uv1);const ImVec2 lo(at.x-icon/2,at.y-icon/2),hi(at.x+icon/2,at.y+icon/2);d->AddRectFilled(ImVec2(lo.x-k,lo.y-k),ImVec2(hi.x+k,hi.y+k),IM_COL32(0,0,0,(int)(200*opacity)));d->AddImage(GetImage(4),lo,hi,uv0,uv1,IM_COL32(255,255,255,(int)(255*opacity)));d->AddRect(ImVec2(lo.x-k,lo.y-k),ImVec2(hi.x+k,hi.y+k),ink,0,0,k);}
      else{d->AddCircleFilled(at,icon*.3f+k,IM_COL32(0,0,0,(int)(200*opacity)));d->AddCircleFilled(at,icon*.3f,ink);}}
     // players: Show Players; type 0 player / 1 teammate (Teams). Excluded: bots (Anti Bot), invisible actors (flag 5)
     // and those out of range. Arrow oriented by head yaw, unit IconSize*s*0.5/7, Player Color / Teammate Color.
@@ -2317,6 +2322,11 @@ void DrawHud(ImTextureID logo){
       const float r=theirYaw*3.14159265f/180;const ImVec2 dir=project(-std::sin(r),std::cos(r)),right(-dir.y,dir.x);
       auto pt=[&](float side,float ahead,float grow){return ImVec2(at.x+(right.x*side+dir.x*ahead)*unit*grow,at.y+(right.y*side+dir.y*ahead)*unit*grow);};
       ImVec4 c=pick(e.teammate?"teammate_color":"player_color",e.teammate?ImVec4(.3f,1,.3f,1):ImVec4(1,1,1,1));c.w*=opacity;
+      const int face=wantFaces?atlas.PlayerFace(e.actor,ImGui::GetTime(),[&](uint64_t actor,unsigned char* px){game::Context pc{};return game::Local(&pc)&&game::SkinFaceOf(pc,actor,px);}):-1;
+      if(face>=0&&GetImage(4)){   // skin face in a frame of the player / teammate colour, with a notch towards the head direction
+       const float half=icon*.6f;ImVec2 uv0,uv1;faceUv(face,&uv0,&uv1);const ImU32 col=ImGui::ColorConvertFloat4ToU32(c);const ImVec2 lo(at.x-half,at.y-half),hi(at.x+half,at.y+half);
+       d->AddTriangleFilled(ImVec2(at.x+dir.x*(half+4*k)*1.f,at.y+dir.y*(half+4*k)),ImVec2(at.x+dir.x*half+right.x*half*.55f,at.y+dir.y*half+right.y*half*.55f),ImVec2(at.x+dir.x*half-right.x*half*.55f,at.y+dir.y*half-right.y*half*.55f),col);
+       d->AddRectFilled(ImVec2(lo.x-k*1.5f,lo.y-k*1.5f),ImVec2(hi.x+k*1.5f,hi.y+k*1.5f),col,2*k);d->AddImage(GetImage(4),lo,hi,uv0,uv1,IM_COL32(255,255,255,(int)(255*opacity)));continue;}
       for(int pass=0;pass<2;++pass){const float grow=pass?1.f:1.4f;const ImU32 col=pass?ImGui::ColorConvertFloat4ToU32(c):IM_COL32(0,0,0,(int)(200*opacity));d->AddTriangleFilled(pt(0,7,grow),pt(5,-5,grow),pt(0,-2,grow),col);d->AddTriangleFilled(pt(0,7,grow),pt(0,-2,grow),pt(-5,-5,grow),col);}}}}
    {const ImVec2 forward=rotate?ImVec2(0,-1):ImVec2(hx,hz),right(-forward.y,forward.x);auto point=[&](float side,float ahead,float grow){return ImVec2(centre.x+(right.x*side+forward.x*ahead)*k*grow,centre.y+(right.y*side+forward.y*ahead)*k*grow);};
     for(int pass=0;pass<2;++pass){const float grow=pass?1.f:1.4f;const ImU32 color=pass?IM_COL32(255,255,255,(int)(255*opacity)):IM_COL32(0,0,0,(int)(200*opacity));d->AddTriangleFilled(point(0,7,grow),point(5,-5,grow),point(0,-2,grow),color);d->AddTriangleFilled(point(0,7,grow),point(0,-2,grow),point(-5,-5,grow),color);}}

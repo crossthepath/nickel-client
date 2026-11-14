@@ -128,14 +128,14 @@ inline int ReadPlayerNames(PlayerNames* out,uint64_t* rva){
 // (int32: bit 0x100 = mob, 0xb00 = hostile, 0x13f = player), RenderPositionComponent. Players are deliberately excluded
 // (PlayerComponent or type 0x13f): showing other players' positions would be an unfair advantage.
 // Invisible entities (ActorDataFlagComponent) are not filtered.
-struct Mob{float dx,dz;bool hostile;int type;};
+struct Mob{float dx,dz;bool hostile;int type;uint64_t actor;};   // actor: for the MiniMap face (0 when unknown)
 inline int ReadMobs(Mob* out,int capacity,float range){
  Context context{};uintptr_t owners{},types{},positions{},players{},mine{};float origin[3];if(!Local(&context)||!Storage(context.registry,Fnv("ActorOwnerComponent"),&owners)||!Storage(context.registry,Fnv("ActorTypeComponent"),&types)||!Storage(context.registry,Fnv("RenderPositionComponent"),&positions))return 0;
  if(!InStorage(positions,context.entity,12,&mine)||!Floats(mine,origin,3))return 0;const bool hasPlayers=Storage(context.registry,Fnv("PlayerComponent"),&players);
  uint64_t begin{},end{};if(!Read(owners+0x20,&begin)||!Read(owners+0x28,&end)||end<begin||(end-begin)%4||(end-begin)>4*65536)return 0;int count=0;
  for(uint64_t at=begin;at<end&&count<capacity;at+=4){uint32_t entity{},packed{};uintptr_t element{};int32_t type{};float position[3];if(!Read(at,&entity))return count;if(entity>=0xfffc0000u||entity==context.entity)continue;
   if(!InStorage(types,entity,4,&element)||!Read(element,&type)||type==0x13f||!((type>>8)&1)||(hasPlayers&&Packed(players,entity,&packed)))continue;
-  if(!InStorage(positions,entity,12,&element)||!Floats(element,position,3))continue;const float dx=position[0]-origin[0],dz=position[2]-origin[2];if(std::fabs(dx)>range||std::fabs(dz)>range)continue;out[count++]={dx,dz,(type&0xb00)==0xb00,type};}
+  if(!InStorage(positions,entity,12,&element)||!Floats(element,position,3))continue;const float dx=position[0]-origin[0],dz=position[2]-origin[2];if(std::fabs(dx)>range||std::fabs(dz)>range)continue;uint64_t actor{};if(!InStorage(owners,entity,8,&element)||!Read(element,&actor))actor=0;out[count++]={dx,dz,(type&0xb00)==0xb00,type,actor};}
  return count;
 }
 
@@ -179,6 +179,10 @@ inline void EntityNameCall(uint64_t key,uint64_t i18n,uint64_t translate,uint64_
  __try{uint64_t first[4]{0,0,0,15},second[4]{0,0,0,15},empty[2]{};reinterpret_cast<void*(*)(uint64_t,uint64_t*)>(key)(actor,first);
   reinterpret_cast<void*(*)(uint64_t,uint64_t*,uint64_t*,uint64_t*)>(translate)(i18n,second,first,empty);Text((uintptr_t)second,out,capacity);}__except(EXCEPTION_EXECUTE_HANDLER){out[0]=0;}
 }
+// Entity id from the actor's name key ("entity.cow.name" -> "cow", actor vtable +0xf0); empty when unknown.
+inline void EntityKeyCall(uint64_t key,uint64_t actor,char* out,size_t capacity){__try{uint64_t text[4]{0,0,0,15};reinterpret_cast<void*(*)(uint64_t,uint64_t*)>(key)(actor,text);Text((uintptr_t)text,out,capacity);}__except(EXCEPTION_EXECUTE_HANDLER){out[0]=0;}}
+inline std::string EntityId(const Context& context,uint64_t actor){char raw[96]{};const uint64_t key=actor?Virtual0(context,actor,0xf0):0;if(!key)return {};EntityKeyCall(key,actor,raw,sizeof(raw));
+ std::string k=raw;if(k.rfind("entity.",0)!=0)return {};k.erase(0,7);const size_t end=k.rfind(".name");if(end!=std::string::npos)k.erase(end);const size_t colon=k.find(':');if(colon!=std::string::npos)k.erase(0,colon+1);return k;}
 inline void EntityName(const Context& context,uint64_t actor,char* out,size_t capacity){
  struct Known{uint64_t table;char name[64];};static Known known[32]{};static int next=0;out[0]=0;uint64_t table{};if(!Read(actor,&table)||!table)return;
  for(auto& entry:known)if(entry.table==table){strncpy_s(out,capacity,entry.name,_TRUNCATE);return;}
