@@ -18,6 +18,7 @@
 #include "lualib.h"
 #include "luacode.h"
 #include "generated_catalog.hpp"
+#include "menu_catalog.hpp"
 #include "game_read.hpp"
 #include "media.hpp"
 #include "game_events.hpp"
@@ -324,11 +325,9 @@ void InitializeMenu(HMODULE module){
   for(auto& o:item.settings)if(o.dependsOn>=0)++o.dependsOn;item.settings.insert(item.settings.begin(),st);}
  // Custom Sky mode names.
  for(auto& item:modules)if(item.id=="custom_sky")for(auto& setting:item.settings)if(setting.id=="mode"){setting.kind="enum";setting.options={"Aurora","Nebula","Galaxy","IonStorm","GoldenHour"};if(std::find(setting.options.begin(),setting.options.end(),setting.text)==setting.options.end())setting.text="Aurora";}
- // Block ESP per-block styles (Default / Gradient / Rainbow / Solid, at most 7), stored in a hidden setting as
- // "name,mode,#colour1,#colour2" entries separated by ";" (mode g / r / s).
- // Keystrokes: keys chosen in the HUD layout editor, "forward,left,back,right,jump,attack,use" (0 = the game's binding)
- for(auto& item:modules)if(item.id=="keystrokes"&&!item.settings.empty()){Setting st=item.settings.front();st.id="custom_keys";st.name="Custom Keys";st.description="";st.kind="hidden";st.text="";st.options.clear();st.dependsOn=-1;st.unit="";item.settings.push_back(st);}
- for(auto& item:modules)if(item.id=="block_esp"&&!item.settings.empty()){Setting st=item.settings.front();st.id="block_styles";st.name="Block Styles";st.description="";st.kind="hidden";st.text="";st.options.clear();st.dependsOn=-1;st.unit="";item.settings.push_back(st);}
+ // Block ESP per-block styles (Default / Gradient / Rainbow / Solid, at most 7) and the keys chosen in the HUD layout
+ // editor for Keystrokes, stored in hidden settings (menu_catalog.hpp).
+ AddEditorSettings(modules);
  // Custom Crosshair: 17 x 17 "Pattern" grid, visible when Shape = Custom.
  for(auto& item:modules)if(item.id=="custom_crosshair")for(auto& st:item.settings)if(st.id=="shape"&&st.dependsOn==0)st.dependsOn=-1;   // Shape depends on nothing (the catalogue linked it to itself)
  for(auto& item:modules)if(item.id=="custom_crosshair"&&!item.settings.empty()){bool has=false;for(auto& st:item.settings)if(st.id=="pattern")has=true;if(!has){int shape=0;for(int i=0;i<(int)item.settings.size();++i)if(item.settings[i].id=="shape")shape=i;

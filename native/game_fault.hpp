@@ -50,4 +50,33 @@ template<class... P,class... A>inline bool GuardBool(const char* where,volatile 
 template<class... P,class... A>inline void GuardVoid(const char* where,volatile long* stopped,void(*f)(P...),A... a){
  if(!f||FeatureStopped(stopped))return;__try{f(a...);}__except(FeatureFault(where,stopped,GetExceptionInformation())){FeatureFlush();}}
 
+// Sites that stay stopped until restart and log their call path (Combat). Same two steps as FeatureFault /
+// FeatureFlush: the filter only copies the exception and the top of the faulting thread's stack (no lock, no
+// allocation, no formatting); FaultTraceFlush, called from the __except block after unwinding, writes the lines
+// through faultLog: "<where>: fault <code> at <module>+0x<offset> (address 0x<data>); stopped until restart", then
+// "<where>: stack +0x.. +0x.." (up to 8 return addresses into the faulting module).
+//   __try{Work();}__except(game::FaultTraceFilter("Name",GetExceptionInformation())){fault=true;game::FaultTraceFlush();}
+struct FaultTrace{const char* where;DWORD code;uintptr_t address,data;int words;bool pending;uint64_t stack[256];};
+inline thread_local FaultTrace faultTrace{};
+inline bool FaultReadWord(const uint64_t* p,uint64_t* out){__try{*out=*p;return true;}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
+inline int FaultTraceFilter(const char* where,EXCEPTION_POINTERS* e){
+ if(!e||!e->ExceptionRecord)return EXCEPTION_EXECUTE_HANDLER;
+ FaultTrace& t=faultTrace;const auto* r=e->ExceptionRecord;
+ t.where=where;t.code=r->ExceptionCode;t.address=reinterpret_cast<uintptr_t>(r->ExceptionAddress);
+ t.data=r->NumberParameters>1?r->ExceptionInformation[1]:0;t.words=0;
+ if(e->ContextRecord){const uint64_t* sp=reinterpret_cast<const uint64_t*>(e->ContextRecord->Rsp);while(t.words<256&&FaultReadWord(sp+t.words,&t.stack[t.words]))++t.words;}
+ t.pending=true;return EXCEPTION_EXECUTE_HANDLER;}
+inline void FaultTraceFlush(){
+ FaultTrace& t=faultTrace;if(!t.pending)return;t.pending=false;auto log=faultLog;if(!log)return;
+ const char* where=t.where?t.where:"?";HMODULE mod{};char name[MAX_PATH]="?";
+ if(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCSTR>(t.address),&mod))GetModuleFileNameA(mod,name,MAX_PATH);
+ const char* base=strrchr(name,'\\');char line[400];
+ snprintf(line,sizeof(line),"%s: fault %08lx at %s+0x%llx (address 0x%llx); stopped until restart",where,t.code,base?base+1:name,
+  (unsigned long long)(t.address-reinterpret_cast<uintptr_t>(mod)),(unsigned long long)t.data);log(line);
+ MODULEINFO info{};if(!mod||!K32GetModuleInformation(GetCurrentProcess(),mod,&info,sizeof(info)))return;
+ const uintptr_t lo=(uintptr_t)mod,hi=lo+info.SizeOfImage;char path[512];int n=snprintf(path,sizeof(path),"%s: stack",where),found=0;
+ for(int i=0;i<t.words&&found<8&&n>0&&n<(int)sizeof(path);++i){const uint64_t v=t.stack[i];
+  if(v>lo&&v<hi){n+=snprintf(path+n,sizeof(path)-n," +0x%llx",(unsigned long long)(v-lo));++found;}}
+ if(found)log(path);}
+
 }  // namespace game

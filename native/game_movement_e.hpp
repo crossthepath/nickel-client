@@ -800,9 +800,18 @@ inline void PfFinishSearch(PfController& k,const PfSelf& s,bool){
  if(S.status==1){ok=PfBuildPath(S,S.endNode);complete=ok;}else if(!proven&&PfPartial(S))ok=true;
  {auto& sh=PathFinder();std::lock_guard<std::mutex> l(sh.guard);sh.thinkPoints=S.sample;}
  const bool cont=k.contSearch;k.contSearch=false;
- if(ok){   // a next segment is appended when it starts where the current path ends; a partial result schedules the next one
-  if(cont&&k.hasPath&&!k.path.empty()&&!S.moves.empty()&&S.moves.front().from==k.path.back().to)k.path.insert(k.path.end(),S.moves.begin(),S.moves.end());else if(!cont||!k.hasPath)k.path=S.moves;
-  k.hasPath=true;k.pathComplete=complete;k.exec.stall=0;k.retry=false;k.contPending=!complete;if(!complete)k.contNs=PfNow();}
+ // A next segment is appended when it starts where the current path ends; when the player already walked the whole
+ // partial path, the segment (which starts where that path ended) becomes the path. A segment that no longer joins the
+ // path is dropped and searched again: marking the path complete without it would report an arrival short of the goal.
+ // A partial result schedules the next segment.
+ bool joined=true;
+ if(ok){
+  if(!cont||!k.hasPath)k.path=S.moves;
+  else if(!k.path.empty()&&!S.moves.empty()&&S.moves.front().from==k.path.back().to)k.path.insert(k.path.end(),S.moves.begin(),S.moves.end());
+  else if(k.path.empty())k.path=S.moves;
+  else joined=false;}
+ if(ok&&!joined){k.contPending=true;k.contNs=PfNow();}
+ else if(ok){k.hasPath=true;k.pathComplete=complete;k.exec.stall=0;k.retry=false;k.contPending=!complete;if(!complete)k.contNs=PfNow();}
  else{k.noPath=true;if(!k.hasPath){k.retry=true;k.retryNs=PfNow();}
   // why: a problem with the goal cell itself, else the closest cell the search could reach
   uint32_t best=0;for(uint32_t i=1;i<S.nodes.size();++i)if(S.nodes[i].h<S.nodes[best].h)best=i;const PfP closest=S.nodes.empty()?S.start:S.nodes[best].p;

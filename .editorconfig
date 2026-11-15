@@ -1,0 +1,63 @@
+# Editor settings for Nickel (https://editorconfig.org). They never rewrite untouched lines of the files as they are
+# today. Line endings follow .gitattributes, which remains the authority for what git stores.
+# See docs/contributing/formatting.md.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+# Windows-native formats are checked out with CRLF (.gitattributes).
+[*.{ps1,cmd,sln,csproj,rc}]
+end_of_line = crlf
+
+# C, C++, C# and XAML: no indent size here. New code uses four spaces (.clang-format for C and C++), while most existing
+# files use one; editors that detect a file's indentation (Visual Studio adaptive formatting, VS Code) then keep each
+# file consistent with itself.
+
+[*.py]
+indent_size = 4
+
+[*.{yml,yaml,csproj}]
+indent_size = 2
+
+[{CMakeLists.txt,*.cmake}]
+indent_size = 2
+
+# Two trailing spaces are a hard line break in Markdown.
+[*.md]
+trim_trailing_whitespace = false
+
+# The only first-party file saved with a byte order mark; keep it so that saving the file does not change its first bytes.
+[native/game_read.hpp]
+charset = utf-8-bom
+
+# Generated and third-party files: no rule may rewrite them on save. Regenerate generated files with their tool under
+# tools/; vendor/ and third_party/ are upstream git submodules.
+[{native/generated_*.hpp,ui/catalog.js}]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+indent_style = unset
+indent_size = unset
+
+# Signed release fixtures are compared byte for byte with their signature: saving one must not add or remove anything.
+[tests/fixtures/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+indent_style = unset
+indent_size = unset
+
+[{vendor/**,third_party/**}]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+indent_style = unset
+indent_size = unset

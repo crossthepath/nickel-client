@@ -1,6 +1,8 @@
 // Fault boundaries (native/game_fault.hpp): a faulting subscriber is logged once, skipped afterwards, and does not stop
 // the other subscribers or the caller. Runs without the game (Windows, MSVC structured exceptions).
+#include <chrono>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "game_fault.hpp"
@@ -12,6 +14,13 @@ volatile int calls=0,healthyCalls=0;   // volatile: the count is stored before t
 bool Faulty(uintptr_t){++calls;volatile int* nowhere=nullptr;return *nowhere==1;}   // access violation
 bool Healthy(uintptr_t packet){++healthyCalls;return packet==42;}
 void FaultyVoid(int,int){++calls;RaiseException(0xE0000001,0,0,nullptr);}
+// Trace sites (FaultTraceFilter / FaultTraceFlush): the fault happens while the log's own lock is held, as when a feature
+// faults inside the log or the heap. The log must be written after unwinding, once the lock is released.
+std::timed_mutex logLock;bool logBlocked=false;
+void LockedLog(const char* line){if(!logLock.try_lock_for(std::chrono::seconds(2))){logBlocked=true;return;}logged.push_back(line);logLock.unlock();}
+void FaultHoldingLogLock(){std::lock_guard<std::timed_mutex> hold(logLock);volatile int* nowhere=nullptr;*nowhere=1;}
+volatile int traceHandled=0;
+void TraceSite(){__try{FaultHoldingLogLock();}__except(game::FaultTraceFilter("Trace site",GetExceptionInformation())){traceHandled=1;game::FaultTraceFlush();}}
 int failures=0;
 void Check(bool ok,const char* what){if(!ok){++failures;std::printf("FAILED: %s\n",what);}}
 }  // namespace
@@ -49,6 +58,14 @@ int main(){
  Check(!game::FeatureStopped(&stopped),"a stopped site runs again in the next world");
  game::GuardBool("Test subscriber",&stopped,Faulty,(uintptr_t)1);
  Check(calls==7&&game::FeatureStopped(&stopped)&&logged.size()==5&&logged[4].find("Test subscriber: fault c0000005")==0,"the site faults again: stopped and logged once more");
+ // a trace site logs its fault and call path only after unwinding (never inside the exception filter)
+ logged.clear();game::faultLog=LockedLog;TraceSite();game::faultLog=Log;
+ Check(traceHandled==1,"trace site: the fault is handled");
+ Check(!logBlocked,"trace site: nothing is logged while the faulting code still holds the log's lock");
+ Check(!logged.empty()&&logged[0].find("Trace site: fault c0000005 at ")==0&&logged[0].find("; stopped until restart")!=std::string::npos,
+       "trace site: one line with the site, the exception code and \"stopped until restart\"");
+ Check(logged.size()==2&&logged[1].find("Trace site: stack +0x")==0,"trace site: a second line with the call path");
+ logged.clear();game::FaultTraceFlush();Check(logged.empty(),"trace site: a flush without a new fault writes nothing");
  if(failures){std::printf("%d fault boundary check(s) failed\n",failures);return 1;}
  std::printf("fault boundary checks passed\n");return 0;
 }

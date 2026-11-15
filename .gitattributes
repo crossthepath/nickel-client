@@ -12,3 +12,6 @@
 *.ttf binary
 *.woff2 binary
 *.dxbc binary
+
+# Signed release fixtures: stored and checked out byte for byte (their signature covers the exact bytes).
+tests/fixtures/** -text
