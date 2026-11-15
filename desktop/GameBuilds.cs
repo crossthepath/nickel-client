@@ -58,6 +58,9 @@ public static class GameBuilds
   ]),
  ];
 
+ /// <summary>The validated game versions for display, for example "1.26.62 / 1.26.63".</summary>
+ public static string SupportedVersions => string.Join(" / ", Validated.Select(b => $"{b.Major}.{b.Minor}.{b.Build}").Distinct());
+
  /// <summary>True for the file name of the game's executable (any folder).</summary>
  public static bool IsGameImage(string path) => string.Equals(Path.GetFileName(path), "Minecraft.Windows.exe", StringComparison.OrdinalIgnoreCase);
 

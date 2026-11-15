@@ -36,3 +36,19 @@ module that needs it is enabled, so an unused feature never touches the game.
 - **Background threads**: work that may block, such as the Discord presence pipe and lyric lookups.
 
 See [hooks](hooks.md), [modules](modules.md) and [rendering](rendering.md) for the details.
+
+## Game builds
+
+Nickel supports the game builds listed in `native/game_build.hpp` and `desktop/GameBuilds.cs` (kept identical by
+`tools/check_game_builds.py`). A build is recognised by its version, entry point, load-time directories and the
+SHA-256 of its code, constant, data, unwind and relocation sections; the launcher also hashes the code loaded in the
+game process, and the overlay hashes it again before it installs any hook.
+
+The code is written with the addresses of the reference build, 1.26.62.1. Other builds of the same game code get a
+translation profile produced by `tools/port_build.py <reference exe> <new exe> <version>`: it pairs the functions of
+both builds, checks that every function holding an address Nickel uses is identical once relative fields are masked,
+maps data addresses through the instructions that reference them, and writes `native/generated_build_<version>.hpp`.
+At run time `game::Rva()` translates an address to the running build and `game::CodeIs()` checks expected code bytes
+(exactly in the reference build, with RIP-relative and rel32 fields masked in a translated one). Every game address in
+`native/` must be written as `base+Rva(0x...)`; ctest fails when one is not, or when a translated build does not
+cover it. A build whose code differs in a function Nickel uses cannot be translated and needs a real port.
