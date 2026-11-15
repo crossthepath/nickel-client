@@ -12,6 +12,7 @@
 // was an integer that fits (ids and byte counts above 2^53 keep every digit).
 //
 // Not the menu's permissive reader (icons::Json in menu_icons.hpp), which reads trusted local files.
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -96,8 +97,8 @@ public:
     bool AsBool(bool fallback = false) const { return type_ == Type::Bool ? bool_ : fallback; }
     double AsDouble(double fallback = 0) const { return type_ == Type::Number ? number_ : fallback; }
 
-    // True with the exact value when the number is an integer that fits int64 (written without fraction or exponent,
-    // or a whole double within +-2^53).
+    // True with the exact value when the number is an integer that fits int64: parsed text that denotes an integer
+    // ("12", "1.2e1"), or a whole double within +-2^53 given to MakeNumber.
     bool GetInt64(int64_t* out) const {
         if (type_ != Type::Number || !exactInt_) {
             return false;
@@ -592,21 +593,90 @@ private:
         }
         const char* first = text_.data() + start;
         const char* last = text_.data() + pos_;
+        const std::string_view written(first, static_cast<size_t>(last - first));
+        const Decimal decimal = AnalyzeDecimal(written);
         double number = 0;
         const auto parsed = std::from_chars(first, last, number);
-        if (parsed.ec != std::errc() || parsed.ptr != last || !std::isfinite(number)) {
+        if (parsed.ec == std::errc::result_out_of_range && parsed.ptr == last && decimal.leadExponent < 0) {
+            number = written[0] == '-' ? -0.0 : 0.0;  // valid JSON below the smallest double: an underflow to zero
+        } else if (parsed.ec != std::errc() || parsed.ptr != last || !std::isfinite(number)) {
             return Fail("number out of range");
         }
         out = Value::MakeNumber(number);
+        // The text alone says whether the number is an integer: "2.5e1" is 25, while "9007199254740992.5" is not an
+        // integer even though its double, 2^53, is whole.
+        out.exactInt_ = false;
         int64_t exact = 0;
-        if (integer) {
-            const auto asInt = std::from_chars(first, last, exact);
-            if (asInt.ec == std::errc() && asInt.ptr == last) {
-                out.int_ = exact;
-                out.exactInt_ = true;
-            }
+        if (ExactInteger(written, decimal, integer, &exact)) {
+            out.int_ = exact;
+            out.exactInt_ = true;
         }
         return true;
+    }
+
+    // A number text as significant digits times a power of ten.
+    struct Decimal {
+        std::string digits;         // without leading or trailing zeros; empty for zero
+        long long exponent = 0;     // the value is digits * 10^exponent
+        long long leadExponent = 0; // power of ten of the first significant digit (0 for zero)
+    };
+
+    // `text` already matches the JSON number grammar.
+    static Decimal AnalyzeDecimal(std::string_view text) {
+        Decimal decimal;
+        size_t i = text[0] == '-' ? 1 : 0;
+        for (; i < text.size() && text[i] >= '0' && text[i] <= '9'; ++i) {
+            decimal.digits += text[i];
+        }
+        if (i < text.size() && text[i] == '.') {
+            for (++i; i < text.size() && text[i] >= '0' && text[i] <= '9'; ++i) {
+                decimal.digits += text[i];
+                --decimal.exponent;
+            }
+        }
+        if (i < text.size() && (text[i] == 'e' || text[i] == 'E')) {
+            ++i;
+            const bool negative = text[i] == '-';
+            if (text[i] == '+' || text[i] == '-') {
+                ++i;
+            }
+            long long power = 0;
+            for (; i < text.size(); ++i) {
+                power = (std::min)(power * 10 + (text[i] - '0'), 1000000000LL);  // far beyond any double
+            }
+            decimal.exponent += negative ? -power : power;
+        }
+        const size_t significant = decimal.digits.find_first_not_of('0');
+        if (significant == std::string::npos) {
+            decimal = Decimal();
+            return decimal;
+        }
+        decimal.digits.erase(0, significant);
+        while (decimal.digits.back() == '0') {
+            decimal.digits.pop_back();
+            ++decimal.exponent;
+        }
+        decimal.leadExponent = decimal.exponent + static_cast<long long>(decimal.digits.size()) - 1;
+        return decimal;
+    }
+
+    static bool ExactInteger(std::string_view text, const Decimal& decimal, bool integer, int64_t* out) {
+        if (integer) {
+            const auto asInt = std::from_chars(text.data(), text.data() + text.size(), *out);
+            return asInt.ec == std::errc() && asInt.ptr == text.data() + text.size();
+        }
+        if (decimal.digits.empty()) {
+            *out = 0;
+            return true;
+        }
+        if (decimal.exponent < 0 || decimal.leadExponent >= 19) {
+            return false;  // a fraction, or more digits than any int64
+        }
+        std::string whole = text[0] == '-' ? "-" : "";
+        whole += decimal.digits;
+        whole.append(static_cast<size_t>(decimal.exponent), '0');
+        const auto asInt = std::from_chars(whole.data(), whole.data() + whole.size(), *out);
+        return asInt.ec == std::errc() && asInt.ptr == whole.data() + whole.size();
     }
 
     std::string_view text_;

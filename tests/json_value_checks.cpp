@@ -2,6 +2,7 @@
 // refuses (the text comes from the network), exact integers, Unicode escapes, limits, and serialization round trips.
 #include "json_value.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
@@ -60,6 +61,22 @@ void ExactIntegers() {
             "beyond int64: a double, not an exact integer");
     Check(Parse("1.5", &value) && !value.GetInt64(&exact), "a fraction is not an integer");
     Check(Parse("2e3", &value) && value.GetInt64(&exact) && exact == 2000, "a whole number written with an exponent");
+    Check(Parse("9007199254740992.5", &value) && !value.GetInt64(&exact) && value.AsDouble() == 9007199254740992.0,
+            "a fraction whose double rounds to 2^53 is not reported as an exact integer");
+    Check(Parse("9007199254740990.7", &value) && !value.GetInt64(&exact), "a fraction rounding to a whole double");
+    Check(Parse("1.5e1", &value) && value.GetInt64(&exact) && exact == 15, "a fraction with an exponent can be whole");
+    Check(Parse("1500e-2", &value) && value.GetInt64(&exact) && exact == 15, "a negative exponent can be whole");
+    Check(Parse("-0.0", &value) && value.GetInt64(&exact) && exact == 0, "negative zero is the integer 0");
+    Check(Parse("9.3e18", &value) && !value.GetInt64(&exact), "a whole number beyond int64 written with an exponent");
+    Check(Parse("9.2e18", &value) && value.GetInt64(&exact) && exact == 9200000000000000000LL,
+            "a whole number near int64 written with an exponent");
+    Check(Parse("1e-400", &value) && value.AsDouble() == 0.0 && !value.GetInt64(&exact),
+            "a number below the smallest double underflows to zero");
+    Check(Parse("-1e-400", &value) && value.AsDouble() == 0.0 && std::signbit(value.AsDouble()),
+            "a negative underflow keeps its sign");
+    Check(Parse("0." + std::string(400, '0') + "1", &value) && value.AsDouble() == 0.0,
+            "an underflow written without exponent");
+    Check(Parse("5e-324", &value) && value.AsDouble() > 0.0, "the smallest denormal is kept");
     Check(Serialize(Value::MakeInt(9007199254740993LL)) == "9007199254740993", "exact integers serialize exactly");
     Check(Serialize(Value::MakeNumber(0.1)) == "0.1", "doubles serialize in their shortest form");
     Check(Serialize(Value::MakeNumber(std::numeric_limits<double>::infinity())) == "null",
@@ -115,6 +132,7 @@ void Grammar() {
     Check(!Accepts("+1"), "a plus sign is refused");
     Check(!Accepts("NaN") && !Accepts("Infinity"), "NaN and Infinity are refused");
     Check(!Accepts("1e400"), "a number that overflows a double is refused");
+    Check(!Accepts("-1e400") && !Accepts("1" + std::string(400, '0')), "every overflow is refused");
     Check(!Accepts("tru"), "a truncated literal is refused");
     Check(!Accepts("[1] [2]"), "two values are refused");
     Check(!Accepts("// c\n1"), "comments are refused");
