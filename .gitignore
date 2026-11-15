@@ -18,6 +18,10 @@ tools/*
 !tools/shader_inspect.cpp
 !tools/build_icon_font.py
 !tools/icon_table.py
+!tools/same_tokens.py
+!tools/compare_build.py
+!tools/compare_objects.py
+!tools/compare_images.py
 !tools/release-signer/
 tools/release-signer/bin/
 tools/release-signer/obj/
