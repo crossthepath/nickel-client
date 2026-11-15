@@ -586,7 +586,7 @@ public partial class MainWindow : Window
   var text = T(label, 14.5, SemiBold, "#0d0d0f"); text.Foreground = load.Label; load.Content.Children.Add(text);
   load.Surface.Cursor = LoadIsClickable ? Cursors.Hand : Cursors.Arrow;
   load.Surface.ToolTip = loaded && message != "" ? message : null;
-  var error = failed && !waiting && !loaded ? message : "";
+  var error = MonitorTick.Notice(waiting, loaded, failed, message, monitorError);
   homeNoticeText.Text = error; homeNotice.Visibility = error == "" ? Visibility.Collapsed : Visibility.Visible;
  }
  private void FinishLoaded() { loaded = true; failed = false; message = $"Press {SharedPreferences.MenuKey.Name} in Minecraft to open the menu."; Refresh(); if (preferences.CloseAfterLoading) Close(); }
@@ -629,7 +629,7 @@ public partial class MainWindow : Window
  }
 
  private bool polling;
- private string monitorError = "";   // message shown for a failed check, cleared by the next good one
+ private string monitorError = "";   // error of the last Minecraft check ("" when it worked)
  /// <summary>Looks for Minecraft on a worker thread once per second, then updates the window on the UI thread. A check
  /// that throws never closes the launcher (MonitorTick): its error is shown and the next tick checks again.</summary>
  private async void Monitor_Tick(object? sender, EventArgs e)
@@ -639,11 +639,8 @@ public partial class MainWindow : Window
   var error = await MonitorTick.Run(MonitorOnce);
   polling = false;
   if (closed) return;
-  if (error != null)
-  {
-   if (!busy && !loaded && (message == "" || message == monitorError)) { message = monitorError = "Nickel could not check for Minecraft (" + error.Message + "). Retrying."; Refresh(); }
-  }
-  else if (monitorError != "") { if (message == monitorError) { message = ""; Refresh(); } monitorError = ""; }
+  var text = error == null ? "" : "Nickel could not check for Minecraft (" + error.Message + "). Retrying.";
+  if (text != monitorError) { monitorError = text; Refresh(); }   // shown under Load while nothing is loading (Refresh)
  }
  private async Task MonitorOnce()
  {
