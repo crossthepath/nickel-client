@@ -78,6 +78,8 @@
 #include "game_items.hpp"
 #include "game_sound.hpp"
 #include "game_player_b.hpp"
+#include "public_page.hpp"      // PUBLIC: what the pages do (public_ui.hpp draws them)
+#include "public_session.hpp"   // PUBLIC: the launcher's sign-in, read for stars
 #include "generated_arrow_shape.hpp"
 #include "../include/nickel/visual_projection.hpp"
 #include "../include/nickel/visual_world.hpp"
@@ -159,7 +161,7 @@ void WindowFont(float px){ImDrawList* list=ImGui::GetWindowDrawList();if(!window
  ImFont* font=Sized(regular,px);if(std::fabs(font->FontSize-px)<1.f)px=font->FontSize;ImGui::PushFont(font);ImGui::SetWindowFontScale(px/font->FontSize);windowFonts.push_back(list);}
 void EndChildWindow(){if(!windowFonts.empty()&&windowFonts.back()==ImGui::GetWindowDrawList()){ImGui::PopFont();windowFonts.pop_back();}ImGui::EndChild();}   // same for a child window
 void EndWindow(){if(!windowFonts.empty()&&windowFonts.back()==ImGui::GetWindowDrawList()){ImGui::PopFont();windowFonts.pop_back();}ImGui::End();}
-const char* names[]={"Combat","Movement","Player","Visuals","Utility","HUD","Settings","Configs","Scripting","Schematics","Wardrobe"};
+const char* names[]={"Combat","Movement","Player","Visuals","Utility","HUD","Settings","Configs","Scripting","Schematics","Wardrobe","Scripts","Configs"};   // 11, 12: PUBLIC (public_ui.hpp)
 const char* glyphs[]={"\xee\x80\x80","\xee\x80\x81","\xee\x80\x82","\xee\x80\x83","\xee\x80\x84","\xee\x80\x83","\xee\x80\x85","\xee\x80\x87","\xee\x80\x88","\xee\x80\xa2","\xee\x80\xa8"};
 std::wstring configPath;RECT previousClip{};int cursorBalance=0;
 // Settings screen entries: label, description, key and default value.
@@ -169,7 +171,7 @@ std::wstring configPath;RECT previousClip{};int cursorBalance=0;
 // range 4.5, delay 75 ms, 1 placement per tick.
 struct MenuOption{const char* key;const char* title;const char* description;bool value;bool initial;};
 MenuOption interfaceOptions[]={{"background-blur","Background blur","Blurs the entire game behind the menu.",false,false},{"module-descriptions","Module descriptions","Shows descriptions on module cards and when you hover over a setting.",true,true},{"remember-menu-state","Remember menu state","Keeps your search, selected module and open settings when you close the menu.",false,false},{"auto-save-config","Auto save config","Saves setting changes to your current config automatically.",false,false},{"open-in-menus","Open in menus","Lets the menu and keybinds work while chat, pause or another game screen is open.",false,false},{"blur-theme","Blur theme","Blurs the theme background behind the menu so text and modules stand out.",false,false}};   // "Open in menus" lets client keys work while another game screen is open
-MenuOption connectionOptions[]={{"raknet-fallback","RakNet fallback","Joins servers added by address over RakNet when they give no NetherNet answer, instead of failing. Applies from the next join.",true,true},{"force-raknet","Force RakNet","Always joins servers added by address over RakNet, even when they also accept NetherNet. Applies from the next join.",false,false}};
+MenuOption connectionOptions[]={{"raknet-fallback","RakNet fallback","Joins servers added by address over RakNet when they give no NetherNet answer, instead of failing. Applies from the next join.",true,true},{"force-raknet","Force RakNet","Always joins servers added by address over RakNet, even when they also accept NetherNet. Applies from the next join.",false,false},{"public-community","Online community (PUBLIC)","Lists the scripts and configs players share on nickelclient.com. While off, Nickel sends nothing to the site.",false,false}};   // [2]: PublicOption() in public_ui.hpp
 MenuOption socialOptions[]={{"render-nametag-logo","Render nametag logo","Shows the Nickel logo next to Nickel players in the same world.",true,true},{"render-cosmetics","Render cosmetics","Shows the cosmetics other Nickel players are wearing.",true,true},{"first-person-cosmetics","First person cosmetics","Shows your own cosmetics while in first person.",false,false}};
 void JumpPreAll(uint64_t a7,uint64_t a8);void JumpPostAll(uint64_t a8);
 MenuOption schematicOptions[]={{"schematic-hide-placed","Hide placed blocks","Hides ghost blocks that already match the world.",true,true},{"schematic-block-outline","Block outline","Outlines every ghost block that still needs placing.",true,true},{"schematic-block-info","Block info","Shows the schematic block you're looking at and what it is.",true,true},{"schematic-auto-place","Auto place","Places schematic blocks from your hotbar while you hold right click.",false,false},{"schematic-ghost-place","Ghost place","Places without visibly switching your hotbar slot or swinging.",false,false}};
@@ -363,7 +365,7 @@ void InitializeMenu(HMODULE module){
   if(GetEnvironmentVariableA("NICKEL_REVIEW_CONFIG",value,sizeof(value)))configSelected=value;   // offline review of the details panel
   if(GetEnvironmentVariableA("NICKEL_REVIEW_BLUR",value,sizeof(value)))interfaceOptions[0].value=true;
   if(GetEnvironmentVariableA("NICKEL_REVIEW_THEME",value,sizeof(value))){themeIndex=std::clamp(atoi(value),0,themeCount-1);themeLive.ready=false;}   // offline review of a theme
-  if(GetEnvironmentVariableA("NICKEL_REVIEW_TAB",value,sizeof(value))){tab=std::clamp(atoi(value),0,10);if(tab<6)category=tab;}
+  if(GetEnvironmentVariableA("NICKEL_REVIEW_TAB",value,sizeof(value))){tab=std::clamp(atoi(value),0,12);if(tab<6)category=tab;}
   if(GetEnvironmentVariableA("NICKEL_REVIEW_SELECT",value,sizeof(value)))for(int i=0;i<(int)modules.size();++i)if(modules[i].id==value)selected=i;
   if(GetEnvironmentVariableA("NICKEL_REVIEW_HUD",value,sizeof(value))){hudEditing=true;   // offline review of the HUD editor: a few elements enabled in memory, one selected
    for(auto& item:modules)for(const char* id:{"fps","clock","coordinates","speedometer","keystrokes","module_list","direction","server_ip","effect_display","spotify_manager","ping","reach_display","combo_counter","totem_pop_counter","target_hud","player_list","armor_hud","minimap","debug_overlay","notifications"})if(item.id==id)item.enabled=true;notices.push_back({5,"Full Bright","Enabled"});notices.push_back({7,"Configs","Loaded config 'pvp'"});hudSelected="clock";
@@ -2683,6 +2685,7 @@ void DrawConfigs(ImVec2 origin,float s,float opacity){
 void JumpPreAll(uint64_t a7,uint64_t a8){game::Move2JumpPre(a7,a8);game::LongJumpPre(a7,a8);ScriptsJumpPre(a7,a8);}   // jump hook #16: No Jump Delay, then scripts
 void JumpPostAll(uint64_t a8){game::Move2JumpPost(a8);game::LongJumpPost(a8);ScriptsJumpPost(a8);}
 #include "schematic_ui.hpp"
+#include "public_ui.hpp"
 // Details panel for the selected config, inside the floating right panel.
 // Rows (height / gap in u): title 22/4 (or field + Save 32/10), "Updated ..." 16/10, rule 1/10, MODULES 12/6 then one
 // bar per category 14/6, Load | Save here 32/6, Rename | Duplicate 32/6, Delete 32/10.
@@ -2874,6 +2877,7 @@ bool FontsRebuild(){if(fontPending.empty()||ImGui::GetTime()-fontRequestedAt<.15
  fontPending.clear();if(!added)return false;ImGui::GetIO().Fonts->Build();SaveFontSizes();return true;}
 void DrawMenu(float opacity,ImTextureID logo){
  windowFonts.clear();   // a new frame starts with no pushed window font
+ PublicTick();   // PUBLIC answers (installs, revocations, updates) are handled even while the menu is closed
  // "Background blur": blurred game frame under the HUD and the menu, faded with the menu opening
  if(opacity>0&&interfaceOptions[0].value&&RequestBlur){auto* under=ImGui::GetBackgroundDrawList();if(auto blurred=RequestBlur(under))under->AddImage(blurred,ImVec2(0,0),ImGui::GetIO().DisplaySize,ImVec2(0,0),ImVec2(1,1),Rgba(255,255,255,opacity));}
  // "Auto save config": every change is copied into the most recently loaded or created config
@@ -2893,7 +2897,7 @@ void DrawMenu(float opacity,ImTextureID logo){
  ImVec2 origin(std::floor((io.DisplaySize.x-menuW*s)/2),std::floor((io.DisplaySize.y-menuH*s)/2));
  if(menuX>=0&&menuY>=0){origin.x=std::floor(std::clamp(menuX,8.f,std::max(8.f,io.DisplaySize.x-8-menuW*s)));origin.y=std::floor(std::clamp(menuY,8.f,std::max(8.f,io.DisplaySize.y-8-menuH*s)));}
  // keep the settings panel on screen: in a narrow window the menu shifts left
- const bool panel=(tab<6&&selected>=0)||tab==7||tab==8;if(panel&&!dragMode&&origin.x+(menuW+19+297)*s>io.DisplaySize.x-8)origin.x=std::max(8.f,std::floor(io.DisplaySize.x-8-(menuW+19+297)*s));
+ const bool panel=(tab<6&&selected>=0)||tab==7||tab==8||PublicTab(tab);if(panel&&!dragMode&&origin.x+(menuW+19+297)*s>io.DisplaySize.x-8)origin.x=std::max(8.f,std::floor(io.DisplaySize.x-8-(menuW+19+297)*s));
  auto P=[&](float x,float y){return ImVec2(origin.x+x*s,origin.y+y*s);};
  ImGui::SetNextWindowPos(origin);ImGui::SetNextWindowSize(ImVec2(menuW*s,menuH*s));ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(0,0));ImGui::PushStyleVar(ImGuiStyleVar_Alpha,opacity);
  ImGui::Begin("##NickelInGame",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoBringToFrontOnFocus|(opened.load()?0:ImGuiWindowFlags_NoInputs));
@@ -2905,7 +2909,7 @@ void DrawMenu(float opacity,ImTextureID logo){
   const ImVec2 mouse=io.MousePos,corner=P(menuW,menuH);const float grip=7;auto close=[&](float a,float b){return std::fabs(a-b)<=grip;};
   const bool inside=mouse.x>=origin.x-grip&&mouse.x<=corner.x+grip&&mouse.y>=origin.y-grip&&mouse.y<=corner.y+grip;int edge=0;
   if(inside){if(close(mouse.x,origin.x))edge|=1;if(close(mouse.x,corner.x))edge|=2;if(close(mouse.y,origin.y))edge|=4;if(close(mouse.y,corner.y))edge|=8;}
-  const bool header=inside&&!edge&&mouse.y<origin.y+64*s&&mouse.x>origin.x+244*s&&mouse.x<corner.x-(tab==5?425:tab<6?270:tab==7||tab==8?296:140)*s;const int mode=dragMode?dragMode:edge;
+  const bool header=inside&&!edge&&mouse.y<origin.y+64*s&&mouse.x>origin.x+244*s&&mouse.x<corner.x-(tab==5?425:tab<6?270:tab==7||tab==8||PublicTab(tab)?296:140)*s;const int mode=dragMode?dragMode:edge;
   if(mode&&mode!=16)ImGui::SetMouseCursor(((mode&3)&&(mode&12))?((((mode&1)&&(mode&4))||((mode&2)&&(mode&8)))?ImGuiMouseCursor_ResizeNWSE:ImGuiMouseCursor_ResizeNESW):(mode&3)?ImGuiMouseCursor_ResizeEW:ImGuiMouseCursor_ResizeNS);
   auto keep=[&]{auto write=[&](const wchar_t* key,float value){WritePrivateProfileStringW(L"menu",key,std::to_wstring(value).c_str(),configPath.c_str());};write(L"width",menuW);write(L"height",menuH);write(L"scale",menuScale);write(L"x",menuX);write(L"y",menuY);};
   if(header&&ImGui::IsMouseDoubleClicked(0)){menuW=1012;menuH=578;menuScale=1;menuX=menuY=-1;dragMode=0;keep();}
@@ -2930,18 +2934,24 @@ void DrawMenu(float opacity,ImTextureID logo){
  if(logo)d->AddImage(logo,P(26,24),P(56,54),ImVec2(0,0),ImVec2(1,1),Rgba(255,255,255,opacity));
  {Label(d,semibold,20*s,P(66,28),"Nickel",Rgba(255,255,255,opacity));const float pill=66+TextWidth(semibold,20,"Nickel")+10;
   const float pillW=16+TextWidth(semibold,11,"V1 Beta");d->AddRectFilled(P(pill,31),P(pill+pillW,51),Rgba(35,35,44,opacity),0);Label(d,semibold,11*s,P(pill+8,34.5f),"V1 Beta",Rgba(148,148,160,opacity));}
- const float otherTop=menuH-48-3*34.f;   // OTHER sits at the bottom of the column: Schematics ends 16 u above the edge
- Label(d,semibold,10.5f*s,P(28,88),"FEATURES",Rgba(120,120,132,opacity));Label(d,semibold,10.5f*s,P(28,otherTop-18),"OTHER",Rgba(120,120,132,opacity));
- for(int i=0;i<10;++i){
-  const float y=i<6?106.f+i*34.f:otherTop+(i-6)*34.f;bool active=tab==i;auto id="nav"+std::to_string(i);const float hover=NavHover(id,Hover(P(16,y),ImVec2(212*s,32*s))?1:0,io.DeltaTime);
-  if(active)d->AddRectFilled(P(16,y),P(228,y+32),Rgba(20,20,27,opacity),0);else if(hover>.001f)d->AddRectFilled(P(16,y),P(228,y+32),Rgba(15,15,20,hover*opacity),0);
-  DrawIcon(d,i,P(27,y+7.5f),17*s,active?Acc(opacity):Rgba(148,148,160,opacity));Label(d,semibold,13.5f*s,P(52,y+8),names[i],active?Rgba(255,255,255,opacity):Rgba(148,148,160,opacity));
-  if(Hit(id.c_str(),P(16,y),ImVec2(212*s,32*s))){tab=i;if(i<6)category=i;selected=-1;listening=-1;search[0]=0;}
+ // Three groups: FEATURES (tabs 0-5), PUBLIC (11, 12) and OTHER (6-9). Entries are drawn 2 u shorter than their pitch
+ // (32 u at the default height); OTHER sits at the bottom of the column when there is room, and in a short menu the
+ // pitch shrinks so that every entry stays inside the column.
+ const float pitch=std::clamp((menuH-194.f)/12.f,19.f,32.f),entryH=pitch-2,publicCaption=106+6*pitch+16,publicTop=publicCaption+18;
+ const float otherTop=std::max(menuH-26-4*pitch,publicTop+2*pitch+16+18);
+ Label(d,semibold,10.5f*s,P(28,88),"FEATURES",Rgba(120,120,132,opacity));Label(d,semibold,10.5f*s,P(28,publicCaption),"PUBLIC",Rgba(120,120,132,opacity));Label(d,semibold,10.5f*s,P(28,otherTop-18),"OTHER",Rgba(120,120,132,opacity));
+ static const int order[12]={0,1,2,3,4,5,11,12,6,7,8,9};
+ for(int n=0;n<12;++n){const int i=order[n];
+  const float y=n<6?106.f+n*pitch:n<8?publicTop+(n-6)*pitch:otherTop+(n-8)*pitch;bool active=tab==i;auto id="nav"+std::to_string(i);const float hover=NavHover(id,Hover(P(16,y),ImVec2(212*s,pitch*s))?1:0,io.DeltaTime);
+  if(active)d->AddRectFilled(P(16,y),P(228,y+entryH),Rgba(20,20,27,opacity),0);else if(hover>.001f)d->AddRectFilled(P(16,y),P(228,y+entryH),Rgba(15,15,20,hover*opacity),0);
+  const float glyph=std::min(17.f,entryH-4);DrawIcon(d,i,P(27,y+(entryH-glyph)/2),glyph*s,active?Acc(opacity):Rgba(148,148,160,opacity));Label(d,semibold,13.5f*s,P(52,y+(entryH-16)/2),names[i],active?Rgba(255,255,255,opacity):Rgba(148,148,160,opacity));
+  if(PublicTab(i)&&Public().page&&Public().page->AnyUpdate(PublicKindOf(i)))d->AddCircleFilled(P(210,y+entryH/2),2.5f*s,Acc(opacity));   // an installed item of this kind has an update
+  if(Hit(id.c_str(),P(16,y),ImVec2(212*s,pitch*s))){tab=i;if(i<6)category=i;selected=-1;listening=-1;search[0]=0;}
  }
  // ---- right side: animated theme background, a header on top and a floating panel (#0F0F14, radius 20, border #1A1A21)
  // Compact header on every page: "Nickel / <page>" in small type at the height of the search field (module pages add
 // the module count next to it and the enabled count left of the search field), so the panel starts right below.
-const bool modulesTab=tab<6;const float panelTop=64.f;const std::string crumb=std::string("Nickel  /  ")+(modulesTab&&search[0]?"Search":names[tab]);
+const bool modulesTab=tab<6;const float panelTop=64.f;const std::string crumb=std::string("Nickel  /  ")+(PublicTab(tab)?"Public  /  ":"")+(modulesTab&&search[0]?"Search":names[tab]);
  Label(d,regular,12.5f*s,P(266,31),crumb.c_str(),Rgba(255,255,255,.8f*opacity));const float crumbEnd=266+TextWidth(regular,12.5f,crumb.c_str());
  d->AddRectFilled(P(254,panelTop),P(menuW-12,menuH-12),Rgba(15,15,20,.97f*opacity),0);d->AddRect(P(254,panelTop),P(menuW-12,menuH-12),Rgba(26,26,33,opacity),0);
  // "Edit layout" opens the HUD layout editor. It sits 8 u left of the search field at the same height;
@@ -3011,6 +3021,7 @@ const bool modulesTab=tab<6;const float panelTop=64.f;const std::string crumb=st
  else if(tab==7)DrawConfigs(origin,s,opacity);
  else if(tab==8)DrawScripting(origin,s,opacity);
  else if(tab==9)DrawSchematics(origin,s,opacity);
+ else if(PublicTab(tab))DrawPublic(origin,s,opacity);
  else{ImGui::SetCursorScreenPos(P(273,90));ImGui::BeginGroup();ImGui::TextWrapped("%s","This section is being reconstructed from the original client.");ImGui::EndGroup();}
  EndWindow();
  // `selected` and `tab` may have changed during this frame (category click or the open card), so read them again
@@ -3019,6 +3030,7 @@ const bool modulesTab=tab<6;const float panelTop=64.f;const std::string crumb=st
  if(tab==7)DrawConfigPanel(P(menuW+19,0),s,opacity);
  if(tab==8)DrawScriptPanel(P(menuW+19,0),s,opacity);
  if(tab==9)DrawSchematicPanel(P(menuW+19,0),s,opacity);
+ if(PublicTab(tab))DrawPublicPanel(P(menuW+19,0),s,opacity);
  // open item profile: 0.2 s cubic entry, 6 u slide
  if(tab==6&&profileOpen>=0&&profileOpen<(int)itemProfiles.size()){const float t=std::clamp((float)(ImGui::GetTime()-profileOpenedAt)/.2f,0.f,1.f),e=1-(1-t)*(1-t)*(1-t);
   DrawSettingsPanel(profileModule,P(menuW+19+(1-e)*6,0),s,opacity*e);SyncProfile();}

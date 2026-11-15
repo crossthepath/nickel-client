@@ -207,6 +207,93 @@
         "notices": 0,
         "WriteLog": 0
       }
+    },
+    {
+      "name": "the PUBLIC pages' logic reaching into the menu or the Luau engine (public_page.hpp, public_session.hpp: ScriptLibrary only, handed in by the owner)",
+      "files": [
+        "native/public_page.hpp",
+        "native/public_session.hpp"
+      ],
+      "identifiers": [
+        "ImGui",
+        "ImDrawList",
+        "ImVec2",
+        "ImVec4",
+        "ImU32",
+        "icons",
+        "scriptGuard",
+        "ScriptsLibrary",
+        "ScriptFolder",
+        "StartScript",
+        "StopScript",
+        "ScanScripts",
+        "configPath",
+        "keybinds",
+        "notices",
+        "WriteLog"
+      ],
+      "baseline": {
+        "ImGui": 0,
+        "ImDrawList": 0,
+        "ImVec2": 0,
+        "ImVec4": 0,
+        "ImU32": 0,
+        "icons": 0,
+        "scriptGuard": 0,
+        "ScriptsLibrary": 0,
+        "ScriptFolder": 0,
+        "StartScript": 0,
+        "StopScript": 0,
+        "ScanScripts": 0,
+        "configPath": 0,
+        "keybinds": 0,
+        "notices": 0,
+        "WriteLog": 0
+      }
+    },
+    {
+      "name": "the PUBLIC pages reaching into the Luau engine (public_ui.hpp: ScriptsLibrary() and PublicPage only; Script is not counted, it is also pub::Kind::Script)",
+      "files": [
+        "native/public_ui.hpp"
+      ],
+      "identifiers": [
+        "scripts",
+        "scriptGuard",
+        "scriptSelected",
+        "scriptSearch",
+        "ScriptFolder",
+        "StartScript",
+        "StopScript",
+        "ScanScripts",
+        "ScriptLoad",
+        "ScriptUnload",
+        "ScriptNamed",
+        "ScriptHeld",
+        "ScriptHeldNames",
+        "SaveHeldList",
+        "DecideScan",
+        "scriptFiles",
+        "ScriptFilesStore"
+      ],
+      "baseline": {
+        "scripts": 0,
+        "scriptGuard": 0,
+        "scriptSelected": 0,
+        "scriptSearch": 0,
+        "ScriptFolder": 0,
+        "StartScript": 0,
+        "StopScript": 0,
+        "ScanScripts": 0,
+        "ScriptLoad": 0,
+        "ScriptUnload": 0,
+        "ScriptNamed": 0,
+        "ScriptHeld": 0,
+        "ScriptHeldNames": 0,
+        "SaveHeldList": 0,
+        "DecideScan": 0,
+        "scriptFiles": 0,
+        "ScriptFilesStore": 0
+      }
     }
   ]
 }
