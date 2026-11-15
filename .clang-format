@@ -1,0 +1,34 @@
+# C and C++ formatting for Nickel (native/, include/, src/, tests/). It records the existing look so that new code and
+# formatting-only pull requests converge on it; existing files are NOT reformatted in bulk (docs/contributing/formatting.md).
+# Generated files, vendor/ and third_party/ are excluded by .clang-format-ignore.
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++17                     # CMAKE_CXX_STANDARD in CMakeLists.txt
+UseTab: Never
+
+# The code base indents by one space per level; wrapped lines get two so they stand apart from the next statement.
+IndentWidth: 1
+ContinuationIndentWidth: 2
+ColumnLimit: 160                    # lines are written long and dense; 160 keeps most of them on one line
+
+# Includes are never reordered: several headers are included inside menu.cpp's anonymous namespace and rely on the
+# declarations that come before them, so include order is part of the program. Blank-line groups stay as written.
+SortIncludes: Never
+IncludeBlocks: Preserve
+
+# Short bodies stay on one line, as most accessors, guards and loops are written today.
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Always
+AllowShortLambdasOnASingleLine: All
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortEnumsOnASingleLine: true
+
+BreakBeforeBraces: Attach           # opening brace on the same line as the declaration or statement
+PointerAlignment: Left              # const T* value, not const T *value
+SpaceBeforeParens: Never            # if(x), for(...), while(...), as written today
+SpaceAfterTemplateKeyword: false    # template<class T>, as written today
+
+# Comments are hand-wrapped (often aligned with the code to their left); clang-format must not rewrap them.
+ReflowComments: false
