@@ -629,22 +629,30 @@ public partial class MainWindow : Window
  }
 
  private bool polling;
- /// <summary>Looks for Minecraft on a worker thread once per second, then updates the window on the UI thread.</summary>
+ private string monitorError = "";   // message shown for a failed check, cleared by the next good one
+ /// <summary>Looks for Minecraft on a worker thread once per second, then updates the window on the UI thread. A check
+ /// that throws never closes the launcher (MonitorTick): its error is shown and the next tick checks again.</summary>
  private async void Monitor_Tick(object? sender, EventArgs e)
  {
   if (polling) return;
   polling = true;
-  bool running; int single;
-  try
+  var error = await MonitorTick.Run(MonitorOnce);
+  polling = false;
+  if (closed) return;
+  if (error != null)
   {
-   (running, single) = await Task.Run(() =>
-   {
-    var processes = Process.GetProcessesByName("Minecraft.Windows");
-    try { return (processes.Length > 0, processes.Length == 1 ? processes[0].Id : 0); }
-    finally { foreach (var process in processes) process.Dispose(); }
-   });
+   if (!busy && !loaded && (message == "" || message == monitorError)) { message = monitorError = "Nickel could not check for Minecraft (" + error.Message + "). Retrying."; Refresh(); }
   }
-  finally { polling = false; }
+  else if (monitorError != "") { if (message == monitorError) { message = ""; Refresh(); } monitorError = ""; }
+ }
+ private async Task MonitorOnce()
+ {
+  var (running, single) = await Task.Run(() =>
+  {
+   var processes = Process.GetProcessesByName("Minecraft.Windows");
+   try { return (processes.Length > 0, processes.Length == 1 ? processes[0].Id : 0); }
+   finally { foreach (var process in processes) process.Dispose(); }
+  });
   if (closed) return;
   if (running != minecraftRunning) { minecraftRunning = running; if (running && failed && connection == null) { failed = false; message = ""; } Refresh(); }
   if (connection != null && !connection.IsAlive) { connection.Dispose(); connection = null; loaded = false; failed = true; message = "Minecraft closed. Start it again to load Nickel."; Refresh(); }
