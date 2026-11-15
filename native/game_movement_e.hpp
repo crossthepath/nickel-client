@@ -433,6 +433,7 @@ struct PfBuildState{std::vector<PfBuildTarget> targets;PfBuildTarget cur;bool pl
 struct PfController{
  int proc=kPfNone,state=0;PfGoal goal;bool hasGoal=false;uint64_t goalId=0,nextId=1;std::string status;std::unique_ptr<PfSearch> search;bool replanSearch=false;PfWorld world;PfOpt lastOpt;bool procBreak=true,procPlace=true;
  std::vector<PfStep> path;bool hasPath=false,pathComplete=false,arrived=false,noPath=false;PfExec exec;int64_t tick=0,planAt=0;
+ int dimension=-1;   // dimension of the last tick (-1 unknown): a change ends the running process
  std::vector<PfStuck> stuck;std::vector<PfView::Region> mobRegions;std::vector<PfP> spawners;std::unordered_map<uint64_t,uint8_t> spawnerBlocks;
  PfGotoState gotoS;PfWanderState wander;PfFollowState follow;PfMineState mine;PfTunnelState tunnel;PfBuildState build;bool userPaused=false;
  bool eating=false,eatTimer=false;int64_t eatNs=0;bool eatCool=true;int64_t eatCoolNs=0;
@@ -1247,6 +1248,11 @@ inline void PfTickWork(){
  uint64_t level{},gm{};Read(s.actor+0x200,&level);Read(s.actor+0xac8,&gm);
  const bool moved=k.world.region&&(k.world.actor!=s.actor||k.world.level!=level);
  if(moved&&k.proc!=kPfNone){PfReset(k,nullptr);PfMessage("Stopped pathing: the world changed.");}
+ // A new dimension (portal, teleport) also ends it: goals and paths are coordinates of the dimension they were set in,
+ // and the same numbers in another one lead somewhere else (the Nether is 8 times smaller), often into lava.
+ int dimension=-1;ReadDimension(&dimension);
+ if(!moved&&dimension>=0&&k.dimension>=0&&dimension!=k.dimension&&k.proc!=kPfNone){PfReset(k,&s);PfMessage("Stopped pathing: the dimension changed.");}
+ if(dimension>=0)k.dimension=dimension;
  if(moved||k.world.region!=s.region||!k.world.region||k.world.gm!=gm)PfWorldBegin(k.world,s.c,cfg,s.cell.x,s.cell.z);
  ++k.tick;PfDeathWatch(k,s);
  for(auto& c:cmds)PfApply(k,s,cfg,c);

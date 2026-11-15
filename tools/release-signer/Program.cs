@@ -47,7 +47,11 @@ if (args.Length >= 5 && args[0] == "sign")
 }
 if (args.Length >= 2 && args[0] == "verify")
 {
- var m = ReleaseTrust.Verify(File.ReadAllBytes(Path.Combine(args[1], ReleaseTrust.ManifestName)), File.ReadAllBytes(Path.Combine(args[1], ReleaseTrust.SignatureName)));
+ var manifestPath = Path.Combine(args[1], ReleaseTrust.ManifestName); var signaturePath = Path.Combine(args[1], ReleaseTrust.SignatureName);
+ foreach (var needed in new[] { manifestPath, signaturePath })
+  if (!File.Exists(needed)) { Console.WriteLine($"INVALID: {needed} is missing"); return 3; }
+ if (args.Length >= 3 && !File.Exists(args[2])) { Console.WriteLine($"INVALID: {args[2]} is missing"); return 3; }
+ var m = ReleaseTrust.Verify(File.ReadAllBytes(manifestPath), File.ReadAllBytes(signaturePath));
  if (m == null) { Console.WriteLine("INVALID: signature, key or manifest fields"); return 3; }
  if (args.Length >= 3 && !ReleaseTrust.Matches(args[2], m)) { Console.WriteLine($"INVALID: {args[2]} does not match the manifest's size and SHA-256"); return 3; }
  Console.WriteLine($"valid: {m.Version} {m.Size} bytes sha256 {m.Sha256}");
