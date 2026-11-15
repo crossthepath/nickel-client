@@ -49,15 +49,15 @@ inline bool Leather(uint64_t item){
 inline void RenderIcon(const Context& context,void* ui,uint8_t* ctx,uint64_t player,uint64_t stack,float x,float y,float scale,float alpha){
  const uint64_t item=ItemOf(stack);if(!item)return;const uint64_t image=Virtual(context,item,0x3b8),foil=Virtual(context,item,0x140);if(!image||!foil)return;
  const int frame=reinterpret_cast<int(*)(uint64_t,uint64_t,int,uint64_t,bool)>(image)(item,player,0,stack,true);
- const int kind=reinterpret_cast<int(*)(uint64_t)>(context.base+0x5757550)(stack);const bool leather=Leather(item);
- uint8_t flags=0;reinterpret_cast<void*(*)(uint8_t*,uint64_t)>(context.base+0x5757a20)(&flags,stack);
+ const int kind=reinterpret_cast<int(*)(uint64_t)>(context.base+Rva(0x5757550))(stack);const bool leather=Leather(item);
+ uint8_t flags=0;reinterpret_cast<void*(*)(uint8_t*,uint64_t)>(context.base+Rva(0x5757a20))(&flags,stack);
  uint64_t screen{},colour{},holder{},state{},level{};memcpy(&screen,ctx+0x28,8);if(!screen||!Read(screen+0x30,&colour)||!colour||!Read(screen+0x20,&holder)||!holder||!Read(holder+0x150,&state)||!state||!Read(state+0x40,&level)||!level)return;
  uint8_t saved[16];memcpy(saved,(void*)colour,16);const float before=*(float*)level;const float white[4]={1,1,1,1};memcpy((void*)colour,white,16);*(uint8_t*)(colour+16)=1;
  *(float*)level=leather?1000.f:alpha;*(uint8_t*)(state+0x31)=1;uint64_t renderer{};memcpy(&renderer,ctx+0x58,8);
  using Draw11=void(*)(uint64_t,uint8_t*,uint64_t,int,float,float,bool,float,float,float,int);using Draw13=void(*)(uint64_t,uint8_t*,int,uint64_t,float,float,float,float,float,int,bool,int,const float*);
- const Draw11 draw=reinterpret_cast<Draw11>(context.base+0x6e73e00);const auto flush=reinterpret_cast<void(*)(void*,uint8_t*,uint8_t*)>(context.base+0x4c95550);
- if(kind>=0&&kind<0xb&&((0x403u>>kind)&1)){uint64_t extra{};if(Read(screen+0xb0,&extra)&&extra){reinterpret_cast<void(*)(uint64_t)>(context.base+0x54177b0)(extra);
-   reinterpret_cast<Draw13>(context.base+0x6e749c0)(renderer,ctx,kind,stack,x,y,1.f,alpha,scale,frame,true,0x62,white);*(uint8_t*)(extra+0x255)=0;}}
+ const Draw11 draw=reinterpret_cast<Draw11>(context.base+Rva(0x6e73e00));const auto flush=reinterpret_cast<void(*)(void*,uint8_t*,uint8_t*)>(context.base+Rva(0x4c95550));
+ if(kind>=0&&kind<0xb&&((0x403u>>kind)&1)){uint64_t extra{};if(Read(screen+0xb0,&extra)&&extra){reinterpret_cast<void(*)(uint64_t)>(context.base+Rva(0x54177b0))(extra);
+   reinterpret_cast<Draw13>(context.base+Rva(0x6e749c0))(renderer,ctx,kind,stack,x,y,1.f,alpha,scale,frame,true,0x62,white);*(uint8_t*)(extra+0x255)=0;}}
  else draw(renderer,ctx,stack,frame,x,y,false,alpha,1.f,scale,0x62);
  if(leather){*(float*)level=before;*(uint8_t*)(state+0x31)=1;}
  flush(ui,ctx,&flags);*(float*)level=before;*(uint8_t*)(state+0x31)=1;
@@ -89,11 +89,11 @@ inline void ArmorWork(void* view,void* ui){
  AcquireSRWLockExclusive(&shared.lock);shared.result=result;ReleaseSRWLockExclusive(&shared.lock);InterlockedIncrement(&shared.frames);if(!result.count)return;
  // Pixel -> game UI unit ratio: *(client+0x668) + 0x40: [0],[1] size in pixels, [4],[5] size in UI units
  uint64_t gui{},game{},first{},second{},third{},screenContext{},clientOfUi{};float size[6];if(!Read(context.client+0x668,&gui)||!gui||!Floats(gui+0x40,size,6)||!(size[0]>0)||!(size[1]>0)||!(size[4]>0)||!(size[5]>0))return;
- if(!Read(context.base+0x128c0f90,&game)||!Read(game+8,&first)||!Read(first+0x20,&second)||!Read(second+0x48,&third)||!third||!Read((uintptr_t)ui+0x10,&screenContext)||!screenContext||!Read((uintptr_t)ui+8,&clientOfUi)||!clientOfUi)return;
+ if(!Read(context.base+Rva(0x128c0f90),&game)||!Read(game+8,&first)||!Read(first+0x20,&second)||!Read(second+0x48,&third)||!third||!Read((uintptr_t)ui+0x10,&screenContext)||!screenContext||!Read((uintptr_t)ui+8,&clientOfUi)||!clientOfUi)return;
  const float ratioX=size[4]/size[0],ratioY=size[5]/size[1],s=request.scale;alignas(16) uint8_t ctx[0x300];memset(ctx,0,sizeof(ctx));
- reinterpret_cast<void*(*)(uint8_t*,uint64_t,uint64_t,uint64_t)>(context.base+0x57e2560)(ctx,screenContext,clientOfUi,third);
+ reinterpret_cast<void*(*)(uint8_t*,uint64_t,uint64_t,uint64_t)>(context.base+Rva(0x57e2560))(ctx,screenContext,clientOfUi,third);
  for(int i=0;i<result.count;++i)RenderIcon(context,ui,ctx,context.actor,stacks[i],(request.x+5*s+(request.vertical?0:i*22*s))*ratioX,(request.y+5*s+(request.vertical?i*22*s:0))*ratioY,s*20*ratioX*.0625f,1.f);
- reinterpret_cast<void(*)(uint8_t*)>(context.base+0x57e29e0)(ctx);
+ reinterpret_cast<void(*)(uint8_t*)>(context.base+Rva(0x57e29e0))(ctx);
 }
 inline void ArmorGuarded(void* view,void* ui){__try{ArmorWork(view,ui);}__except(EXCEPTION_EXECUTE_HANDLER){InterlockedExchange(&Armor().fault,1);}}
 
@@ -124,8 +124,8 @@ inline uint64_t DisplayStack(const Context& context,const char* name){
  for(int visited=0;node&&node!=head&&visited<16384;++visited){char key[64]{};uint64_t holder{},found{};if(Text(node+0x18,key,sizeof(key))&&!strcmp(Bare(key),wanted)&&Read(node+0x40,&holder)&&holder&&Read(holder,&found)&&found){item=found;break;}if(!Read(node,&node))return 0;}
  Made& slot=made[next++%16];strncpy_s(slot.name,name,_TRUNCATE);slot.registry=registry;slot.stack=0;if(!item)return 0;
  uint8_t* stack=(uint8_t*)_aligned_malloc(0x98,16);if(!stack)return 0;memset(stack,0,0x98);
- reinterpret_cast<void*(*)(uint8_t*)>(context.base+0x1acc180)(stack);*(uint64_t*)stack=context.base+0xeffae80;memset(stack+0x80,0,0x18);
- reinterpret_cast<void(*)(uint8_t*,uint64_t,int,int)>(context.base+0x1a7ca40)(stack,item,1,0);slot.stack=(uint64_t)stack;return slot.stack;
+ reinterpret_cast<void*(*)(uint8_t*)>(context.base+Rva(0x1acc180))(stack);*(uint64_t*)stack=context.base+Rva(0xeffae80);memset(stack+0x80,0,0x18);
+ reinterpret_cast<void(*)(uint8_t*,uint64_t,int,int)>(context.base+Rva(0x1a7ca40))(stack,item,1,0);slot.stack=(uint64_t)stack;return slot.stack;
 }
 // Item registry names (or the blocks they place) for the settings-panel list widget: full name
 // ("minecraft:diamond_sword") = std::string at node+0x18; block = *(item+0x178), name at block+0xe8.
@@ -151,11 +151,11 @@ inline void CounterWork(void* ui){
  CounterResult result{};uint64_t shown[16]{};for(int i=0;i<request.count;++i){uint64_t stack=stacks[i];if(!stack)stack=DisplayStack(context,request.names[i]);if(!stack)continue;shown[result.count]=stack;result.amount[result.count++]=amount[i];}
  AcquireSRWLockExclusive(&shared.lock);shared.result=result;ReleaseSRWLockExclusive(&shared.lock);InterlockedIncrement(&shared.frames);if(!result.count)return;
  uint64_t gui{},game{},first{},second{},third{},screenContext{},clientOfUi{};float size[6];if(!Read(context.client+0x668,&gui)||!gui||!Floats(gui+0x40,size,6)||!(size[0]>0)||!(size[1]>0)||!(size[4]>0)||!(size[5]>0))return;
- if(!Read(context.base+0x128c0f90,&game)||!Read(game+8,&first)||!Read(first+0x20,&second)||!Read(second+0x48,&third)||!third||!Read((uintptr_t)ui+0x10,&screenContext)||!screenContext||!Read((uintptr_t)ui+8,&clientOfUi)||!clientOfUi)return;
+ if(!Read(context.base+Rva(0x128c0f90),&game)||!Read(game+8,&first)||!Read(first+0x20,&second)||!Read(second+0x48,&third)||!third||!Read((uintptr_t)ui+0x10,&screenContext)||!screenContext||!Read((uintptr_t)ui+8,&clientOfUi)||!clientOfUi)return;
  const float ratioX=size[4]/size[0],ratioY=size[5]/size[1],s=request.scale;alignas(16) uint8_t ctx[0x300];memset(ctx,0,sizeof(ctx));
- reinterpret_cast<void*(*)(uint8_t*,uint64_t,uint64_t,uint64_t)>(context.base+0x57e2560)(ctx,screenContext,clientOfUi,third);
+ reinterpret_cast<void*(*)(uint8_t*,uint64_t,uint64_t,uint64_t)>(context.base+Rva(0x57e2560))(ctx,screenContext,clientOfUi,third);
  for(int i=0;i<result.count;++i)RenderIcon(context,ui,ctx,context.actor,shown[i],(request.x+5*s+(request.vertical?0:i*22*s))*ratioX,(request.y+5*s+(request.vertical?i*22*s:0))*ratioY,s*20*ratioX*.0625f,result.amount[i]>0?1.f:.5f);
- reinterpret_cast<void(*)(uint8_t*)>(context.base+0x57e29e0)(ctx);
+ reinterpret_cast<void(*)(uint8_t*)>(context.base+Rva(0x57e29e0))(ctx);
 }
 // ---- Effect Display icons: drawn by the game during screen rendering, one "textures/ui/<name>"
 // resource-pack image per effect:
@@ -233,8 +233,8 @@ inline void ScreenDetour(void* view,void* ui){screenViewCurrent=view;ReadScreenN
 // 1: hook installed; -1: refused. Only tried once.
 inline int InstallScreenHook(void(*log)(const char*)){
  static int state=0;if(state)return state;state=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size)){if(log)log("Armor HUD: not the supported Minecraft image, no hook installed");return state;}
- const uint8_t expected[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0xb8,0x38,0x12,0x00};for(int i=0;i<16;++i){uint8_t byte{};if(!Read(base+0x4cb3430+i,&byte)||byte!=expected[i]){if(log)log("Armor HUD: unexpected bytes at the screen render function, no hook installed");return state;}}
- if(MH_CreateHook((void*)(base+0x4cb3430),(void*)ScreenDetour,(void**)&screenOriginal)!=MH_OK||MH_EnableHook((void*)(base+0x4cb3430))!=MH_OK){if(log)log("Armor HUD: MinHook could not install the screen hook");return state;}
+ const uint8_t expected[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0xb8,0x38,0x12,0x00};if(!CodeIs(base+Rva(0x4cb3430),expected,16)){if(log)log("Armor HUD: unexpected bytes at the screen render function, no hook installed");return state;}
+ if(MH_CreateHook((void*)(base+Rva(0x4cb3430)),(void*)ScreenDetour,(void**)&screenOriginal)!=MH_OK||MH_EnableHook((void*)(base+Rva(0x4cb3430)))!=MH_OK){if(log)log("Armor HUD: MinHook could not install the screen hook");return state;}
  if(log)log("Armor HUD: screen render hook installed");state=1;return state;
 }
 }

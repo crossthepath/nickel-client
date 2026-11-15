@@ -192,7 +192,7 @@ public partial class MainWindow : Window
   line.Children.Add(new Shapes.Ellipse { Width = 8, Height = 8, Fill = gameDot, VerticalAlignment = VerticalAlignment.Center });
   gameText = Wrapped(12.5, Medium, "#ffffff", 1.3); gameText.Margin = new Thickness(8, 0, 0, 0); gameText.Text = "Minecraft"; line.Children.Add(gameText);
   status.Children.Add(line);
-  var sub = Wrapped(11.5, Regular, "#787884", 1.3); sub.Text = "Bedrock 1.26.62"; sub.Margin = new Thickness(16, 3, 0, 0); status.Children.Add(sub);
+  var sub = Wrapped(11.5, Regular, "#787884", 1.3); sub.Text = "Bedrock " + GameBuilds.SupportedVersions; sub.Margin = new Thickness(16, 3, 0, 0); status.Children.Add(sub);
   layer.Children.Add(At(new Border { Width = SidebarWidth - 24, Padding = new Thickness(12, 11, 12, 11), CornerRadius = new CornerRadius(0), Background = B("#0f0f14"), Child = status }, 12, WindowHeight - 76));
   Panel.SetZIndex(layer, 1);
   Root.Children.Add(layer);
@@ -273,7 +273,7 @@ public partial class MainWindow : Window
  private Grid BuildHome()
  {
   var home = new Grid();
-  home.Children.Add(Header("Home", "Nickel Client", "Minecraft Bedrock 1.26.62  ·", "Ready", out statusText));
+  home.Children.Add(Header("Home", "Nickel Client", "Minecraft Bedrock " + GameBuilds.SupportedVersions + "  ·", "Ready", out statusText));
   // floating panel: symbol, title and description on the left, Load button on the right; separator; two notes
   var panel = new Grid { Margin = new Thickness(22, 20, 22, 20) };
   panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -305,7 +305,7 @@ public partial class MainWindow : Window
   top.Children.Add(words);
   panel.Children.Add(top);
   var rule = new Border { Height = 1, Background = B("#1a1a21"), Margin = new Thickness(0, 18, 0, 16) }; Grid.SetRow(rule, 1); panel.Children.Add(rule);
-  var facts = Facts(("GAME", "Minecraft Bedrock"), ("VERSION", "1.26.62"), ("MENU KEY", SharedPreferences.MenuKey.Name)); Grid.SetRow(facts, 2); panel.Children.Add(facts);
+  var facts = Facts(("GAME", "Minecraft Bedrock"), ("VERSION", GameBuilds.SupportedVersions), ("MENU KEY", SharedPreferences.MenuKey.Name)); Grid.SetRow(facts, 2); panel.Children.Add(facts);
   // Menu key: click, then press the key that opens Nickel in game (Escape cancels, Backspace goes back to Right Shift).
   if (facts.Children[2] is StackPanel keyFact)
   {

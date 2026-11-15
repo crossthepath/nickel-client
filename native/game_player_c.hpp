@@ -148,7 +148,7 @@ inline void PearlAimUpdateWork(){auto& s=PearlAim();if(!s.enabled)return;PearlAi
  {std::lock_guard<std::mutex> l(s.guard);if(!s.tracking)return;k=s.cfg;if(s.trackTimed&&(double)k.duration<ActionMs(s.trackAt)){s.trackTimed=false;s.tracking=false;return;}id=s.trackId;}
  Context c{};uintptr_t target{};auto stop=[&]{std::lock_guard<std::mutex> l(s.guard);s.trackTimed=false;s.tracking=false;};
  if(!Local(&c)||!ActorByRuntimeId(c.registry,id,&target)||!target||!CombatTargetValid(c,target,false,true,true,true)){stop();return;}
- const float alpha=AimAlpha(c);float eye[3];reinterpret_cast<float*(*)(float*,uint64_t,float)>(c.base+0x2ceda40)(eye,c.actor,alpha);
+ const float alpha=AimAlpha(c);float eye[3];reinterpret_cast<float*(*)(float*,uint64_t,float)>(c.base+Rva(0x2ceda40))(eye,c.actor,alpha);
  if(!std::isfinite(eye[0])||!std::isfinite(eye[1])||!std::isfinite(eye[2]))return;
  float cp{},cy{};if(!RotRead(c.actor,&cp,&cy))return;if(!k.silent){float fp{},fy{};if(FreeLookCameraAngles(c,&fp,&fy)){cp=fp;cy=fy;}}
  float p[3],yaw{},pitch{};if(!PearlAimPoint(k,target,eye,alpha,p))return;PearlAimAngles(eye,p,&yaw,&pitch);
@@ -312,7 +312,7 @@ inline void RgScanSub(const Context& c,RgState& st,BbSub& sub,uint64_t address,i
 inline bool RgAbsorptionFull(const Context& c,int cap){float cur{},top{};if(!PcAttribute(c,13,&cur,&top))return false;const float limit=0.0f<top?std::min((float)cap,top):(float)cap;return limit+-0.01f<=cur;}
 // Per-tick destroy progress of a block with `slot` temporarily selected (MC 0x376b010).
 inline float RgPerTick(const BbCtx& x,int slot,uint64_t block){int32_t* sel=ActionSelected(x.actor);if(!sel||!block||!x.gm)return 0;const int32_t saved=*sel;*sel=slot;
- const float p=reinterpret_cast<float(*)(uint64_t,uint64_t)>(x.c.base+0x376b010)(x.gm,block);*sel=saved;return p;}
+ const float p=reinterpret_cast<float(*)(uint64_t,uint64_t)>(x.c.base+Rva(0x376b010))(x.gm,block);*sel=saved;return p;}
 struct RgCost{int slot=-1;int ticks=0;bool ok=false;};
 // Break cost: best slot (Item Profiles first, strictly faster than the current slot), ticks = ceil(0.99999 / per tick);
 // only valid results are kept for the tick.

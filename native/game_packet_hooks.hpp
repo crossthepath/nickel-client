@@ -31,9 +31,9 @@ struct SendDepthScope{SendDepthScope(){++sendDepth;}~SendDepthScope(){--sendDept
 inline void GameSendDetour(void* self,void* packet){SendDepthScope depth;GameSendDispatch(self,packet);}
 inline int InstallSendHook(void(*log)(const char*)){static int state=0;if(state)return state;state=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return state;
  const uint8_t bytes[16]={0x41,0x57,0x41,0x56,0x41,0x54,0x56,0x57,0x55,0x53,0x48,0x81,0xec,0x90,1,0};
- for(int i=0;i<16;++i){uint8_t b{};if(!Read(base+0x2360ff0+i,&b)||b!=bytes[i]){if(log)log("Packets: unexpected code at the send hook");return state;}}
- if(MH_CreateHook((void*)(base+0x2360ff0),(void*)GameSendDetour,(void**)&gameSendOriginal)!=MH_OK){if(log)log("Packets: send hook not installed");return state;}
- if(MH_EnableHook((void*)(base+0x2360ff0))!=MH_OK){MH_RemoveHook((void*)(base+0x2360ff0));if(log)log("Packets: send hook not installed (could not be enabled, removed)");return state;}
+ if(!CodeIs(base+Rva(0x2360ff0),bytes,16)){if(log)log("Packets: unexpected code at the send hook");return state;}
+ if(MH_CreateHook((void*)(base+Rva(0x2360ff0)),(void*)GameSendDetour,(void**)&gameSendOriginal)!=MH_OK){if(log)log("Packets: send hook not installed");return state;}
+ if(MH_EnableHook((void*)(base+Rva(0x2360ff0)))!=MH_OK){MH_RemoveHook((void*)(base+Rva(0x2360ff0)));if(log)log("Packets: send hook not installed (could not be enabled, removed)");return state;}
  if(log)log("Packets: send hook installed");state=1;return state;}
 
 // ---- PacketReceiveEvent: 177 per-type dispatchers (generated_receive_hooks.hpp); the packet is **(ev+0x60)
@@ -57,11 +57,11 @@ inline int InstallReceiveHooks(void(*log)(const char*)){static int state=0;if(st
  static const auto detours=ReceiveDetours(std::make_integer_sequence<int,kReceiveCount>{});const uint8_t head[12]={0x4c,0x89,0xc1,0x4d,0x8b,0x01,0x48,0x8b,0x01,0x48,0x8b,0x80};
  int created=0,skipped=0;for(int i=0;i<kReceiveCount;++i){const uint32_t rva=kReceiveTargets[i];if(ReceiveOwnedElsewhere(rva))continue;bool ok=rva+16<size;
   {bool first=ok,second=ok;const uint8_t alt[7]={0x48,0x83,0xec,0x38,0x4c,0x89,0xc1};   // 8 dispatchers have a stack frame (sub rsp,0x38 ; mov rcx,r8)
-   for(int k=0;first&&k<12;++k){uint8_t b{};first=Read(base+rva+k,&b)&&b==head[k];}for(int k=0;second&&k<7;++k){uint8_t b{};second=Read(base+rva+k,&b)&&b==alt[k];}ok=first||second;}
-  if(!ok||MH_CreateHook((void*)(base+rva),detours[i],(void**)&receiveOriginal[i])!=MH_OK){++skipped;continue;}
-  if(MH_QueueEnableHook((void*)(base+rva))!=MH_OK){MH_RemoveHook((void*)(base+rva));receiveOriginal[i]=nullptr;++skipped;continue;}++created;}
+   first=first&&CodeIs(base+Rva(rva),head,12);second=second&&CodeIs(base+Rva(rva),alt,7);ok=first||second;}
+  if(!ok||MH_CreateHook((void*)(base+Rva(rva)),detours[i],(void**)&receiveOriginal[i])!=MH_OK){++skipped;continue;}
+  if(MH_QueueEnableHook((void*)(base+Rva(rva)))!=MH_OK){MH_RemoveHook((void*)(base+Rva(rva)));receiveOriginal[i]=nullptr;++skipped;continue;}++created;}
  if(MH_ApplyQueued()!=MH_OK){   // some may be live: disable them all, keep the trampolines (a thread may be inside a detour)
-  for(int i=0;i<kReceiveCount;++i)if(receiveOriginal[i])MH_QueueDisableHook((void*)(base+kReceiveTargets[i]));MH_ApplyQueued();
+  for(int i=0;i<kReceiveCount;++i)if(receiveOriginal[i])MH_QueueDisableHook((void*)(base+Rva(kReceiveTargets[i])));MH_ApplyQueued();
   if(log)log("Packets: receive hooks could not be enabled, none left active");return state;}
  if(log){char line[128];snprintf(line,sizeof(line),"Packets: %d receive hooks installed, %d skipped",created,skipped);log(line);}state=1;return state;}
 }

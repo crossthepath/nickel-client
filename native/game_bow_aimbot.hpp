@@ -134,7 +134,7 @@ inline void BowAimbotWork(){
  auto& s=BowAimbot();if(!s.enabled)return;BowAimbotConfig k;{std::lock_guard<std::mutex> lock(s.guard);k=s.cfg;s.st.valid=false;}
  Context c{};if(!Local(&c)||!StickyHasInput(c))return;
  TrajectoryParams p{};if(!BowPrepare(c,c.actor,1.0f,&p))return;
- float start[4]{};reinterpret_cast<float*(*)(float*,uint64_t,float)>(c.base+0x2ceda40)(start,c.actor,1.0f);
+ float start[4]{};reinterpret_cast<float*(*)(float*,uint64_t,float)>(c.base+Rva(0x2ceda40))(start,c.actor,1.0f);
  for(int i=0;i<3;++i)if(!std::isfinite(start[i]))return;
  BowCameraData cam{};if(!BowCamera(c,&cam))return;
  uintptr_t owners{};uint64_t begin{},end{};

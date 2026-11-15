@@ -182,10 +182,10 @@ inline int InstallFreeCameraHooks(void(*log)(const char*)){
   {0xb342490,{0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x55,0x53,0x4c,0x8b,0x9c,0x24},(void*)FreeCameraSprintDetour,(void**)&freeCameraSprintOriginal}};
  constexpr size_t total=sizeof(hooks)/sizeof(hooks[0]);
  for(const auto& hook:hooks){if((uint64_t)hook.rva+16>size){if(log)log("Freecam: hook target outside the game image");return status;}
-  for(int i=0;i<16;++i){uint8_t byte{};if(!Read(base+hook.rva+i,&byte)||byte!=hook.bytes[i]){if(log)log("Freecam: unexpected game code; camera hooks not installed");return status;}}}
- size_t created=0;auto rollback=[&](const char* why){for(size_t i=0;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));if(log)log(why);return status;};
- for(const auto& hook:hooks){if(MH_CreateHook((void*)(base+hook.rva),hook.detour,hook.original)!=MH_OK)return rollback("Freecam: could not create camera hooks");++created;}
- for(size_t i=0;i<total;++i)if(MH_QueueEnableHook((void*)(base+hooks[i].rva))!=MH_OK)return rollback("Freecam: could not queue camera hooks");
+  if(!CodeIs(base+Rva(hook.rva),hook.bytes,16)){if(log)log("Freecam: unexpected game code; camera hooks not installed");return status;}}
+ size_t created=0;auto rollback=[&](const char* why){for(size_t i=0;i<created;++i)MH_RemoveHook((void*)(base+Rva(hooks[i].rva)));if(log)log(why);return status;};
+ for(const auto& hook:hooks){if(MH_CreateHook((void*)(base+Rva(hook.rva)),hook.detour,hook.original)!=MH_OK)return rollback("Freecam: could not create camera hooks");++created;}
+ for(size_t i=0;i<total;++i)if(MH_QueueEnableHook((void*)(base+Rva(hooks[i].rva)))!=MH_OK)return rollback("Freecam: could not queue camera hooks");
  if(MH_ApplyQueued()!=MH_OK)return rollback("Freecam: could not enable camera hooks; feature remains inactive");
  levelTickListener=FreeCameraTickGuarded;
  sendFreeCamera=FreeCameraPacketGuarded;

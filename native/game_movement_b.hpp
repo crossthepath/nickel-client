@@ -330,8 +330,8 @@ inline void SafeWalkDetour(uint64_t a,uint64_t flags,uint64_t c,uint64_t d,const
 inline int InstallSafeWalkHook(void(*log)(const char*)){
  static int state=0;if(state)return state;state=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return state;
  const uint8_t bytes[16]={0x41,0x57,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xec,0xb0,0x00,0x00,0x00,0x44,0x0f};
- for(int i=0;i<16;++i){uint8_t b{};if(!Read(base+0xb3298f0+i,&b)||b!=bytes[i]){if(log)log("Safe Walk: unexpected code at the sneak movement function, no hook installed");return state;}}
- void* target=(void*)(base+0xb3298f0);
+ if(!CodeIs(base+Rva(0xb3298f0),bytes,16)){if(log)log("Safe Walk: unexpected code at the sneak movement function, no hook installed");return state;}
+ void* target=(void*)(base+Rva(0xb3298f0));
  if(MH_CreateHook(target,(void*)SafeWalkDetour,(void**)&safeWalkOriginal)!=MH_OK){if(log)log("Safe Walk: hook not created");return state;}
  if(MH_EnableHook(target)!=MH_OK){MH_RemoveHook(target);if(log)log("Safe Walk: hook not enabled");return state;}
  if(log)log("Safe Walk: hook installed");state=1;return state;
@@ -349,7 +349,7 @@ inline void JesusWork(uint64_t entity,uint64_t box,uint64_t result,uint64_t regi
  const int x0=(int)std::floor(bb[0]+.001f),x1=(int)std::floor(bb[3]-.001f),z0=(int)std::floor(bb[2]+.001f),z1=(int)std::floor(bb[5]-.001f);
  const int yHigh=(int)std::floor(bb[1]-.001f),yLow=(int)std::floor((dy+bb[1])-.001f);
  const uint64_t layer=Virtual0(c,region,0x28);if(!layer)return;
- auto blockAt=reinterpret_cast<uint64_t(*)(uint64_t,const int32_t*)>(layer);auto surface=reinterpret_cast<float(*)(uint64_t,const int32_t*)>(c.base+0x3534c60);
+ auto blockAt=reinterpret_cast<uint64_t(*)(uint64_t,const int32_t*)>(layer);auto surface=reinterpret_cast<float(*)(uint64_t,const int32_t*)>(c.base+Rva(0x3534c60));
  if(x0>x1||z0>z1||yLow>yHigh)return;
  for(int x=x0;x<=x1;++x)for(int z=z0;z<=z1;++z)for(int y=yHigh;y>=yLow;--y){
   const int32_t pos[3]={x,y,z};const uint64_t block=blockAt(region,pos);uint8_t a{},b{};if(!block||!BlockFlags(block,&a,&b)||!(b&2))continue;
@@ -373,8 +373,8 @@ inline void JesusDetour(uint64_t a,uint64_t b,uint64_t c,const void* d,uint64_t 
 inline int InstallJesusHook(void(*log)(const char*)){
  static int state=0;if(state)return state;state=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return state;
  const uint8_t bytes[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0xd8};
- for(int i=0;i<16;++i){uint8_t v{};if(!Read(base+0x360a1f0+i,&v)||v!=bytes[i]){if(log)log("Jesus: unexpected code at the collision shapes function, no hook installed");return state;}}
- void* target=(void*)(base+0x360a1f0);
+ if(!CodeIs(base+Rva(0x360a1f0),bytes,16)){if(log)log("Jesus: unexpected code at the collision shapes function, no hook installed");return state;}
+ void* target=(void*)(base+Rva(0x360a1f0));
  if(MH_CreateHook(target,(void*)JesusDetour,(void**)&jesusOriginal)!=MH_OK){if(log)log("Jesus: hook not created");return state;}
  if(MH_EnableHook(target)!=MH_OK){MH_RemoveHook(target);if(log)log("Jesus: hook not enabled");return state;}
  if(log)log("Collision shapes (Jesus, Phase): hook installed");state=1;return state;

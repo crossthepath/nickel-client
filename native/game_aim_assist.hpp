@@ -139,7 +139,7 @@ inline void AimAssistWork(){auto& s=AimAssist();if(!s.enabled)return;AimAssistSt
  if(!Local(&c)||!CombatNoInterface()||!AimGates(c,k))return;
  {auto& m=Rotations();std::lock_guard<std::recursive_mutex> lock(m.guard);if(m.selValid&&m.selId!=kRotAimAssist)st.lockValid=false;}   // another module's rotation is applied
  AimView v{};v.alpha=AimAlpha(c);uint64_t rot{};float r[2];if(!Read(c.actor+0x250,&rot)||!rot||!Floats(rot,r,2))return;v.pitch=r[0];v.yaw=r[1];
- reinterpret_cast<float*(*)(float*,uint64_t,float)>(c.base+0x2ceda40)(v.eye,c.actor,v.alpha);if(!std::isfinite(v.eye[0])||!std::isfinite(v.eye[1])||!std::isfinite(v.eye[2]))return;
+ reinterpret_cast<float*(*)(float*,uint64_t,float)>(c.base+Rva(0x2ceda40))(v.eye,c.actor,v.alpha);if(!std::isfinite(v.eye[0])||!std::isfinite(v.eye[1])||!std::isfinite(v.eye[2]))return;
  if(!AimSilentLike(k)){float cp{},cy{};if(FreeLookCameraAngles(c,&cp,&cy)){v.pitch=cp;v.yaw=cy;}}
  uintptr_t target=0;
  if(k.targetMode==0){const float locked=k.increasedFov?INFINITY:k.fov;

@@ -111,7 +111,7 @@ int InvEquip(lua_State* L){game::Context c{};uint64_t box{};InvContext(L,&c,&box
  const int piece=game::ActionName(game::ActionStackAt(c,box,a-1),&name)?game::ArmorSlotOf(name):-1;if(piece<0){lua_pushboolean(L,0);lua_pushstring(L,"NotArmor");return 2;}return InvMove(L,a-1,6,piece);}
 int InvDrop(lua_State* L){game::Context c{};uint64_t box{};InvContext(L,&c,&box);const int n=game::ActionSize(c,box);const int a=(int)luaL_checkinteger(L,1);if(a<1||a>n)luaL_error(L,"slots are numbered 1 to %d",n);
  const uint64_t stack=game::ActionStackAt(c,box,a-1);uint8_t have{};if(!stack||!game::ActionItem(stack)||!game::Read(stack+0x22,&have)||!have)return InvResult(L,4);if(game::ActionCursorBusy(c,c.actor))return InvResult(L,2);
- const int count=std::clamp((int)luaL_optinteger(L,2,have),1,(int)have);auto dropSlot=reinterpret_cast<void(*)(uint64_t,int,bool,bool,bool)>(c.base+0x2af140);   // Inventory::dropSlot(slot, client only, all, randomly)
+ const int count=std::clamp((int)luaL_optinteger(L,2,have),1,(int)have);auto dropSlot=reinterpret_cast<void(*)(uint64_t,int,bool,bool,bool)>(c.base+game::Rva(0x2af140));   // Inventory::dropSlot(slot, client only, all, randomly)
  if(count>=have)dropSlot(box,a-1,false,true,false);else for(int i=0;i<count;++i)dropSlot(box,a-1,false,false,false);return InvResult(L,0);}
 int InvToOffhand(lua_State* L){game::Context c{};uint64_t box{};InvContext(L,&c,&box);const int n=game::ActionSize(c,box);const int a=(int)luaL_checkinteger(L,1);if(a<1||a>n)luaL_error(L,"slots are numbered 1 to %d",n);return InvMove(L,a-1,0x22,0);}
 // ---- world.block / world.isLoaded, player attack / interact / break

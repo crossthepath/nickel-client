@@ -264,7 +264,7 @@ inline bool SchematicCancelBuild(){return Schematics().cancelBuild.load();}
 inline uint64_t scMaterials[17][2]{};inline bool scMaterialsReady=false;
 inline void ScMaterials(const Context& c){if(scMaterialsReady)return;scMaterialsReady=true;
  static const char* names[17]={"moving_block_double_side","moving_block","moving_block","moving_block_blend","moving_block_blend","moving_block","moving_block","moving_block_alpha","moving_block_alpha","moving_block_seasons","moving_block_alpha_seasons","moving_block_alpha_single_side","moving_block_alpha_single_side","moving_block","moving_block","moving_block","moving_block"};
- const uint64_t factory=c.base+0x129c8110;const uint64_t get=Virtual(c,factory,8);if(!get){scMaterialsReady=false;return;}struct Hashed{uint64_t hash;std::string text;uint64_t last;};
+ const uint64_t factory=c.base+Rva(0x129c8110);const uint64_t get=Virtual(c,factory,8);if(!get){scMaterialsReady=false;return;}struct Hashed{uint64_t hash;std::string text;uint64_t last;};
  for(int i=0;i<17;++i){Hashed h{0xcbf29ce484222325ull,names[i],0};for(const char* q=names[i];*q;++q)h.hash=(h.hash*0x100000001b3ull)^(uint8_t)*q;uint64_t out[2]{};reinterpret_cast<void(*)(uint64_t,uint64_t*,Hashed*)>(get)(factory,out,&h);scMaterials[i][0]=out[0];scMaterials[i][1]=out[1];}}
 inline volatile bool scSwap=false;
 struct ScRenderState{std::unordered_map<uint64_t,BeMeshRec> subs;uint64_t serial=0;};
@@ -278,12 +278,12 @@ inline void ScDraw(const Context& c,uint64_t screen,uint64_t renderer,const std:
   for(const auto& m:f->second.meshes){if(m.style!=style||!m.mesh)continue;if(!placed){const float x=(float)sub.x-camera[0],y=(float)sub.y-camera[1],z=(float)sub.z-camera[2];memcpy(top,M,48);
     top[12]=x*M[0]+y*M[4]+z*M[8]+M[12];top[13]=x*M[1]+y*M[5]+z*M[9]+M[13];top[14]=x*M[2]+y*M[6]+z*M[10]+M[14];top[15]=x*M[3]+y*M[7]+z*M[11]+M[15];*(uint8_t*)(world+0x38)=1;placed=true;}
    uint64_t swapped[2]={tex[1],tex[0]};struct Span{uint64_t n;uint64_t* p;} span{2,scSwap?swapped:tex};uint8_t zero[0x58]{};const uint8_t layer=m.layer>0x10?5:m.layer;
-   reinterpret_cast<void(*)(void*,uint64_t,void*,Span*,uint64_t,uint64_t,void*)>(c.base+0x4deffe0)(m.mesh,screen+0x10,scMaterials[layer],&span,0,0,zero);}}
+   reinterpret_cast<void(*)(void*,uint64_t,void*,Span*,uint64_t,uint64_t,void*)>(c.base+Rva(0x4deffe0))(m.mesh,screen+0x10,scMaterials[layer],&span,0,0,zero);}}
  memcpy(top,M,64);*(uint8_t*)(world+0x38)=1;*(uint8_t*)(screen+0x7b)=saved7b;if(colorObj){memcpy((void*)colorObj,savedColor,16);*(uint8_t*)(colorObj+0x10)=1;}}
 inline void ScRenderWork(void* screenPtr,void* rendererPtr){auto& s=Schematics();auto& r=ScRender();Context c{};std::shared_ptr<std::vector<ScRenderSub>> subs;{std::lock_guard<std::recursive_mutex> l(s.guard);subs=s.render;}
  if(!subs||subs->empty()){if(!r.subs.empty()&&Client(&c)){for(auto& e:r.subs)for(auto& m:e.second.meshes)BeFreeMesh(c,m.mesh);r.subs.clear();}return;}
  if(!Local(&c))return;const uint64_t screen=(uint64_t)screenPtr,renderer=(uint64_t)rendererPtr;const uint64_t region=ActorRegion(c);if(!region)return;uint64_t holder{};float camera[3];
- if(!Read(renderer+0x480,&holder)||!holder||!Floats(holder+0x658,camera,3))return;ScMaterials(c);const uint64_t btess=reinterpret_cast<uint64_t(*)(uint64_t)>(c.base+0x5353600)(renderer);if(!btess)return;
+ if(!Read(renderer+0x480,&holder)||!holder||!Floats(holder+0x658,camera,3))return;ScMaterials(c);const uint64_t btess=reinterpret_cast<uint64_t(*)(uint64_t)>(c.base+Rva(0x5353600))(renderer);if(!btess)return;
  ++r.serial;const int64_t t0=ActionNs();const uint64_t cache=btess+0x6b0;const int32_t savedLayer=*(int32_t*)(btess+0x80);const uint64_t savedRegion=*(uint64_t*)(cache+0x18);*(uint64_t*)(cache+0x18)=region;
  for(const auto& sub:*subs){BeMeshRec& rec=r.subs[BeKey(sub.x,sub.y,sub.z)];rec.serial=r.serial;if(rec.version==sub.version)continue;if((double)(ActionNs()-t0)/1e6>2.0)continue;
   BeSub tmp{sub.x,sub.y,sub.z,sub.version,sub.blocks,{}};BeBuild(c,rec,tmp,screen,btess,region,2);/* "Schematic Ghost": mesh flags | 2 */rec.version=sub.version;}

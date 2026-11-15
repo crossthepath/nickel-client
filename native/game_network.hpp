@@ -24,7 +24,7 @@ inline bool TransportWrite(uintptr_t at,const uint8_t* bytes){DWORD old{};if(!Vi
  memcpy((void*)at,bytes,6);DWORD unused{};VirtualProtect((void*)at,6,old,&unused);FlushInstructionCache(GetCurrentProcess(),(void*)at,6);return true;}
 // Applies Force RakNet (true) or the game's prober (false). Returns false when the game code is not the expected one.
 inline bool ForceRakNet(bool on,void(*log)(const char*)){static int checked=0;static std::atomic<int> applied{-1};uintptr_t base{};uint32_t size{};
- if(!Supported(&base,&size))return false;const uintptr_t at=base+kTransportJump;
+ if(!Supported(&base,&size))return false;const uintptr_t at=base+Rva(kTransportJump);
  if(!checked){uint8_t now[22]{};bool readable=true;for(int i=0;i<22;++i)if(!Read(at-3+i,&now[i])){readable=false;break;}
   const bool probe=readable&&memcmp(now,kTransportContext,22)==0;const bool direct=readable&&memcmp(now,kTransportContext,3)==0&&memcmp(now+3,kTransportDirect,6)==0&&memcmp(now+9,kTransportContext+9,13)==0;
   checked=probe||direct?1:-1;if(checked<0&&log)log("Force RakNet: unexpected game code at the transport choice, setting unavailable");}
@@ -38,7 +38,7 @@ inline const uint8_t kFallbackJe[6]={0x0f,0x84,0x95,0x01,0x00,0x00};
 inline const uint8_t kFallbackNop[6]={0x90,0x90,0x90,0x90,0x90,0x90};
 // Applies RakNet fallback (true) or the game's behaviour (false). Returns false when the game code is not the expected one.
 inline bool RakNetFallback(bool on,void(*log)(const char*)){static int checked=0;static std::atomic<int> applied{-1};uintptr_t base{};uint32_t size{};
- if(!Supported(&base,&size))return false;const uintptr_t at=base+kFallbackJump;
+ if(!Supported(&base,&size))return false;const uintptr_t at=base+Rva(kFallbackJump);
  if(!checked){uint8_t now[13]{};bool readable=true;for(int i=0;i<13;++i)if(!Read(at-2+i,&now[i])){readable=false;break;}
   const bool game=readable&&memcmp(now,kFallbackContext,13)==0;const bool patched=readable&&now[0]==0x84&&now[1]==0xc0&&memcmp(now+2,kFallbackNop,6)==0&&memcmp(now+8,kFallbackContext+8,5)==0;
   checked=game||patched?1:-1;if(checked<0&&log)log("RakNet fallback: unexpected game code at the transport fallback, setting unavailable");}

@@ -33,10 +33,10 @@ inline void ReachDraw(ReachShared& s) {
 inline int InstallReachHook(void (*log)(const char*)) {
  static int state = 0; if (state) return state; state = -1;
  uintptr_t base{}; uint32_t size{}; if (!Supported(&base, &size)) return state;
- uint8_t* target = reinterpret_cast<uint8_t*>(base + 0x4e0a4a7);
+ uint8_t* target = reinterpret_cast<uint8_t*>(base + Rva(0x4e0a4a7));
  const uint8_t expected[10] = { 0x48, 0x8b, 0x03, 0x48, 0x8b, 0x80, 0x78, 0x0a, 0x00, 0x00 };
- for (int i = 0; i < 10; ++i) { uint8_t b{}; if (!Read(reinterpret_cast<uintptr_t>(target) + i, &b) || b != expected[i]) { if (log) log("Reach: unexpected code at the pick distance, no hook installed"); return state; } }
- float fallback{}; if (!Read(base + 0xef3f020, &fallback)) return state;
+ if (!CodeIs(reinterpret_cast<uintptr_t>(target), expected, 10)) { if (log) log("Reach: unexpected code at the pick distance, no hook installed"); return state; }
+ float fallback{}; if (!Read(base + Rva(0xef3f020), &fallback)) return state;
  ReachData().fallback = fallback;
  // stub within +-2 GB so a rel32 jump reaches it
  uint8_t* stub = nullptr;
@@ -79,8 +79,8 @@ inline int InstallPickRangeHook(void (*log)(const char*)) {
  static int state = 0; if (state) return state; state = -1;
  uintptr_t base{}; uint32_t size{}; if (!Supported(&base, &size)) return state;
  const uint8_t expected[8] = { 0x56, 0x57, 0x48, 0x83, 0xec, 0x28, 0x8b, 0x02 };
- for (int i = 0; i < 8; ++i) { uint8_t b{}; if (!Read(base + 0x376f1a0 + i, &b) || b != expected[i]) { if (log) log("Reach: unexpected code at getPickRange, no hook installed"); return state; } }
- void* target = reinterpret_cast<void*>(base + 0x376f1a0);
+ if (!CodeIs(base + Rva(0x376f1a0), expected, 8)) { if (log) log("Reach: unexpected code at getPickRange, no hook installed"); return state; }
+ void* target = reinterpret_cast<void*>(base + Rva(0x376f1a0));
  if (MH_CreateHook(target, reinterpret_cast<void*>(PickRangeDetour), reinterpret_cast<void**>(&pickRangeOriginal)) != MH_OK || MH_EnableHook(target) != MH_OK) { if (log) log("Reach: getPickRange hook not installed"); return state; }
  if (log) log("Reach: getPickRange hook installed");
  state = 1; return state;

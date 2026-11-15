@@ -16,7 +16,7 @@ namespace game {
 struct GamePacket{uint64_t object=0,control=0;};
 inline void ReleasePacket(GamePacket& p){if(!p.control)return;auto* c=reinterpret_cast<volatile long*>(p.control);
  if(InterlockedDecrement(c+2)==0){auto table=*reinterpret_cast<uint64_t**>(p.control);reinterpret_cast<void(*)(uint64_t)>(table[0])(p.control);if(InterlockedDecrement(c+3)==0)reinterpret_cast<void(*)(uint64_t)>(table[1])(p.control);}p.control=p.object=0;}
-inline GamePacket CreatePacket(const Context& c,int id){GamePacket p{};reinterpret_cast<void(*)(GamePacket*,int)>(c.base+0x2376780)(&p,id);return p;}
+inline GamePacket CreatePacket(const Context& c,int id){GamePacket p{};reinterpret_cast<void(*)(GamePacket*,int)>(c.base+Rva(0x2376780))(&p,id);return p;}
 inline bool SendPacket(const Context& c,uint64_t packet){const uint64_t get=Virtual0(c,c.client,0x910);if(!get||!packet)return false;
  const uint64_t sender=reinterpret_cast<uint64_t(*)(uint64_t)>(get)(c.client);const uint64_t send=Virtual0(c,sender,0x20);if(!sender||!send)return false;reinterpret_cast<void(*)(uint64_t,uint64_t)>(send)(sender,packet);return true;}
 // local receive: sender+0x28 null -> network handler *(sender+0x20); connection = first element of the array at
@@ -29,7 +29,7 @@ inline bool ReceivePacket(const Context& c,GamePacket* p){const uint64_t get=Vir
  const uint64_t handle=Virtual0(c,dispatcher,8);if(!handle)return false;reinterpret_cast<void(*)(uint64_t,uint64_t,uint64_t,GamePacket*)>(handle)(dispatcher,connection,callback,p);return true;}
 inline std::string& PacketText(uint64_t at){return *reinterpret_cast<std::string*>(at);}
 struct OptionalText{std::string text;bool has=false;};
-inline void ClientMessage(const Context& c,const std::string& text){std::string line=text;OptionalText none{};reinterpret_cast<void(*)(uint64_t,std::string*,OptionalText*)>(c.base+0x6da9820)(c.actor,&line,&none);}
+inline void ClientMessage(const Context& c,const std::string& text){std::string line=text;OptionalText none{};reinterpret_cast<void(*)(uint64_t,std::string*,OptionalText*)>(c.base+Rva(0x6da9820))(c.actor,&line,&none);}
 inline bool SendChat(const Context& c,const std::string& message){
  uintptr_t user{};if(!Element(c.registry,c.entity,"UserEntityIdentifierComponent",0x250,&user))return false;   // 0x250-byte element, xuid at +0xd0
  GamePacket p=CreatePacket(c,9);if(!p.object)return false;

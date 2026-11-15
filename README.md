@@ -42,7 +42,7 @@ The launcher updates itself: **Settings → Check for updates** downloads the ne
 it. Updates are signed and checked before they replace the launcher. Module settings, configs, scripts and schematics
 stay in `%APPDATA%\Nickel`; the launcher's own options are kept in a `data` folder next to `Nickel.exe`.
 
-Nickel targets Minecraft: Bedrock Edition **1.26.62** for Windows 10 and 11 (x64). No Mojang
+Nickel targets Minecraft: Bedrock Edition **1.26.62** and **1.26.63** for Windows 10 and 11 (x64). No Mojang
 assets are shipped. The [documentation](https://nickelclient.com/docs/) covers every screen and module.
 
 You only need the next section to change Nickel or build it yourself.
@@ -106,7 +106,7 @@ Nickel.exe (WPF launcher)
                    └─ Luau ────────── user scripts
 ```
 
-The launcher checks that the game is a build of Minecraft 1.26.62 that Nickel was validated against (its code,
+The launcher checks that the game is a build of Minecraft 1.26.62 or 1.26.63 that Nickel was validated against (its code,
 constants and data are compared, so any installation of that build works: Microsoft Store, Xbox app or another
 launcher) and that no other client is loaded, then loads the overlay. The overlay uses the function addresses of
 that version and checks their code before hooking anything.

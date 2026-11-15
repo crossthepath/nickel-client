@@ -84,8 +84,8 @@ inline void* MaterialStreamDetour(void* self,const uint8_t* data,size_t size,int
 inline int InstallMaterialHook(void(*log)(const char*)){
  static int status=0;if(status)return status;status=-1;Materials().log=log;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size)){if(log)log("Materials: unsupported game image");return status;}
  static const uint8_t prologue[]={0x55,0x56,0x57,0x53,0x48,0x83,0xec,0x38,0x48,0x8d,0x6c,0x24,0x30,0x48,0xc7,0x45,0x00,0xfe,0xff,0xff,0xff,0x4c,0x89,0xc6};
- for(size_t i=0;i<sizeof(prologue);++i){uint8_t v{};if(!Read(base+0x341070+i,&v)||v!=prologue[i]){if(log)log("Materials: unexpected game code at 0x341070, hook not installed");return status;}}
- void* target=(void*)(base+0x341070);if(MH_CreateHook(target,(void*)MaterialStreamDetour,(void**)&materialStreamOriginal)!=MH_OK){if(log)log("Materials: could not create hook");return status;}
+ for(size_t i=0;i<sizeof(prologue);++i){uint8_t v{};if(!Read(base+Rva(0x341070)+i,&v)||v!=prologue[i]){if(log)log("Materials: unexpected game code at 0x341070, hook not installed");return status;}}
+ void* target=(void*)(base+Rva(0x341070));if(MH_CreateHook(target,(void*)MaterialStreamDetour,(void**)&materialStreamOriginal)!=MH_OK){if(log)log("Materials: could not create hook");return status;}
  if(MH_EnableHook(target)!=MH_OK){MH_RemoveHook(target);if(log)log("Materials: could not enable hook");return status;}
  status=1;if(log)log("Materials: material stream hook 0x341070 installed (EditorHighlight, Sky)");return status;}
 }

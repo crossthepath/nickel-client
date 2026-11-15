@@ -24,7 +24,7 @@ inline void PhysicsWork(void* holder,void* actorPtr,void* posPtr,PhysicsToken* t
  const uint64_t stack=actor+0x3d0;uint64_t cb{},item{};uint32_t strong{};if(!Read(stack+8,&cb)||!cb||!Read(cb+8,&strong)||!strong||!Read(cb,&item)||!item)return;
  Context c{};if(!Supported(&c.base,&c.size))return;bool flat=true;uint64_t block=0;
  {const uint64_t f=Virtual(c,item,0x30);if(f)CallGetter(f,item,&block);
-  if(block){const int kind=reinterpret_cast<int(*)(uint64_t)>(c.base+0x5757550)(stack);if(kind!=1){if(!blockItems)return;flat=false;}}}
+  if(block){const int kind=reinterpret_cast<int(*)(uint64_t)>(c.base+Rva(0x5757550))(stack);if(kind!=1){if(!blockItems)return;flat=false;}}}
  const double now=PhysicsNowMs();PhysicsItem st{};
  {std::lock_guard<std::mutex> l(s.guard);if(now-s.purge>=1000){s.purge=now;for(auto it=s.items.begin();it!=s.items.end();)if(now-it->second.seen>2000)it=s.items.erase(it);else ++it;}
   auto found=s.items.find(id);if(found==s.items.end()){uint64_t z=id+0x9E3779B97F4A7C15ull;z=(z^(z>>30))*0xBF58476D1CE4E5B9ull;z=(z^(z>>27))*0x94D049BB133111EBull;const uint64_t h=z^(z>>31);

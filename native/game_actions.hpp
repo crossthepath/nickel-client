@@ -82,11 +82,11 @@ inline bool DescriptorCall(uint64_t function,uint64_t d,uint64_t stack){__try{re
  __except(EXCEPTION_EXECUTE_HANDLER){return false;}}
 inline bool DescriptorLent(const Context& c,uint64_t d,uint64_t stack){uint64_t* slot=nullptr;__try{slot=ItemRegistrySlot(c);}__except(EXCEPTION_EXECUTE_HANDLER){slot=nullptr;}
  auto& r=ItemRegistry();const bool lend=slot&&!slot[1]&&r.control.load();if(lend){slot[0]=r.object;slot[1]=r.control;}
- const bool ok=DescriptorCall(c.base+0x1aebe20,d,stack);if(lend){slot[0]=0;slot[1]=0;}return ok;}
+ const bool ok=DescriptorCall(c.base+Rva(0x1aebe20),d,stack);if(lend){slot[0]=0;slot[1]=0;}return ok;}
 inline void DescriptorBuild(const Context& c,uint64_t d,uint64_t stack){   // NetworkItemStackDescriptor(ItemStack const&), game function at RVA 0x1aebe20
  *(uint64_t*)(d+8)=0;*(int32_t*)(d+0x20)=0;*(uint8_t*)(d+0x30)=0;memset((void*)(d+0x40),0,0x10);*(uint64_t*)(d+0x50)=0;*(uint64_t*)(d+0x58)=0xf;
  actionStage+=100;actionValue=stack;
- if(!DescriptorLent(c,d,stack)){*(uint64_t*)d=c.base+0xeffaee0;static bool told=false;
+ if(!DescriptorLent(c,d,stack)){*(uint64_t*)d=c.base+Rva(0xeffaee0);static bool told=false;
   if(!told&&actionLog){told=true;std::string n="?";ActionName(stack,&n);const std::string line="Actions: item '"+n+"' could not be described (game assertion); an empty item descriptor is sent instead";actionLog(line.c_str());}}
  actionStage+=100;}
 inline void SendMobEquipment(const Context& c,uintptr_t actor,int slot){actionStage=30;uint64_t id{};if(!RuntimeId(actor,&id))return;
@@ -102,7 +102,7 @@ inline uint8_t* NewUseTransaction(const Context& c,uint64_t stack){uint8_t* t=(u
  uint64_t* buckets=(uint64_t*)::operator new(0x80);for(int i=0;i<16;++i)buckets[i]=(uint64_t)head;
  *(uint64_t*)(inv+0x18)=(uint64_t)buckets;*(uint64_t*)(inv+0x20)=(uint64_t)(buckets+16);*(uint64_t*)(inv+0x28)=(uint64_t)(buckets+16);*(uint64_t*)(inv+0x30)=7;*(uint64_t*)(inv+0x38)=8;
  *(int32_t*)(t+0x68)=0;*(uint8_t*)(t+0x6c)=1;*(uint8_t*)(t+0x80)=0;*(int32_t*)(t+0x84)=0;DescriptorBuild(c,(uint64_t)(t+0x90),stack);
- actionStage=41;*(uint16_t*)(t+0x108)=1;*(uint64_t*)t=c.base+0xf115f20;*(int32_t*)(t+8)=2;return t;}
+ actionStage=41;*(uint16_t*)(t+0x108)=1;*(uint64_t*)t=c.base+Rva(0xf115f20);*(int32_t*)(t+8)=2;return t;}
 inline void SendUseTransaction(const Context& c,uintptr_t actor,uint8_t* t){const uint64_t send=Virtual0(c,actor,0x718);if(!send)return;uint8_t* owned=t;
  reinterpret_cast<void(*)(uintptr_t,uint8_t**)>(send)(actor,&owned);}
 inline bool ActionPosition(uintptr_t actor,float* p){uint64_t state{};return Read(actor+0x240,&state)&&state&&Read(state,&p[0])&&Read(state+4,&p[1])&&Read(state+8,&p[2]);}
@@ -252,7 +252,7 @@ inline ActionModules& ActionMods(){static auto* m=new ActionModules;return *m;}
 // waits until its 6000 ms timeout. Cursor busy: no item manager at *(actor+0xae0), a request pending at
 // +0x68, or an item held in container 0x3b (screen context, lists at +0x108 then +0xc8).
 inline bool ActionCursorBusy(const Context& c,uintptr_t actor){uint64_t mgr{},pending{};if(!Read(actor+0xae0,&mgr)||!mgr)return true;if(Read(mgr+0x68,&pending)&&pending)return true;
- const uint64_t screen=reinterpret_cast<uint64_t(*)(uint64_t)>(c.base+0x2b6c950)(mgr);if(!screen)return false;uint64_t box=0;
+ const uint64_t screen=reinterpret_cast<uint64_t(*)(uint64_t)>(c.base+Rva(0x2b6c950))(mgr);if(!screen)return false;uint64_t box=0;
  for(uint32_t off:{0x108u,0xc8u}){uint64_t head{},node{};if(!Read(screen+off+8,&head)||!head||!Read(head,&node))continue;
   for(int guard=0;guard<4096&&node&&node!=head;++guard){uint8_t kind{};uint64_t model{},container{};if(Read(node+0x10,&kind)&&kind==0x3b&&Read(node+0x50,&model)&&model&&Read(model+8,&container)&&container){box=container;break;}if(!Read(node,&node))break;}
   if(box)break;}

@@ -36,6 +36,51 @@ for entry in table.split(NL + ' {"')[1:]:   # one profile per entry
     overlay.append(((int(head.group(1)), int(head.group(2)), int(head.group(3))), num(head.group(4)), dirs, secs, text))
 
 ok = bool(launcher) and launcher == overlay and all(len(b[3]) == 5 and len(b[4]) == 64 for b in launcher)
+
+# Every game address written in native/ code must be covered by each translated build (tools/port_build.py), and
+# reached through Rva(): a reference-build address used directly would be wrong in any other build.
+ref_sections = {n: (a, a + z) for n, a, z in launcher[0][3] if n in ('.text', '.rdata', '.data')}
+BS = chr(92)
+
+
+def code_part(line):
+    q = None; i = 0
+    while i < len(line):
+        c = line[i]
+        if q:
+            if c == BS: i += 2; continue
+            if c == q: q = None
+        elif c in '"' + "'": q = c
+        elif line.startswith('//', i): return line[:i]
+        i += 1
+    return line
+
+
+used = {}; direct = []
+for f in sorted((root / 'native').glob('*.[hc]pp')):
+    if f.name.startswith('generated_build_') or f.name == 'game_build.hpp': continue
+    for n, line in enumerate(f.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+        code = code_part(line)
+        for m in re.finditer(r'0x([0-9a-fA-F]{6,8})' + BS + 'b', code):
+            v = int(m.group(1), 16)
+            sec = next((k for k, (lo, hi) in ref_sections.items() if lo <= v < hi and v >= 0x100000), None)
+            if sec: used.setdefault(v, (sec, f.name))
+        for m in re.finditer(BS + r'bbase' + BS + r's*' + BS + r'+' + BS + r's*0x([0-9a-fA-F]+)', code):
+            v = int(m.group(1), 16)
+            if any(lo <= v < hi for lo, hi in ref_sections.values()) and v >= 0x100000: direct.append(f'{f.name}:{n} base+0x{v:x}')
+missing = []
+for g in sorted((root / 'native').glob('generated_build_*.hpp')):
+    text = g.read_text(encoding='utf-8')
+    points = {int(a, 16) for a in re.findall(r'\{0x([0-9a-f]+)u,0x[0-9a-f]+u\}', text.split('kPoints_')[1])}
+    data = {int(a, 16) for a in re.findall(r'\{0x([0-9a-f]+)u,0x[0-9a-f]+u\}', text.split('kData_')[1].split(';')[0])}
+    constants = {int(c, 16) for c in re.findall(r'0x([0-9a-f]+)u', text.split('kConstants_')[1].split(';')[0])} if 'kConstants_' in text else set()
+    for v, (sec, where) in used.items():
+        if (sec == '.text' and v not in points) or (sec != '.text' and v not in data and v not in points and v not in constants):
+            missing.append(f'{g.name}: 0x{v:x} ({where}) not verified, run tools/port_build.py')
+for line in direct: print('NOT TRANSLATED', line)
+for line in missing[:40]: print('MISSING', line)
+ok = ok and not direct and not missing
+print(f'{len(used)} game addresses in native/, all translated and verified' if not direct and not missing else 'game addresses not covered')
 for name, builds in (('launcher', launcher), ('overlay ', overlay)):
     for b in builds:
         print(name, b[0], hex(b[1]), len(b[2]), 'directories', [s[0] for s in b[3]], b[4][:16])

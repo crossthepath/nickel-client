@@ -192,7 +192,7 @@ inline void BaseFinderWork(){auto& s=BaseFinder();auto& st=BfData();BfConfig cfg
  if(custom!=st.custom||cfg.chunkAges!=st.agesOn||cfg.trails!=st.trailsOn){st.custom=custom;st.agesOn=cfg.chunkAges;st.trailsOn=cfg.trails;st.entries.clear();st.signals.clear();BfResetAnalysis(st);}
  {bool changed=!st.scoringSet||cfg.skipNatural!=st.skip||cfg.baseScore!=st.baseScore||cfg.stash!=st.stash;for(int i=0;i<12;++i)changed|=cfg.signals[i]!=st.sig[i];
   if(changed){st.scoringSet=true;memcpy(st.sig,cfg.signals,12);st.skip=cfg.skipNatural;st.baseScore=cfg.baseScore;st.stash=cfg.stash;for(auto& r:st.results)st.toScore.insert(r.first);}}
- int distance=8;{const uint64_t options=GameOptions(c);if(options)distance=reinterpret_cast<int(*)(uint64_t)>(c.base+0x5b6f550)(options);}if(distance<2||distance>96)distance=8;const int R=distance+1;
+ int distance=8;{const uint64_t options=GameOptions(c);if(options)distance=reinterpret_cast<int(*)(uint64_t)>(c.base+Rva(0x5b6f550))(options);}if(distance<2||distance>96)distance=8;const int R=distance+1;
  if(R!=st.radius){st.radius=R;st.offsets.clear();for(int dx=-R;dx<=R;++dx)for(int dz=-R;dz<=R;++dz)if(dx*dx+dz*dz<=R*R)st.offsets.push_back({dx,dz});
   std::stable_sort(st.offsets.begin(),st.offsets.end(),[](auto& a,auto& b){return a.first*a.first+a.second*a.second<b.first*b.first+b.second*b.second;});st.period=(int)st.offsets.size()/8000+1;st.countdown=0;}
  if(--st.countdown>0)return;st.countdown=st.period;

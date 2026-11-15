@@ -42,7 +42,7 @@ inline void InvRenderWork(){auto& s=Inventory();std::lock_guard<std::recursive_m
 // ---- ItemStackRequest (move, type 2)
 struct InvSlot{uint64_t name=0;int32_t extra=0;uint64_t container=0;uint8_t slot=0;bool ok=false;};
 inline bool InvResolve(const Context& c,uint64_t mgr,uint8_t container,int slot,InvSlot* out){const uint8_t e=container==0xc?(slot<9?0x1c:0x1d):container;
- uint64_t ctx=reinterpret_cast<uint64_t(*)(uint64_t)>(c.base+0x2b6c950)(mgr);if(!ctx)return false;bool found=false;
+ uint64_t ctx=reinterpret_cast<uint64_t(*)(uint64_t)>(c.base+Rva(0x2b6c950))(mgr);if(!ctx)return false;bool found=false;
  for(uint32_t off:{0x108u,0xc8u}){uint64_t head{};if(!Read(ctx+off+8,&head)||!head)continue;uint64_t node{};Read(head,&node);
   for(int g=0;g<4096&&node&&node!=head;++g){uint8_t key{};uint64_t holder{},cont{};if(Read(node+0x10,&key)&&key==e&&Read(node+0x50,&holder)&&holder&&Read(holder+8,&cont)&&cont){
     Read(node+0x10,&out->name);Read(node+0x18,&out->extra);out->container=cont;found=true;break;}if(!Read(node,&node))break;}
@@ -70,23 +70,23 @@ inline int InvMoveStack(const Context& c,uintptr_t actor,uint8_t srcC,int srcSlo
  if(ActionCursorBusy(c,actor))return 2;uint64_t mgr{};if(!Read(actor+0xae0,&mgr)||!mgr)return 1;
  const uint64_t enabled=Virtual0(c,mgr,8);if(!enabled||!(reinterpret_cast<bool(*)(uint64_t)>(enabled)(mgr)))return 1;
  if(count<1||count>255)return 5;
- bool valid=false;{uint64_t cur{};if(Read(mgr+0x68,&cur)&&!cur){reinterpret_cast<void(*)(uint64_t,int)>(c.base+0x2b71330)(mgr,InvScreenOpen()?0:1);Read(mgr+0x68,&cur);valid=cur!=0;}}
+ bool valid=false;{uint64_t cur{};if(Read(mgr+0x68,&cur)&&!cur){reinterpret_cast<void(*)(uint64_t,int)>(c.base+Rva(0x2b71330))(mgr,InvScreenOpen()?0:1);Read(mgr+0x68,&cur);valid=cur!=0;}}
  int result=5;InvSlot src{},dst{};
  if(InvResolve(c,mgr,srcC,srcSlot,&src)&&InvResolve(c,mgr,dstC,dstSlot,&dst)){
   const uint64_t local=ActionContainer(actor);const uint64_t srcStack=srcC==0xc?ActionStackAt(c,local,srcSlot):ActionStackAt(c,src.container,srcSlot),dstStackLocal=dstC==0xc?ActionStackAt(c,local,dstSlot):ActionStackAt(c,dst.container,dstSlot);   // offhand (0x22) / armor (6): stacks of their own container
   uint8_t have{};Read(srcStack+0x22,&have);
   if(have==count&&!(src.container==dst.container&&srcSlot==dstSlot)&&valid){
    const uint64_t dstModel=ActionStackAt(c,dst.container,dstSlot);const InvSlotInfo si=InvInfo(src,srcStack),di=InvInfo(dst,dstModel);
-   alignas(16) uint8_t oldSrc[0x100]{},oldDst[0x100]{};auto copy=reinterpret_cast<void(*)(void*,uint64_t)>(c.base+0x1a52620);auto kill=[&](void* stack){reinterpret_cast<void(*)(void*,int)>(c.base+0x2f5950)(stack,0);};   // destructor without deallocation
+   alignas(16) uint8_t oldSrc[0x100]{},oldDst[0x100]{};auto copy=reinterpret_cast<void(*)(void*,uint64_t)>(c.base+Rva(0x1a52620));auto kill=[&](void* stack){reinterpret_cast<void(*)(void*,int)>(c.base+Rva(0x2f5950))(stack,0);};   // destructor without deallocation
    copy(oldSrc,srcStack);copy(oldDst,dstStackLocal);
    const uint64_t setSrc=Virtual0(c,src.container,0x68),setDst=Virtual0(c,dst.container,0x68);
    if(setSrc)reinterpret_cast<void(*)(uint64_t,int,void*,int)>(setSrc)(src.container,srcSlot,oldDst,0);if(setDst)reinterpret_cast<void(*)(uint64_t,int,void*,int)>(setDst)(dst.container,dstSlot,oldSrc,0);
    if(srcC==0xc&&local&&local!=src.container){const uint64_t f=Virtual0(c,local,0x68);if(f)reinterpret_cast<void(*)(uint64_t,int,void*,int)>(f)(local,srcSlot,oldDst,0);}   // slot 0xff
    if(dstC==0xc&&local&&local!=dst.container){const uint64_t f=Virtual0(c,local,0x68);if(f)reinterpret_cast<void(*)(uint64_t,int,void*,int)>(f)(local,dstSlot,oldSrc,0);}
-   const bool emptyDst=ActionItem((uint64_t)oldDst)==0;invWriteAddress=c.base+0x2b80b40;uint8_t* action=emptyDst?InvNewAction(1,(uint8_t)count,si,di):InvNewAction(2,0,si,di);
-   uint8_t* owned=action;reinterpret_cast<void(*)(uint64_t,uint8_t**)>(c.base+0x2b72b40)(mgr,&owned);if(owned)InvActionDtor(owned,1);
+   const bool emptyDst=ActionItem((uint64_t)oldDst)==0;invWriteAddress=c.base+Rva(0x2b80b40);uint8_t* action=emptyDst?InvNewAction(1,(uint8_t)count,si,di):InvNewAction(2,0,si,di);
+   uint8_t* owned=action;reinterpret_cast<void(*)(uint64_t,uint8_t**)>(c.base+Rva(0x2b72b40))(mgr,&owned);if(owned)InvActionDtor(owned,1);
    kill(oldDst);kill(oldSrc);result=0;}}
- if(valid){reinterpret_cast<void(*)(uint64_t)>(c.base+0x2b71680)(mgr);reinterpret_cast<void(*)(uint64_t)>(c.base+0x2b72860)(mgr);}
+ if(valid){reinterpret_cast<void(*)(uint64_t)>(c.base+Rva(0x2b71680))(mgr);reinterpret_cast<void(*)(uint64_t)>(c.base+Rva(0x2b72860))(mgr);}
  return result;}
 
 // ---- Replenish: first hotbar slot 0..8 that is non-empty and for which a slot 9+ holds the same item in a larger
