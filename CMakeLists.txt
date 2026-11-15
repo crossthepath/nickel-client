@@ -135,3 +135,14 @@ add_test(NAME visual_free_look_checks COMMAND nickel_visual_free_look_checks)
 add_executable(nickel_visual_highlight_checks tests/visual_highlight_checks.cpp)
 target_include_directories(nickel_visual_highlight_checks PRIVATE include)
 add_test(NAME visual_highlight_checks COMMAND nickel_visual_highlight_checks)
+
+# Path Finder golden checks: pinned search results on small synthetic worlds (the real game_movement_e.hpp, no game
+# memory read), so a refactor of the search can prove it keeps behaviour. Same build settings as nickel_path_finder_checks.
+if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/vendor/imgui/imgui.cpp")
+  add_executable(nickel_path_finder_golden_checks tests/path_finder_golden_checks.cpp)
+  target_include_directories(nickel_path_finder_golden_checks PRIVATE vendor/imgui native)
+  target_compile_definitions(nickel_path_finder_golden_checks PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+  target_compile_options(nickel_path_finder_golden_checks PRIVATE /bigobj /EHa)
+  target_link_libraries(nickel_path_finder_golden_checks PRIVATE minhook windowscodecs ole32)
+  add_test(NAME path_finder_golden_checks COMMAND nickel_path_finder_golden_checks)
+endif()
