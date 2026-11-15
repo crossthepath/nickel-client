@@ -20,6 +20,9 @@
 #include "generated_catalog.hpp"
 #include "menu_catalog.hpp"
 #include "script_events.hpp"
+#include "module_registry.hpp"
+#include "script_host.hpp"
+#include "script_modules.hpp"
 #include "game_read.hpp"
 #include "media.hpp"
 #include "game_events.hpp"
@@ -109,6 +112,7 @@ ImFont *regular{},*bold{},*semibold{},*icons{},*tiny{};
 float menuW=1012,menuH=578,menuScale=1,menuX=-1,menuY=-1,dragW=0,dragH=0,dragScale=1,dragX=0,dragY=0;int dragMode=0;ImVec2 dragStart;std::map<std::string,float> animation;std::map<std::string,std::string> keybinds;std::map<std::string,int> keycodes;struct Notice{int kind;std::string title,body;};std::vector<Notice> notices;   // pending notifications (5 = module toggled by key, 7 = configs)
 bool mapOpen=false,worldCameraWanted=false;bool waypointsOpen=false;HWND gameWindowForKeys=nullptr;const char* particleOptions[15]={"All Particles","Critical Hit","Sharpness","Totem","Potion Effects","Smoke","Flames","Explosions","Water Splashes","Bubbles","Portals","Hearts","Enchanting Table","Block Breaking","Redstone"};   // full-screen MiniMap view (World Map Key)
 #include "script_engine_api.hpp"   // the Luau engine, as the menu and the hooks see it (defined in script_engine.hpp)
+ScriptHost& MenuScriptHostInstance();   // what the engine may use of the menu (menu_script_host.hpp)
 Setting* listeningSetting=nullptr;Module* listeningModule=nullptr;const std::vector<std::string>& RegistryNames(bool blocks);   // key setting waiting for input (stored as "Name|code")
 // Manrope hhea ascent/descent = 2132/-600, unitsPerEm = 2000.
 // stb_truetype sizes against ascent-descent; the UI layout sizes against em.
@@ -292,6 +296,7 @@ void ReadPreferences(){
 }
 
 void InitializeMenu(HMODULE module){
+ SetScriptHost(&MenuScriptHostInstance());   // before any script runs
  auto& io=ImGui::GetIO();io.IniFilename=nullptr;io.LogFilename=nullptr;
  auto& style=ImGui::GetStyle();style.WindowRounding=0;style.FrameRounding=0;style.GrabRounding=0;style.PopupRounding=0;style.ScrollbarRounding=0;   // square corners everywhere
  style.Colors[ImGuiCol_Text]=ImVec4(.95f,.95f,.96f,1);style.Colors[ImGuiCol_TextDisabled]=ImVec4(.58f,.58f,.63f,1);
@@ -754,6 +759,7 @@ void UpdateHudShown(){
  game::hudHidden.store(!hudShown,std::memory_order_relaxed);
  if(!hudShown){auto* sink=HudSink();sink->_ResetForNewFrame();sink->PushClipRectFullScreen();sink->PushTextureID(ImGui::GetIO().Fonts->TexID);}
 }
+#include "menu_script_host.hpp"
 #include "script_engine.hpp"
 #include "hud_crosshair.hpp"
 #include "hud_subtitles.hpp"

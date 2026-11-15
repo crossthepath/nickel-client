@@ -33,7 +33,7 @@ bool ScriptRotOptions(lua_State* L,int idx,game::RotRequest& r){if(!lua_istable(
  lua_rawgetfield(L,idx,"smooth");if(lua_isnumber(L,-1))r.speed=(float)lua_tonumber(L,-1);lua_pop(L,1);return true;}
 bool scriptWantsRotations=false;
 void ScriptSubmitRotation(const ScriptModule& m,float yaw,float pitch,lua_State* L,int optionsIdx){game::RotRequest r;r.module=scriptRotId(m);r.yaw=yaw;r.pitch=std::clamp(pitch,-90.f,90.f);r.mode=2;r.priority=1;
- ScriptRotOptions(L,optionsIdx,r);const int index=m.index;r.predicate=[index](uintptr_t){return index>=0&&modules[index].enabled;};game::Rotations().enabled[r.module]=true;scriptWantsRotations=true;game::RotSubmit(std::move(r));}
+ ScriptRotOptions(L,optionsIdx,r);const int index=m.index;r.predicate=[index](uintptr_t){return index>=0&&Host().At(index).enabled;};game::Rotations().enabled[r.module]=true;scriptWantsRotations=true;game::RotSubmit(std::move(r));}
 int ModRotate21(lua_State* L){Script* s=ScriptOf(L);if(s->loading)luaL_error(L,"modules can rotate once the script has loaded");ScriptModule& m=ModuleOf(L,1);ScriptSubmitRotation(m,(float)luaL_checknumber(L,2),(float)luaL_checknumber(L,3),L,4);return 0;}
 int ModAimAt21(lua_State* L){ScriptModule& m=ModuleOf(L,1);float target[3],eye[3];if(!LocalEye(eye)){lua_pushboolean(L,0);return 1;}
  if(lua_isnumber(L,2)){game::Context c{};uintptr_t actor{};uint64_t bb{};float box[6]{};if(!game::Local(&c)||!game::ActorByRuntimeId(c.registry,(uint64_t)lua_tonumber(L,2),&actor)||!game::Read(actor+0x248,&bb)||!bb||!game::Floats(bb,box,6)){lua_pushboolean(L,0);return 1;}
@@ -77,7 +77,7 @@ int ModUseItem21(lua_State* L){Script* s=ScriptOf(L);if(s->loading)luaL_error(L,
  if(slot>0){const int sl=slot-1;q.steps.push_back([sl](game::ActionCtx& x){game::ActionSwitch(x,sl);return 1;});if(sw>0)q.steps.push_back(game::StepWait(sw));}
  if(wait){auto start=std::make_shared<int64_t>(0);q.steps.push_back([rot,tol,start](game::ActionCtx&){if(!*start)*start=game::ActionNs();if(game::RotReadyFor(rot,(float)tol))return 1;return game::ActionMs(*start)>400.0?2:0;});}
  q.steps.push_back(game::StepUse());if(slot>0){if(rs>0)q.steps.push_back(game::StepWait(rs));q.steps.push_back(game::StepSwitchBack());}
- Script* owner=s;q.done=[owner,doneRef,disable,index](int result){std::lock_guard<std::recursive_mutex> lock(scriptGuard);if(disable&&index>=0&&modules[index].enabled){modules[index].enabled=false;Save(modules[index]);}
+ Script* owner=s;q.done=[owner,doneRef,disable,index](int result){std::lock_guard<std::recursive_mutex> lock(scriptGuard);if(disable&&index>=0)SetModuleEnabled(Host(),index,false);
   if(doneRef){bool alive=false;for(auto& sp:scripts)if(sp.get()==owner&&owner->state==1&&owner->L)alive=true;if(alive){lua_State* Ls=owner->L;lua_getref(Ls,doneRef);lua_pushboolean(Ls,result==0);ScriptCall(*owner,Ls,1,0);lua_unref(Ls,doneRef);}}};
  game::ActionSubmit(std::move(q));return 0;}
 int PlayerUseItemOn(lua_State* L){game::Context c{};if(!game::Local(&c))return 0;float v[3];if(!ReadVector(L,1,v))luaL_error(L,"expected a vector");int face=1;
