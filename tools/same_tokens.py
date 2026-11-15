@@ -5,7 +5,9 @@ python tools/same_tokens.py <rev-a> <rev-b> [translation units...] [--keep]
   --keep  keep the temporary folder (exported trees are removed, preprocessed outputs stay) and print its path
 
 Used for pull requests that only move code to another file or only reformat it: if every translation unit gives the
-same tokens at both revisions, the compiler sees the same program and the change cannot alter behaviour.
+same tokens at both revisions, the compiler parses the same program text. That is the first check, not the whole
+proof: file names and line numbers are not tokens, and MSVC derives lambda type names from the file, so a move can
+change the compiled DLL (see docs/contributing/refactoring.md, then run tools/compare_build.py).
 
 1. Resolves both revisions and refuses to compare them when a submodule (vendor/imgui, vendor/minhook,
    third_party/luau) points at different commits: git archive does not export submodules, so both revisions are
