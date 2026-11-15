@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
@@ -9,8 +8,10 @@ namespace Nickel.Desktop;
 public sealed class MinecraftConnection : IDisposable
 {
  public const string Version="1.26.62.01";
- public const string ExpectedHash="0fa33a61f4e8e7efa663197a39a6650070c742a88229a12478f347f819395415";
- public const int ExpectedImageSize=327405568;
+ // Any installation of the supported version is accepted (Microsoft Store / Xbox app, LeviLauncher, other launchers):
+ // the check reads the game's file version, not its size or hash. The overlay checks the version again, and each hook
+ // checks the code it patches before installing.
+ public const int VersionMajor=1,VersionMinor=26,VersionBuild=62;
  private readonly SafeProcessHandle handle;
  public int Pid{get;}
  public string ImagePath{get;}
@@ -31,18 +32,19 @@ public sealed class MinecraftConnection : IDisposable
    if(processes.Length!=1)throw new InvalidOperationException(processes.Length==0?"Start Minecraft before connecting.":"Close extra Minecraft instances, then try again.");
    cancellation.ThrowIfCancellationRequested();
    var process=processes[0];var module=process.MainModule??throw new InvalidOperationException("Minecraft could not be inspected.");
-   var path=module.FileName;var imageSize=module.ModuleMemorySize;var pid=process.Id;
+   var path=module.FileName;var pid=process.Id;
    var opened=OpenProcess(0x410,false,pid); // QUERY_INFORMATION | VM_READ, never VM_WRITE.
    if(opened.IsInvalid){opened.Dispose();throw new Win32Exception(Marshal.GetLastWin32Error(),"Windows refused access to Minecraft.");}
    try
    {
     var actual=new StringBuilder(32768);var length=(uint)actual.Capacity;
     if(!QueryFullProcessImageName(opened,0,actual,ref length))throw new Win32Exception(Marshal.GetLastWin32Error());
-    if(!string.Equals(Path.GetFullPath(path),Path.GetFullPath(actual.ToString()),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Minecraft changed during connection. Try again.");
-    if(imageSize!=ExpectedImageSize)throw new InvalidOperationException($"This build supports Minecraft {Version}. Your running version differs.");
-    using var file=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);
-    var digest=Convert.ToHexString(SHA256.HashData(file)).ToLowerInvariant();
-    if(digest!=ExpectedHash)throw new InvalidOperationException($"Minecraft {Version} with the matching game file is required.");
+    // Same file, not same text: a Microsoft Store / Xbox app installation reports its main module under
+    // C:\Program Files\WindowsApps\... and its image under C:\XboxGames\..., two names of one file.
+    if(!SameFile(path,actual.ToString()))throw new InvalidOperationException("Minecraft changed during connection. Try again.");
+    var info=FileVersionInfo.GetVersionInfo(actual.ToString());
+    if(info.FileMajorPart!=VersionMajor||info.FileMinorPart!=VersionMinor||info.FileBuildPart!=VersionBuild)
+     throw new InvalidOperationException($"Nickel supports Minecraft {VersionMajor}.{VersionMinor}.{VersionBuild}; this game is {info.FileMajorPart}.{info.FileMinorPart}.{info.FileBuildPart}.{info.FilePrivatePart}.");
     cancellation.ThrowIfCancellationRequested();
     if(!GetExitCodeProcess(opened,out var code)||code!=259)throw new InvalidOperationException("Minecraft closed during connection.");
     return new MinecraftConnection(opened,pid,path);
@@ -64,5 +66,37 @@ public sealed class MinecraftConnection : IDisposable
  }
  [DllImport("kernel32.dll",SetLastError=true)] private static extern SafeProcessHandle OpenProcess(uint access,[MarshalAs(UnmanagedType.Bool)]bool inherit,int pid);
  [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)]private static extern bool GetExitCodeProcess(SafeProcessHandle process,out uint code);
+ // True when both paths name the same file (same volume and file index), whatever links or junctions lead to it.
+ internal static bool SameFile(string first,string second)
+ {
+  if(string.Equals(Path.GetFullPath(first),Path.GetFullPath(second),StringComparison.OrdinalIgnoreCase))return true;
+  static (uint,uint,uint)? Id(string path)
+  {
+   using var file=CreateFile(path,0x80,7,0,3,0x02000000,0);   // FILE_READ_ATTRIBUTES, share all, OPEN_EXISTING, BACKUP_SEMANTICS
+   if(file.IsInvalid||!GetFileInformationByHandle(file,out var info))return null;
+   return (info.VolumeSerialNumber,info.FileIndexHigh,info.FileIndexLow);
+  }
+  var a=Id(first);var b=Id(second);return a!=null&&a==b;
+ }
+ /// <summary>Offline check run by "Nickel.exe --self-test": null when SameFile passes, else what failed.</summary>
+ internal static string? SelfTest()
+ {
+  var dir=Path.Combine(Path.GetTempPath(),$"nickel-samefile-{Guid.NewGuid():N}");Directory.CreateDirectory(dir);
+  try
+  {
+   var first=Path.Combine(dir,"a.bin");var other=Path.Combine(dir,"b.bin");var link=Path.Combine(dir,"link.bin");
+   File.WriteAllText(first,"a");File.WriteAllText(other,"a");
+   if(!SameFile(first,first.ToUpperInvariant()))return "the same path in another case is refused";
+   if(SameFile(first,other))return "two files with the same content are taken for one";
+   if(SameFile(first,Path.Combine(dir,"missing.bin")))return "a missing file is taken for an existing one";
+   if(CreateHardLink(link,first,0)&&!SameFile(first,link))return "two names of one file (hard link) are refused";
+   return null;
+  }
+  finally{try{Directory.Delete(dir,true);}catch(IOException){}catch(UnauthorizedAccessException){}}
+ }
+ [DllImport("kernel32.dll",EntryPoint="CreateHardLinkW",CharSet=CharSet.Unicode,SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)]private static extern bool CreateHardLink(string link,string existing,nint security);
+ [StructLayout(LayoutKind.Sequential,Pack=4)] private struct FileInformation{public uint Attributes;public long Created,Accessed,Written;public uint VolumeSerialNumber,SizeHigh,SizeLow,Links,FileIndexHigh,FileIndexLow;}
+ [DllImport("kernel32.dll",EntryPoint="CreateFileW",CharSet=CharSet.Unicode,SetLastError=true)] private static extern SafeFileHandle CreateFile(string path,uint access,uint share,nint security,uint disposition,uint flags,nint template);
+ [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)]private static extern bool GetFileInformationByHandle(SafeFileHandle file,out FileInformation info);
  [DllImport("kernel32.dll",EntryPoint="QueryFullProcessImageNameW",CharSet=CharSet.Unicode,SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)]private static extern bool QueryFullProcessImageName(SafeProcessHandle process,uint flags,StringBuilder path,ref uint size);
 }
