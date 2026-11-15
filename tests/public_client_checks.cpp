@@ -1476,6 +1476,16 @@ void IdentityChecks(const std::wstring& root) {
         WriteText(damaged, std::string(43, '+'));
         InstallIdentity plusSigns(damaged);
         Check(plusSigns.State() == IdentityState::Damaged, "only the url-safe alphabet is a key");
+
+        // The player deletes the damaged file, as the menu tells them: the same session makes a new key.
+        DeleteFileW(damaged.c_str());
+        Check(identity.State() == IdentityState::Missing, "a deleted damaged key is seen as missing at once");
+        std::string fingerprint;
+        Check(!identity.Fingerprint(&fingerprint), "no fingerprint before the new key");
+        Check(identity.Authorization(&header) && header.size() == 8 + kInstallKeyChars
+                      && FileText(damaged).substr(0, kInstallKeyChars) == header.substr(8),
+              "after the delete, the next write creates a new key without a restart");
+        Check(identity.State() == IdentityState::Ready && identity.Fingerprint(&fingerprint), "the new key is used");
     }
 }
 

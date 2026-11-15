@@ -6,7 +6,8 @@
 //
 // - The key is created on the first write that needs it, never by browsing: reading PUBLIC sends no identity.
 // - A key file that exists but cannot be read as a key is never overwritten (it may be the only proof of ownership of
-//   published items): State() says Damaged and writes are refused until the player deletes the file.
+//   published items): State() says Damaged and writes are refused until the player deletes the file (seen at the
+//   next State(), Authorization() or Fingerprint(), without a restart).
 // - Fingerprint() is SHA-256 of the secret (hex): it marks the items this install published (public_local.hpp), so
 //   "Publish update" is offered only to the install that owns an item. The secret itself is never logged, shown or
 //   written anywhere else.
@@ -115,6 +116,12 @@ public:
 private:
     // Loads the key file once it exists; Missing while it does not.
     IdentityState LoadLocked() {
+        if (state_ == IdentityState::Damaged && GetFileAttributesW(path_.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+                state_ = IdentityState::Missing; // the player deleted the damaged key, as told: a new one can be made
+            }
+        }
         if (state_ == IdentityState::Ready || state_ == IdentityState::Damaged) {
             return state_;
         }
