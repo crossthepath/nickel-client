@@ -24,7 +24,8 @@ same tokens at both revisions, the compiler sees the same program and the change
    /E is used instead of /EP: it is the same output plus #line directives, which are dropped from the comparison
    but give the source file and line of a difference.
 4. Tokenizes both outputs as C++ (identifiers, pp-numbers, string and character literals with escapes and prefixes,
-   raw strings, punctuators); whitespace, line breaks and #line directives are ignored, #pragma lines are compared.
+   raw strings, punctuators); whitespace, line breaks, #line directives and #pragma once are ignored (a header that
+   gets #pragma once when code moves into it compiles the same); other #pragma lines are compared.
 5. Prints "same tokens: <unit>" or the first differing token with context and source location on both sides.
 Exit code: 0 when every unit is the same, 1 when one differs or is missing at a revision, 2 on a usage or tool error.
 
@@ -57,6 +58,7 @@ CONTEXT = 8  # tokens shown on each side of a difference
 
 TOKEN = re.compile(r'''
     (?P<line>^[ \t]*\#[ \t]*line[ \t]+(?P<lnum>\d+)(?:[ \t]+"(?P<lfile>(?:[^"\\\n]|\\.)*)")?[^\n]*)
+  | (?P<once>^[ \t]*\#[ \t]*pragma[ \t]+once\b[^\n]*)
   | (?P<ws>\s+)
   | (?P<raw>(?:u8|u|U|L)?R"(?P<delim>[^\s()\\]{0,16})\([\s\S]*?\)(?P=delim)"(?:[A-Za-z_]\w*)?)
   | (?P<str>(?:u8|u|U|L)?"(?:[^"\\\n]|\\.)*"(?:[A-Za-z_]\w*)?)
@@ -187,6 +189,8 @@ class Tokens:
             if kind == 'ws':
                 line += value.count('\n')
                 continue
+            if kind == 'once':  # cl /E keeps #pragma once; it changes nothing once the header is included
+                continue
             if kind == 'line':
                 if m.group('lfile') is not None:
                     name = re.sub(r'\\(.)', r'\1', m.group('lfile'))
@@ -284,14 +288,16 @@ def main():
                 for rev, commit, t in zip((args.rev_a, args.rev_b), commits, toks):
                     print(f'  {rev} ({commit[:10]}) {t.where(i)}\n    {t.around(i)}')
         finally:
-            if tree.exists():
-                shutil.rmtree(tree, ignore_errors=True)
+            remove_tree(tree)  # junctions first: the working copy's submodules are never deleted
             if args.keep:
                 print(f'preprocessed outputs kept in {work}')
             else:
                 shutil.rmtree(work, ignore_errors=True)
     except ToolError as e:
         print(f'error: {e}', file=sys.stderr)
+        return 2
+    except Exception as e:  # any other failure is a tool error (2), never "different" (1)
+        print(f'error: {type(e).__name__}: {e}', file=sys.stderr)
         return 2
     return 1 if different else 0
 
