@@ -37,17 +37,6 @@ inline int64_t ActionNs(){LARGE_INTEGER f{},c{};QueryPerformanceFrequency(&f);Qu
 inline double ActionMs(int64_t since){return (double)(ActionNs()-since)/1000000.0;}
 inline volatile int actionStage=0;inline volatile uint64_t actionValue=0;   // last internal stage reached (crash diagnostics)
 inline void(*actionLog)(const char*)=nullptr;
-// Exception filter that logs the fault code and the faulting module + offset (one line per call), then handles it.
-inline int FaultLogFilter(const char* who,EXCEPTION_POINTERS* e){if(actionLog&&e&&e->ExceptionRecord){const auto* r=e->ExceptionRecord;const uintptr_t at=reinterpret_cast<uintptr_t>(r->ExceptionAddress);
-  HMODULE mod{};char name[MAX_PATH]="?";if(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCSTR>(at),&mod))GetModuleFileNameA(mod,name,MAX_PATH);
-  const char* base=strrchr(name,'\\');char line[400];snprintf(line,sizeof(line),"%s: fault %08lx at %s+0x%llx (address 0x%llx); stopped until restart",who,r->ExceptionCode,base?base+1:name,
-   (unsigned long long)(at-reinterpret_cast<uintptr_t>(mod)),(unsigned long long)(r->NumberParameters>1?r->ExceptionInformation[1]:0));actionLog(line);
-  // Return addresses into the faulting module found on the stack (call path).
-  if(mod&&e->ContextRecord){MODULEINFO info{};if(K32GetModuleInformation(GetCurrentProcess(),mod,&info,sizeof(info))){const uintptr_t lo=(uintptr_t)mod,hi=lo+info.SizeOfImage;
-   std::string path;const uint64_t* sp=reinterpret_cast<const uint64_t*>(e->ContextRecord->Rsp);int found=0;
-   for(int i=0;i<256&&found<8;++i){uint64_t v{};if(!Read((uintptr_t)(sp+i),&v))break;if(v>lo&&v<hi){char part[24];snprintf(part,sizeof(part)," +0x%llx",(unsigned long long)(v-lo));path+=part;++found;}}
-   if(!path.empty()){std::string text=std::string(who)+": stack"+path;actionLog(text.c_str());}}}}
- return EXCEPTION_EXECUTE_HANDLER;}
 inline void ActionFaultLog(const char* where,unsigned long code){if(actionLog){char line[160];snprintf(line,sizeof(line),"Actions: fault in %s (stage %d, code 0x%08lx, value %llx); action queue stopped",where,actionStage,code,(unsigned long long)actionValue);actionLog(line);}}
 
 // ---- player inventory
