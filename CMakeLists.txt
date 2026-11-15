@@ -112,6 +112,7 @@ if(Python3_FOUND)
   add_test(NAME catalog_sync_checks COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tools/sync_catalog.py --check)
   add_test(NAME tracked_inputs_checks COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tools/check_tracked_inputs.py)
   add_test(NAME game_builds_in_step COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tools/check_game_builds.py)
+  add_test(NAME game_builds_scan COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tools/check_game_builds_test.py)
   add_test(NAME boundary_checks COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tools/check_boundaries.py)
 endif()
 # Game build gate: version, header facts, section layout and loaded-code hash of the validated builds

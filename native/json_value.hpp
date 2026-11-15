@@ -212,6 +212,8 @@ struct ParseError {
 
 namespace detail {
 
+constexpr uint32_t kMaxCodePoint = 0x10FFFF; // not a game address: largest Unicode code point
+
 // Length of the valid UTF-8 sequence starting at text[at], or 0 when it is invalid (overlong forms, surrogates and
 // code points above U+10FFFF are invalid).
 inline size_t Utf8SequenceLength(std::string_view text, size_t at) {
@@ -248,7 +250,7 @@ inline size_t Utf8SequenceLength(std::string_view text, size_t at) {
         }
         code = (code << 6) | (next & 0x3F);
     }
-    if (code < min || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) {
+    if (code < min || code > kMaxCodePoint || (code >= 0xD800 && code <= 0xDFFF)) {
         return 0;
     }
     return length;
