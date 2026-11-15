@@ -11,6 +11,7 @@
 // tick / packetSend / packetReceive / chat / attack on the game thread (shared hooks).
 // The 2.1 API lives in script_api21.hpp (inventory, container, path, projectile, player.simulate, the 2.1 events).
 #include "script_limits.hpp"   // ScriptOverLimit (tested without the game)
+#include "script_keys.hpp"   // ScriptKeyDown (tested without the game)
 struct ScriptHandler{std::string event;int ref;};
 struct ScriptModule{int index=-1;std::string name;int enableRef=0,disableRef=0;std::vector<ScriptHandler> handlers;bool was=false;int activation=0;bool hud=false;float hudW=0,hudH=0;bool frame=false;float fx=0,fy=0,fs=1,fw=0,fh=0;
  bool rotating=false;float yaw=0,pitch=0;};
@@ -183,7 +184,9 @@ int AddTimer(lua_State* L,bool repeat){Script* s=ScriptOf(L);const double ms=std
 int ClientAfter(lua_State* L){return AddTimer(L,false);}
 int ClientEvery(lua_State* L){return AddTimer(L,true);}
 int ClientCancel(lua_State* L){Script* s=ScriptOf(L);const int id=(int)luaL_checknumber(L,1);for(size_t i=0;i<s->timers.size();++i)if(s->timers[i].id==id){lua_unref(L,s->timers[i].ref);s->timers.erase(s->timers.begin()+i);lua_pushboolean(L,1);return 1;}lua_pushboolean(L,0);return 1;}
-int ClientIsKeyDown(lua_State* L){const int code=ScriptKeyCode(luaL_checkstring(L,1));lua_pushboolean(L,code&&(GetAsyncKeyState(code)&0x8000)!=0);return 1;}
+// A key as scripts see it (client.isKeyDown, Hold modules): only while Minecraft is the foreground window (script_keys.hpp).
+bool ScriptGameKeyDown(int code){return ScriptKeyDown(code,GetForegroundWindow(),gameWindowForKeys?GetAncestor(gameWindowForKeys,GA_ROOT):nullptr,GetAsyncKeyState);}
+int ClientIsKeyDown(lua_State* L){lua_pushboolean(L,ScriptGameKeyDown(ScriptKeyCode(luaL_checkstring(L,1))));return 1;}
 int ClientServer(lua_State* L){game::Server server{};lua_createtable(L,0,3);if(game::ReadServer(&server)){lua_pushboolean(L,server.singleplayer);lua_setfield(L,-2,"local");if(!server.singleplayer){lua_pushstring(L,server.address);lua_setfield(L,-2,"address");lua_pushnumber(L,server.port);lua_setfield(L,-2,"port");}}else{lua_pushboolean(L,1);lua_setfield(L,-2,"local");}return 1;}
 int ClientTransport(lua_State* L){lua_pushstring(L,game::TransportName(game::CurrentTransport()));return 1;}   // "RakNet", "NetherNet" or "None"
 int ClientPing(lua_State* L){int64_t ms=0;game::PingTrace trace{};if(game::ReadPing(&ms,&trace)==1)lua_pushnumber(L,(double)ms);else lua_pushnil(L);return 1;}
@@ -417,7 +420,7 @@ void ScriptsFrame(std::vector<std::string>& drawn){
  ScanScripts();std::lock_guard<std::recursive_mutex> lock(scriptGuard);const double now=ScriptNow();bool camera=false;
  for(auto& sp:scripts){Script& s=*sp;if(s.state!=1||!s.L)continue;s.frameStart=now;
   for(size_t i=0;i<s.mods.size()&&s.state==1;++i){ScriptModule& m=s.mods[i];if(m.index<0)continue;Module& mod=modules[m.index];
-   if(m.activation==1){auto k=keycodes.find(mod.id);const bool held=k!=keycodes.end()&&(GetAsyncKeyState(k->second)&0x8000)!=0&&!opened&&KeysAllowed();if(mod.enabled!=held)mod.enabled=held;}
+   if(m.activation==1){auto k=keycodes.find(mod.id);const bool held=k!=keycodes.end()&&ScriptGameKeyDown(k->second)&&!opened&&KeysAllowed();if(mod.enabled!=held)mod.enabled=held;}
    if(mod.enabled!=m.was){m.was=mod.enabled;const int ref=mod.enabled?m.enableRef:m.disableRef;if(ref)ScriptInvoke(s,ref);}
    if(mod.enabled)for(auto& h:m.handlers)if(h.event=="render3d"||h.event=="render2d")camera=true;}
   // Expired timers (a timer cancelled during the loop is not called).
