@@ -47,6 +47,12 @@ jobs:
       - name: Offline tests
         run: ctest --test-dir build -C Release --output-on-failure
 
+      - name: Launcher checks
+        shell: pwsh
+        run: |
+          dotnet run --project tests/launcher_checks -c Release
+          if ($LASTEXITCODE -ne 0) { throw 'Launcher checks failed' }
+
       - name: Launcher and self-test
         shell: pwsh
         run: |
