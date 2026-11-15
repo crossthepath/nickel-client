@@ -1,0 +1,34 @@
+# Files clang-format must never touch. Read by clang-format 18 and later (one pattern per line, relative to this file);
+# older versions ignore this file, so pass only first-party paths to them.
+# Generated sources: regenerate them with their tool under tools/ instead of editing them (ui/catalog.js comes from
+# tools/sync_catalog.py).
+native/generated_*.hpp
+ui/catalog.js
+# Third-party code, kept as published upstream (git submodules). clang-format 18 and 19 match "*" and "**" alike and
+# never across "/", so each directory depth is listed explicitly (the deepest file today is 10 components deep).
+vendor/**
+third_party/**
+vendor/*
+vendor/*/*
+vendor/*/*/*
+vendor/*/*/*/*
+vendor/*/*/*/*/*
+vendor/*/*/*/*/*/*
+vendor/*/*/*/*/*/*/*
+vendor/*/*/*/*/*/*/*/*
+vendor/*/*/*/*/*/*/*/*/*
+vendor/*/*/*/*/*/*/*/*/*/*
+vendor/*/*/*/*/*/*/*/*/*/*/*
+vendor/*/*/*/*/*/*/*/*/*/*/*/*
+third_party/*
+third_party/*/*
+third_party/*/*/*
+third_party/*/*/*/*
+third_party/*/*/*/*/*
+third_party/*/*/*/*/*/*
+third_party/*/*/*/*/*/*/*
+third_party/*/*/*/*/*/*/*/*
+third_party/*/*/*/*/*/*/*/*/*
+third_party/*/*/*/*/*/*/*/*/*/*
+third_party/*/*/*/*/*/*/*/*/*/*/*
+third_party/*/*/*/*/*/*/*/*/*/*/*/*

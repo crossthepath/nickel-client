@@ -1,0 +1,51 @@
+# C and C++ formatting for Nickel (native/, include/, src/, tests/), checked with clang-format 19.
+# This is the target style for NEW code: readable first, one statement per line, consistent indentation, lines of
+# reasonable length. Existing files are NOT reformatted in bulk; a file moves to this style only in its own
+# formatting-only pull request (docs/contributing/formatting.md). Generated files, vendor/ and third_party/ are
+# excluded by .clang-format-ignore.
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++17                     # CMAKE_CXX_STANDARD in CMakeLists.txt
+UseTab: Never
+
+# Four spaces per level make nesting visible at a glance; wrapped lines get eight so they stand apart from the body.
+IndentWidth: 4
+ContinuationIndentWidth: 8
+AccessModifierOffset: -4            # public: / private: at the class's own indentation
+NamespaceIndentation: None
+IndentCaseLabels: true
+ColumnLimit: 120                    # fits a side-by-side diff; long expressions are split instead of hidden off-screen
+
+# One statement per line. A body always goes on its own lines, with braces, so that adding a statement never changes
+# the meaning of an if or a loop and a debugger can stop on every statement.
+AllowShortFunctionsOnASingleLine: Inline   # only one-line accessors written inside a class body
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortLambdasOnASingleLine: Inline     # a short lambda passed as an argument may stay on its line
+InsertBraces: true
+SeparateDefinitionBlocks: Always            # a blank line between function and class definitions
+MaxEmptyLinesToKeep: 1
+
+# Calls and declarations that do not fit put one argument or parameter per line rather than packing them.
+BinPackArguments: false
+BinPackParameters: false
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+AlwaysBreakTemplateDeclarations: Yes
+BreakBeforeBinaryOperators: NonAssignment   # a wrapped condition starts with its operator
+
+BreakBeforeBraces: Attach           # opening brace on the same line as the declaration or statement
+PointerAlignment: Left              # const T* value, not const T *value
+SpaceBeforeParens: ControlStatements  # if (x), for (...), f(x)
+FixNamespaceComments: true
+
+# Includes are never reordered: several headers are included inside menu.cpp's anonymous namespace and rely on the
+# declarations that come before them, so include order is part of the program. Blank-line groups stay as written.
+SortIncludes: Never
+IncludeBlocks: Preserve
+
+# Comments are written by hand (some explain a table or a layout line by line); clang-format must not rewrap them.
+ReflowComments: false
