@@ -22,9 +22,9 @@
 namespace game {
 // ---------------------------------------------------------------- game bindings
 inline uintptr_t HlBase(){uintptr_t base{};uint32_t size{};return Supported(&base,&size)?base:0;}
-inline uintptr_t HlBuilder(){const uintptr_t base=HlBase();uint64_t value{};return base&&Read(base+0x128c5048,&value)?(uintptr_t)value:0;}
+inline uintptr_t HlBuilder(){const uintptr_t base=HlBase();uint64_t value{};return base&&Read(base+Rva(0x128c5048),&value)?(uintptr_t)value:0;}
 inline uintptr_t HlScene(){const uintptr_t builder=HlBuilder();uint64_t scene{};return builder&&Read(builder+0x380,&scene)?(uintptr_t)scene:0;}
-inline uintptr_t HlItems(uintptr_t scene){const uintptr_t base=HlBase();if(!base||!scene)return 0;return reinterpret_cast<uintptr_t(*)(uintptr_t)>(base+0x5aba5c0)(scene+0x9d0);}
+inline uintptr_t HlItems(uintptr_t scene){const uintptr_t base=HlBase();if(!base||!scene)return 0;return reinterpret_cast<uintptr_t(*)(uintptr_t)>(base+Rva(0x5aba5c0))(scene+0x9d0);}
 inline uint64_t HlCount(uintptr_t list){uint64_t b{},e{};if(!list||!Read(list,&b)||!Read(list+8,&e)||e<b)return 0;return (e-b)/200;}
 inline uint8_t* HlItem(uintptr_t list,uint64_t index){uint64_t b{};return Read(list,&b)?reinterpret_cast<uint8_t*>(b+index*200):nullptr;}
 inline void HlCount_(int i);
@@ -246,7 +246,7 @@ struct HlArgs{uint64_t v[21];};
 inline uint64_t HlCallPass(HlArgs& a,uint8_t copy9[24],uint8_t copy11[24],uint64_t idx,uint64_t count){
  const uintptr_t base=HlBase();uint64_t value{};
  if(idx+1==count){Read(a.v[10]+8,&value);}   // last pass: the real output is the incoming arg11.q1
- else{uint64_t q1{};Read(a.v[8]+8,&q1);value=reinterpret_cast<uint64_t(*)(uint64_t,uint64_t,uint64_t)>(base+0x5698290)(a.v[0],a.v[0],q1+8);}
+ else{uint64_t q1{};Read(a.v[8]+8,&q1);value=reinterpret_cast<uint64_t(*)(uint64_t,uint64_t,uint64_t)>(base+Rva(0x5698290))(a.v[0],a.v[0],q1+8);}
  std::memcpy(copy11+8,&value,8);
  const uint64_t result=hlGraphOriginal(a.v[0],a.v[1],a.v[2],a.v[3],a.v[4],a.v[5],a.v[6],a.v[7],(uint64_t)copy9,a.v[9],(uint64_t)copy11,a.v[11],a.v[12],a.v[13],a.v[14],a.v[15],a.v[16],a.v[17],a.v[18],a.v[19],a.v[20]);
  std::memcpy(copy9+8,copy11+8,8);return result;
@@ -341,10 +341,10 @@ inline int InstallHighlightHooks(void(*log)(const char*)){
   {0x4df8370,{0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53},12,(void*)HlMaterialDetour,(void**)&hlMaterialOriginal},
   {nickel::visual::kHighlightExcludePassRva[0],{0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x98,0x0c},17,(void*)HlExcludeDetour<0>,(void**)&hlExcludeOriginal[0]},
   {nickel::visual::kHighlightExcludePassRva[1],{0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x98,0x0c},17,(void*)HlExcludeDetour<1>,(void**)&hlExcludeOriginal[1]}};
- for(const auto& h:hooks)for(size_t i=0;i<h.byteCount;++i){uint8_t v{};if(!Read(base+h.rva+i,&v)||v!=h.bytes[i]){if(log)log("Highlight: unexpected game code, hooks not installed");return status;}}
- size_t created=0;auto rollback=[&](const char* why){for(size_t i=0;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));if(log)log(why);return status;};
- for(const auto& h:hooks){if(MH_CreateHook((void*)(base+h.rva),h.detour,h.original)!=MH_OK)return rollback("Highlight: could not create hooks");++created;}
- for(const auto& h:hooks)if(MH_QueueEnableHook((void*)(base+h.rva))!=MH_OK)return rollback("Highlight: could not queue hooks");
+ for(const auto& h:hooks)if(!CodeIs(base+Rva(h.rva),h.bytes,(int)h.byteCount)){if(log)log("Highlight: unexpected game code, hooks not installed");return status;}
+ size_t created=0;auto rollback=[&](const char* why){for(size_t i=0;i<created;++i)MH_RemoveHook((void*)(base+Rva(hooks[i].rva)));if(log)log(why);return status;};
+ for(const auto& h:hooks){if(MH_CreateHook((void*)(base+Rva(h.rva)),h.detour,h.original)!=MH_OK)return rollback("Highlight: could not create hooks");++created;}
+ for(const auto& h:hooks)if(MH_QueueEnableHook((void*)(base+Rva(h.rva)))!=MH_OK)return rollback("Highlight: could not queue hooks");
  if(MH_ApplyQueued()!=MH_OK)return rollback("Highlight: could not enable hooks");
  actorRenderPre=HlActorPre;actorRenderPost=HlActorPost;actorAddHighlight=HlAddGuarded;
  if(InstallHandHooks(log)==1){handRenderPre=HlHandPre;handRenderPost=HlHandPost;offHandPre=HlOffPre;offHandPost=HlOffPost;}else if(log)log("Highlight: hand hooks unavailable, Hand Chams disabled");

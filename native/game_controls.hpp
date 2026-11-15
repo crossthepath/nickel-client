@@ -57,14 +57,14 @@ inline void PopupGuarded(void* text){__try{PopupWork((uint64_t)text);}__except(E
 inline bool PopupDetour(void* a,void* text,void* c,void* d){const bool result=popupOriginal(a,text,c,d);if(result&&!Format().fault)PopupGuarded(text);return result;}
 inline int InstallPopupHook(void(*log)(const char*)){
  static int state=0;if(state)return state;state=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return state;
- const uint8_t expected[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0xd8};for(int i=0;i<16;++i){uint8_t byte{};if(!Read(base+0x4d55810+i,&byte)||byte!=expected[i]){if(log)log("Item Name: unexpected bytes at the item text function, no hook installed");return state;}}
- if(MH_CreateHook((void*)(base+0x4d55810),(void*)PopupDetour,(void**)&popupOriginal)!=MH_OK||MH_EnableHook((void*)(base+0x4d55810))!=MH_OK){if(log)log("Item Name: MinHook could not install the item text hook");return state;}
+ const uint8_t expected[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0xd8};if(!CodeIs(base+Rva(0x4d55810),expected,16)){if(log)log("Item Name: unexpected bytes at the item text function, no hook installed");return state;}
+ if(MH_CreateHook((void*)(base+Rva(0x4d55810)),(void*)PopupDetour,(void**)&popupOriginal)!=MH_OK||MH_EnableHook((void*)(base+Rva(0x4d55810)))!=MH_OK){if(log)log("Item Name: MinHook could not install the item text hook");return state;}
  if(log)log("Item Name: item text hook installed");state=1;return state;
 }
 inline int InstallControlHook(void(*log)(const char*)){
  static int state=0;if(state)return state;state=-1;if(InstallScreenHook(log)!=1)return state;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return state;
- const uint8_t expected[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x78};for(int i=0;i<16;++i){uint8_t byte{};if(!Read(base+0x4ca6610+i,&byte)||byte!=expected[i]){if(log)log("Native controls: unexpected bytes at the control render function, no hook installed");return state;}}
- if(MH_CreateHook((void*)(base+0x4ca6610),(void*)ControlDetour,(void**)&controlOriginal)!=MH_OK||MH_EnableHook((void*)(base+0x4ca6610))!=MH_OK){if(log)log("Native controls: MinHook could not install the control hook");return state;}
+ const uint8_t expected[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x78};if(!CodeIs(base+Rva(0x4ca6610),expected,16)){if(log)log("Native controls: unexpected bytes at the control render function, no hook installed");return state;}
+ if(MH_CreateHook((void*)(base+Rva(0x4ca6610)),(void*)ControlDetour,(void**)&controlOriginal)!=MH_OK||MH_EnableHook((void*)(base+Rva(0x4ca6610)))!=MH_OK){if(log)log("Native controls: MinHook could not install the control hook");return state;}
  if(log)log("Native controls: control render hook installed");state=1;return state;
 }
 }

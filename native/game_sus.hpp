@@ -188,7 +188,7 @@ inline void SusWork(void* levelPointer){
   if(flag.highY<flag.lowY){flag.lowY=by;flag.highY=by;}
   const bool fresh=state.flagged.find(key)==state.flagged.end();state.flagged[key]=flag;published=true;
   if(fresh&&config.notify){std::string text="\xc2\xa7""7[\xc2\xa7""dNickel\xc2\xa7""7] \xc2\xa7""7Sus chunk at X: "+std::to_string(x*16)+" Z: "+std::to_string(z*16)+" ("+SusReasons(flag)+")";std::optional<std::string> none;
-   reinterpret_cast<void(*)(uint64_t,const std::string*,std::optional<std::string>*)>(context.base+0x6da9820)(context.actor,&text,&none);}}
+   reinterpret_cast<void(*)(uint64_t,const std::string*,std::optional<std::string>*)>(context.base+Rva(0x6da9820))(context.actor,&text,&none);}}
  if(published){std::vector<SusFlag> out;out.reserve(state.flagged.size());for(auto& e:state.flagged)out.push_back(e.second);AcquireSRWLockExclusive(&shared.lock);shared.flagged.swap(out);ReleaseSRWLockExclusive(&shared.lock);}
  InterlockedIncrement(&shared.ticks);
 }

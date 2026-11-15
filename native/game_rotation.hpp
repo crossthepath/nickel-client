@@ -73,7 +73,7 @@ inline void RotApply(RotManager& m,RotRequest& r,uintptr_t actor){Context c{};Cl
    factor=1.f-expf(-(step<0?0:step)*r.speed);factor=factor<0?0:(factor>1?1:factor);}
   dy*=factor;dp*=factor;if(r.hasMax){const float s=r.maxStep;dy=dy>s?s:(dy<-s?-s:dy);dp=dp>s?s:(dp<-s?-s:dp);}
   const float yaw=fmodf(dy+cy,360.f),pitch=RotClampPitch(dp+cp);
-  if(r.mode<2){float turn[2]={-dp,dy};reinterpret_cast<void(*)(uintptr_t,float*)>(c.base+0x6da57d0)(actor,turn);}   // game turn function
+  if(r.mode<2){float turn[2]={-dp,dy};reinterpret_cast<void(*)(uintptr_t,float*)>(c.base+Rva(0x6da57d0))(actor,turn);}   // game turn function
   r.out[0]=pitch;r.out[1]=r.hasHead?r.head:yaw;r.out[2]=yaw;r.hasOut=true;r.fresh=false;}
  bool keep=false;
  if(r.mode==1||r.mode==2){uint64_t rot{};if(Read(actor+0x250,&rot)&&rot){*(float*)rot=r.out[0];*(float*)(rot+4)=r.out[2];}   // write rotation and head

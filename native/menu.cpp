@@ -243,9 +243,9 @@ static void ReadPackFileWork(const std::string& path,std::vector<std::string>& o
  const uint64_t host=reinterpret_cast<uint64_t(*)(uint64_t)>(hostOf)(c.client);uint64_t stack{},begin{},end{};if(!host||!game::Read(host+0x58,&stack)||!stack||!game::Read(stack+8,&begin)||!game::Read(stack+0x10,&end)||end<begin)return;
  struct Span{uint64_t count,begin;}span{(end-begin)/0x128,begin};/* gsl::span: size, then pointer */struct Location{uint32_t system;uint32_t pad;std::string path;uint64_t hash,full;}location{};location.path=path;location.hash=game::Fnv64(path);location.full=(0xcbf29ce484222325ull*0x100000001b3ull)^location.hash;
  struct Filter{bool(*fn)();uint64_t zero;}filter{&AcceptAllPacks,0};uint64_t results[3]{};
- reinterpret_cast<void(*)(uint64_t*,Span*,Location*,Filter*)>(c.base+0x17c2840)(results,&span,&location,&filter);
+ reinterpret_cast<void(*)(uint64_t*,Span*,Location*,Filter*)>(c.base+game::Rva(0x17c2840))(results,&span,&location,&filter);
  for(uint64_t at=results[0];at&&at<results[1];at+=0xd8){uint64_t size{},cap{},data{};if(game::Read(at+0x10,&size)&&game::Read(at+0x18,&cap)&&size<=0x800000){data=cap<16?at:0;if(cap>=16)game::Read(at,&data);if(data)out.emplace_back((const char*)data,(size_t)size);}
-  reinterpret_cast<void(*)(uint64_t)>(c.base+0x1158f0)(at);}   // the array itself stays allocated (game allocator)
+  reinterpret_cast<void(*)(uint64_t)>(c.base+game::Rva(0x1158f0))(at);}   // the array itself stays allocated (game allocator)
 }
 static bool ReadPackFileGuarded(const std::string* path,std::vector<std::string>* out){__try{ReadPackFileWork(*path,*out);return true;}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
 static std::vector<std::string> ReadPackFileForIcons(const std::string& path){std::vector<std::string> out;static bool broken=false;if(broken)return out;if(!ReadPackFileGuarded(&path,&out)){broken=true;out.clear();if(WriteLog)WriteLog("Icons: a fault was caught while reading a resource pack file; registry icons are disabled");}return out;}

@@ -78,7 +78,7 @@ inline bool AutoSignReceiveWork(uintptr_t packet){auto& s=AutoSign();std::string
   for(auto& line:s.lines){if(!text.empty())text+="\n";text+=line;}if(text.size()>256)text.resize(256);both=s.both;}
  Context c{};if(!Local(&c))return false;const uint64_t region=ActorRegion(c);if(!region)return false;const uint64_t be=RegionBlockEntity(c,region,reinterpret_cast<const int32_t*>(packet+0x30));if(!be)return false;
  const uint8_t type=*reinterpret_cast<uint8_t*>(be+0x14);if(type!=0x32&&type!=4)return false;
- using SetMessage=void(*)(uint64_t,int,std::string*);{std::string a=text;reinterpret_cast<SetMessage>(c.base+0x4c5b880)(be,0,&a);}if(both){std::string b=text;reinterpret_cast<SetMessage>(c.base+0x4c5b880)(be,1,&b);}
+ using SetMessage=void(*)(uint64_t,int,std::string*);{std::string a=text;reinterpret_cast<SetMessage>(c.base+Rva(0x4c5b880))(be,0,&a);}if(both){std::string b=text;reinterpret_cast<SetMessage>(c.base+Rva(0x4c5b880))(be,1,&b);}
  const uint64_t make=Virtual0(c,be,0x90);if(!make)return false;uint64_t update=0;reinterpret_cast<void(*)(uint64_t,uint64_t*,uint64_t)>(make)(be,&update,region);if(!update)return false;
  const uint64_t get=Virtual0(c,c.client,0x910);const uint64_t sender=get?reinterpret_cast<uint64_t(*)(uint64_t)>(get)(c.client):0;const uint64_t send=sender?Virtual0(c,sender,0x10):0;
  if(send)reinterpret_cast<void(*)(uint64_t,uint64_t)>(send)(sender,update);const uint64_t destroy=Virtual0(c,update,0);if(destroy)reinterpret_cast<void(*)(uint64_t,int)>(destroy)(update,1);return true;}
@@ -118,7 +118,7 @@ inline bool InstaPacketPre(uint64_t gm,int32_t* pos,float* delta){auto& s=InstaB
  if(white&&!InstaBreakAllowed(gm,pos,blocks))return false;
  uint8_t destroying{};Read(actor+0xb4a,&destroying);int32_t cur[3]{};for(int i=0;i<3;++i)Read(gm+0x10+i*4,&cur[i]);
  if(destroying==1&&cur[0]==pos[0]&&cur[1]==pos[1]&&cur[2]==pos[2]){const uint64_t region=ActorRegion(c);if(!region)return false;const uint64_t block=RegionBlock(c,region,pos);
-  const float d=reinterpret_cast<float(*)(uint64_t,uint64_t)>(c.base+0x376b010)(gm,block);if(!(d>0.f))return false;   // destroy speed of the block
+  const float d=reinterpret_cast<float(*)(uint64_t,uint64_t)>(c.base+Rva(0x376b010))(gm,block);if(!(d>0.f))return false;   // destroy speed of the block
   float progress=*(float*)(gm+0x24);int ticks=(int)ceilf((0.99999f-progress)/d);if(ticks<1)ticks=0;const int before=s.budget;int want=ticks+before-1;want=ticks+before>0?want:0;if(limit<want)want=limit;
   const int sent=InstaSendCopies(s,actor,want);const int used=sent<before?sent:before;s.budget=before-used;
   *(float*)(gm+0x24)=(float)((sent-used)-((before-used!=0&&used<=before)?1:0))*d+progress;*(uint64_t*)(gm+0x90)=0;*delta=d;return true;}
@@ -161,8 +161,8 @@ inline uint32_t DestroyDetour(uint64_t gm,int32_t* pos,uint8_t face,uint64_t r9,
  if(on&&haste&&destroyed&&*destroyed==1)*reinterpret_cast<uint64_t*>(gm+0x90)=0;if(packetMode&&destroyed&&*destroyed==1)InstaPacketPost(gm,delta);return r;}
 inline int InstallBlockActionHooks(void(*log)(const char*)){static int state=0;if(state)return state;state=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return state;
  const uint8_t build[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x58},destroy[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0xd8};
- for(int i=0;i<16;++i){uint8_t a{},b{};if(!Read(base+0x376b1f0+i,&a)||a!=build[i]||!Read(base+0x376a590+i,&b)||b!=destroy[i]){if(log)log("Utility: unexpected code at the block action hooks");return state;}}
- if(MH_CreateHook((void*)(base+0x376b1f0),(void*)BuildBlockDetour,(void**)&buildBlockOriginal)!=MH_OK||MH_CreateHook((void*)(base+0x376a590),(void*)DestroyDetour,(void**)&destroyOriginal)!=MH_OK){if(log)log("Utility: block action hooks not created");return state;}
- MH_QueueEnableHook((void*)(base+0x376b1f0));MH_QueueEnableHook((void*)(base+0x376a590));if(MH_ApplyQueued()!=MH_OK){if(log)log("Utility: block action hooks not enabled");return state;}
+ for(int i=0;i<16;++i){uint8_t a{},b{};if(!Read(base+Rva(0x376b1f0)+i,&a)||a!=build[i]||!Read(base+Rva(0x376a590)+i,&b)||b!=destroy[i]){if(log)log("Utility: unexpected code at the block action hooks");return state;}}
+ if(MH_CreateHook((void*)(base+Rva(0x376b1f0)),(void*)BuildBlockDetour,(void**)&buildBlockOriginal)!=MH_OK||MH_CreateHook((void*)(base+Rva(0x376a590)),(void*)DestroyDetour,(void**)&destroyOriginal)!=MH_OK){if(log)log("Utility: block action hooks not created");return state;}
+ MH_QueueEnableHook((void*)(base+Rva(0x376b1f0)));MH_QueueEnableHook((void*)(base+Rva(0x376a590)));if(MH_ApplyQueued()!=MH_OK){if(log)log("Utility: block action hooks not enabled");return state;}
  if(log)log("Utility: build and continue-destroy hooks installed");state=1;return state;}
 }

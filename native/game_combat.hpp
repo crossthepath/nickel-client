@@ -94,7 +94,7 @@ inline bool AttackActor(const Context& c,uintptr_t target){   // swing, then att
  uint64_t* head=(uint64_t*)::operator new(0x38);head[0]=head[1]=(uint64_t)head;*(uint64_t*)(inv+8)=(uint64_t)head;*(uint64_t*)(inv+0x10)=0;
  uint64_t* buckets=(uint64_t*)::operator new(0x80);for(int i=0;i<16;++i)buckets[i]=(uint64_t)head;
  *(uint64_t*)(inv+0x18)=(uint64_t)buckets;*(uint64_t*)(inv+0x20)=(uint64_t)(buckets+16);*(uint64_t*)(inv+0x28)=(uint64_t)(buckets+16);*(uint64_t*)(inv+0x30)=7;*(uint64_t*)(inv+0x38)=8;
- DescriptorBuild(c,(uint64_t)(t+0x80),stack);*(uint64_t*)t=c.base+0xf15a0f0;*(int32_t*)(t+8)=3;
+ DescriptorBuild(c,(uint64_t)(t+0x80),stack);*(uint64_t*)t=c.base+Rva(0xf15a0f0);*(int32_t*)(t+8)=3;
  *(uint64_t*)(t+0x68)=id;*(int32_t*)(t+0x70)=1;*(int32_t*)(t+0x74)=*sel;memcpy(t+0xe0,pos,12);memcpy(t+0xec,point,12);
  SendUseTransaction(c,c.actor,t);return true;}
 

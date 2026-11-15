@@ -145,10 +145,10 @@ inline uint64_t HashedStringHash(const std::string& text){uint64_t hash=0xcbf29c
 inline uint64_t* Material(const Context& context,bool depthTested){
  static uint64_t pointers[2][2]{};static bool made[2]{};const int which=depthTested?1:0;if(made[which])return pointers[which][0]?pointers[which]:nullptr;made[which]=true;
  static HashedName* names[2]{};names[which]=new HashedName{};names[which]->text=depthTested?"name_tag_depth_tested":"name_tag";names[which]->hash=HashedStringHash(names[which]->text);
- const uint64_t group=context.base+0x129c8290,make=Virtual(context,group,8);if(!make)return nullptr;reinterpret_cast<void*(*)(uint64_t,uint64_t*,HashedName*)>(make)(group,pointers[which],names[which]);return pointers[which][0]?pointers[which]:nullptr;
+ const uint64_t group=context.base+Rva(0x129c8290),make=Virtual(context,group,8);if(!make)return nullptr;reinterpret_cast<void*(*)(uint64_t,uint64_t*,HashedName*)>(make)(group,pointers[which],names[which]);return pointers[which][0]?pointers[which]:nullptr;
 }
 struct Pen{const Context* context;uint64_t tess,camera;Mat4 view,back;float nearPlane;};
-inline void PenVertex(const Pen& pen,const float* color,float x,float y,float z){reinterpret_cast<void(*)(uint64_t,float,float,float,float)>(pen.context->base+0x5417890)(pen.tess,color[0],color[1],color[2],color[3]);reinterpret_cast<void(*)(uint64_t,float,float,float)>(pen.context->base+0x5417950)(pen.tess,x,y,z);}
+inline void PenVertex(const Pen& pen,const float* color,float x,float y,float z){reinterpret_cast<void(*)(uint64_t,float,float,float,float)>(pen.context->base+Rva(0x5417890))(pen.tess,color[0],color[1],color[2],color[3]);reinterpret_cast<void(*)(uint64_t,float,float,float)>(pen.context->base+Rva(0x5417950))(pen.tess,x,y,z);}
 inline void PenQuad(const Pen& pen,const float* color,const float corners[4][3]){for(int i=0;i<4;++i)PenVertex(pen,color,corners[i][0],corners[i][1],corners[i][2]);for(int i=3;i>=0;--i)PenVertex(pen,color,corners[i][0],corners[i][1],corners[i][2]);}
 inline void PenSegment(const Pen& pen,const float* a,const float* b,float thickness,const float* colorA,const float* colorB){
  auto toView=[&](const float* p,float* out){for(int row=0;row<3;++row)out[row]=pen.view.m[row]*p[0]+pen.view.m[4+row]*p[1]+pen.view.m[8+row]*p[2]+pen.view.m[12+row];};float va[3],vb[3];toView(a,va);toView(b,vb);const float n=pen.nearPlane;
@@ -159,12 +159,12 @@ inline void PenSegment(const Pen& pen,const float* a,const float* b,float thickn
  for(int i=0;i<4;++i)PenVertex(pen,i<2?colorA:colorB,world[i][0],world[i][1],world[i][2]);for(int i=3;i>=0;--i)PenVertex(pen,i<2?colorA:colorB,world[i][0],world[i][1],world[i][2]);
 }
 inline void PenSegment(const Pen& pen,const float* a,const float* b,float thickness,const float* color){PenSegment(pen,a,b,thickness,color,color);}
-inline void PenBegin(const Pen& pen,int vertices){reinterpret_cast<void(*)(uint64_t,int,int,int,bool)>(pen.context->base+0x54175a0)(pen.tess,0,1,vertices,false);}
+inline void PenBegin(const Pen& pen,int vertices){reinterpret_cast<void(*)(uint64_t,int,int,int,bool)>(pen.context->base+Rva(0x54175a0))(pen.tess,0,1,vertices,false);}
 inline void PenFlush(const Pen& pen,uint64_t ctx,uint64_t* material){
  uint64_t colour{},top{};const uint64_t stack=pen.camera+0x40;if(!Read(ctx+0x30,&colour)||!colour)return;const bool hasTop=StackLevel(stack,0,&top);uint8_t savedColour[17];float savedShift[3];Mat4 savedTop{};memcpy(savedColour,(void*)colour,17);memcpy(savedShift,(void*)(pen.tess+0x1cc),12);
  const float white[4]={1,1,1,1},zero[3]={0,0,0};memcpy((void*)colour,white,16);*(uint8_t*)(colour+16)=1;memcpy((void*)(pen.tess+0x1cc),zero,12);
  if(hasTop){memcpy(savedTop.m,(void*)top,64);Mat4 scaled=savedTop;for(int c=0;c<4;++c)for(int row=0;row<3;++row)scaled.m[c*4+row]*=.999f;memcpy((void*)top,scaled.m,64);*(uint8_t*)(stack+0x38)=1;}
- alignas(16) uint8_t blank[0x58]{};reinterpret_cast<void(*)(uint64_t,uint64_t,uint64_t*,uint8_t*)>(pen.context->base+0x5ad6750)(ctx,pen.tess,material,blank);
+ alignas(16) uint8_t blank[0x58]{};reinterpret_cast<void(*)(uint64_t,uint64_t,uint64_t*,uint8_t*)>(pen.context->base+Rva(0x5ad6750))(ctx,pen.tess,material,blank);
  memcpy((void*)colour,savedColour,17);memcpy((void*)(pen.tess+0x1cc),savedShift,12);if(hasTop){memcpy((void*)top,savedTop.m,64);*(uint8_t*)(stack+0x38)=1;}
 }
 inline bool PenOpen(const Context& context,uint64_t ctx,Pen* pen){uint64_t top{};pen->context=&context;if(!Read(ctx+0xb0,&pen->tess)||!pen->tess||!Read(ctx+0x18,&pen->camera)||!pen->camera||!StackLevel(pen->camera,0,&top)||!Floats(top,pen->view.m,16)||!Floats(pen->camera+0xc0,pen->back.m,16)||!Read(pen->camera+0x138,&pen->nearPlane))return false;pen->nearPlane=std::max(.001f,pen->nearPlane);return true;}
@@ -186,8 +186,8 @@ inline void OutlineDetour(void* renderer,void* holder,void* c,int* position,uint
 
 // Installs a hook after checking its first bytes; 1 installed, -1 refused.
 inline int InstallOne(uint32_t rva,const uint8_t* bytes,int count,void* detour,void** original,const char* what,void(*log)(const char*)){
- uintptr_t base{};uint32_t size{};char line[160]{};if(!Supported(&base,&size))return -1;for(int i=0;i<count;++i){uint8_t byte{};if(!Read(base+rva+i,&byte)||byte!=bytes[i]){snprintf(line,sizeof(line),"%s: unexpected bytes at the game function, no hook installed",what);if(log)log(line);return -1;}}
- if(MH_CreateHook((void*)(base+rva),detour,original)!=MH_OK||MH_EnableHook((void*)(base+rva))!=MH_OK){snprintf(line,sizeof(line),"%s: MinHook could not install the hook",what);if(log)log(line);return -1;}snprintf(line,sizeof(line),"%s: hook installed",what);if(log)log(line);return 1;
+ uintptr_t base{};uint32_t size{};char line[160]{};if(!Supported(&base,&size))return -1;if(!CodeIs(base+Rva(rva),bytes,count)){snprintf(line,sizeof(line),"%s: unexpected bytes at the game function, no hook installed",what);if(log)log(line);return -1;}
+ if(MH_CreateHook((void*)(base+Rva(rva)),detour,original)!=MH_OK||MH_EnableHook((void*)(base+Rva(rva)))!=MH_OK){snprintf(line,sizeof(line),"%s: MinHook could not install the hook",what);if(log)log(line);return -1;}snprintf(line,sizeof(line),"%s: hook installed",what);if(log)log(line);return 1;
 }
 // Hook #230 is shared by the hand modules (View Model...) and Freecam; installed once.
 inline const uint8_t handRenderBytes[24]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x68,0x02,0x00,0x00,0x48,0x8d,0xac,0x24,0x80};
@@ -200,8 +200,8 @@ inline int InstallArmorHook(void(*log)(const char*)){static int state=0;if(state
 inline int InstallOutlineHook(void(*log)(const char*)){static int state=0;if(state)return state;const uint8_t bytes[24]={0x41,0x57,0x41,0x56,0x56,0x57,0x55,0x53,0x48,0x83,0xec,0x48,0x4d,0x89,0xce,0x4c,0x89,0xc6,0x48,0x89,0xd7,0x48,0x89,0xcb};state=InstallOne(0x539de60,bytes,24,(void*)OutlineDetour,(void**)&outlineOriginal,"Block Outline",log);return state;}
 // Third Person Nametags: the "je" of the nametag loop becomes two "nop"s; `on` false restores the game's bytes.
 inline int PatchOwnNametag(bool on,void(*log)(const char*)){
- static bool applied=false;if(on==applied)return 1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return -1;uint8_t* at=(uint8_t*)(base+0x5397e23);const uint8_t before[10]={0x48,0x8b,0x1e,0x48,0x3b,0x9d,0xb8,0x00,0x00,0x00};
- for(int i=0;i<10;++i){uint8_t byte{};if(!Read(base+0x5397e19+i,&byte)||byte!=before[i]){if(log)log("Third Person Nametags: unexpected code before the patch site, nothing written");return -1;}}
+ static bool applied=false;if(on==applied)return 1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return -1;uint8_t* at=(uint8_t*)(base+Rva(0x5397e23));const uint8_t before[10]={0x48,0x8b,0x1e,0x48,0x3b,0x9d,0xb8,0x00,0x00,0x00};
+ if(!CodeIs(base+Rva(0x5397e19),before,10)){if(log)log("Third Person Nametags: unexpected code before the patch site, nothing written");return -1;}
  uint8_t now[2]{};if(!Read((uintptr_t)at,&now[0])||!Read((uintptr_t)at+1,&now[1]))return -1;const uint8_t jump[2]={0x74,0xdb},nops[2]={0x90,0x90};if(memcmp(now,on?jump:nops,2)){if(log)log("Third Person Nametags: unexpected bytes at the patch site, nothing written");return -1;}
  DWORD old{};if(!VirtualProtect(at,2,PAGE_EXECUTE_READWRITE,&old))return -1;memcpy(at,on?nops:jump,2);VirtualProtect(at,2,old,&old);FlushInstructionCache(GetCurrentProcess(),at,2);applied=on;if(log)log(on?"Third Person Nametags: patch applied":"Third Person Nametags: original bytes restored");return 1;
 }

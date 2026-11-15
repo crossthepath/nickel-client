@@ -2,7 +2,7 @@
 // resource, its entry point and load-time directories, the address and size of its code, constant, data and relocation
 // sections, and the SHA-256 of its loaded code. Checks run on synthetic PE headers and buffers (no game file needed),
 // plus the version resource reader on kernel32.dll and on this test executable.
-#include "game_build.hpp"
+#include "game_read.hpp"
 #include <cstdio>
 #include <vector>
 
@@ -47,6 +47,19 @@ int main(){
  std::vector<uint8_t> image(0x1100,0x5a);GameBuildProfile profile=B;profile.sections[0]={".text",0x1000u,0x100u};Sha256(image.data()+0x1000,0x100,profile.textSha256);
  check(CodeMatches(image.data(),profile),"loaded code equal to the build is accepted");
  image[0x1080]^=1;check(!CodeMatches(image.data(),profile),"loaded code that differs by one byte is refused");
+ // Address translation: the reference build is the identity; 1.26.63.1 reproduces every verified point and data pair.
+ {bool all=true;for(const auto& p:kPoints_1_26_63_1)all=all&&TranslateRva(kGameBuilds[1],p.from)==p.to;check(all,"every verified 1.26.63.1 code address translates exactly");}
+ {bool all=true;for(const auto& p:kData_1_26_63_1)all=all&&TranslateRva(kGameBuilds[1],p.from)==p.to;check(all,"every 1.26.63.1 data address translates exactly");}
+ check(TranslateRva(kGameBuilds[1],0xf115f20u)==0xf115f00u&&TranslateRva(kGameBuilds[1],0x128c0f90u)==0x128c0f90u,"moved and unmoved data addresses");
+ check(TranslateRva(kGameBuilds[0],0x376b010u)==0x376b010u&&TranslateRva(kGameBuilds[0],0x12345678u)==0x12345678u,"the reference build translates to itself");
+ check(TranslateRva(kGameBuilds[1],0x128c0f98u)==0u,"a data address the profile does not know translates to 0");
+ // CodeIs: exact in the reference build; relative fields masked in a translated build.
+ {const uint8_t ref[11]={0x48,0x8b,0x05,0x11,0x22,0x33,0x44,0xe8,0x01,0x02,0x03};uint8_t game[16]={0x48,0x8b,0x05,0xaa,0xbb,0xcc,0xdd,0xe8,0x09,0x08,0x07,0x00};
+  const uintptr_t at=(uintptr_t)game;currentBuild=0;check(!CodeIs(at,ref,11),"reference build: other displacements are refused");
+  currentBuild=1;check(CodeIs(at,ref,11),"translated build: only RIP-relative and rel32 fields differ, accepted");
+  game[1]=0x8d;check(!CodeIs(at,ref,11),"translated build: another instruction is refused");
+  game[1]=0x8b;const uint8_t frame[8]={0x56,0x57,0x48,0x83,0xec,0x28,0x8b,0x02};uint8_t same[8];memcpy(same,frame,8);check(CodeIs((uintptr_t)same,frame,8),"translated build: identical bytes accepted");
+  same[5]=0x38;check(!CodeIs((uintptr_t)same,frame,8),"translated build: a different stack size is refused");currentBuild=-1;}
  uint16_t v[4]{};check(GameVersion(GetModuleHandleW(L"kernel32.dll"),v)&&v[0]>=6,"the version of a versioned module is read");
  check(MatchBuild((const uint8_t*)GetModuleHandleW(L"kernel32.dll"),v)<0,"a Windows module is not a game build");
  uint16_t none[4]{};check(!GameVersion(GetModuleHandleW(nullptr),none),"a module without a version resource has no version");

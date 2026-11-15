@@ -70,7 +70,7 @@ inline bool XrayBlockActorHidden(uint64_t context,uint64_t source,uint64_t posit
 // Rebuilds the chunk meshes.
 inline void XrayReloadChunks(){Context c{};if(!Client(&c))return;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return;uint64_t table{},fn{},lr{},head{},node{};
  if(!Read(c.client,&table)||!Read(table+0x5c8,&fn)||!fn||!CallGetter(fn,c.client,&lr)||!lr||!Read(lr+0x30,&head)||!head||!Read(head,&node))return;
- for(int guard=0;guard<64&&node&&node!=head;++guard){uint64_t player{};if(Read(node+0x18,&player)&&player)reinterpret_cast<void(*)(uint64_t,int,int)>(base+0x7921b70)(player,1,1);if(!Read(node,&node))break;}}
+ for(int guard=0;guard<64&&node&&node!=head;++guard){uint64_t player{};if(Read(node+0x18,&player)&&player)reinterpret_cast<void(*)(uint64_t,int,int)>(base+Rva(0x7921b70))(player,1,1);if(!Read(node,&node))break;}}
 // Screen rendering must run on the game thread: the rebuild is requested here and done on the next ScreenView.
 inline void ConfigureXray(bool on,const std::string& text){auto& x=Xray();AcquireSRWLockExclusive(&x.lock);const bool changed=text!=x.text||(on!=(x.enabled!=0));if(text!=x.text){x.text=text;x.names.clear();x.gen.fetch_add(1,std::memory_order_release);size_t from=0;
   while(from<text.size()){size_t to=text.find(',',from);if(to==std::string::npos)to=text.size();if(to>from)x.names.insert(text.substr(from,to-from));from=to+1;}}
@@ -86,10 +86,10 @@ inline int InstallXrayHooks(void(*log)(const char*)){
   {0x68b0ac0,{0x41,0x57,0x41,0x56,0x41,0x54,0x56,0x57,0x55,0x53,0x48,0x83},(void*)XrayLightDetour,(void**)&xrayLightOriginal},
   {0x791f170,{0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x55,0x53},(void*)XrayVis0,(void**)&xrayVisOriginal[0]},
   {0x6b1c3e0,{0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53},(void*)XrayVis1,(void**)&xrayVisOriginal[1]}};
- for(const auto& h:hooks)for(int i=0;i<12;++i){uint8_t v{};if(!Read(base+h.rva+i,&v)||v!=h.bytes[i]){if(log)log("Xray: unexpected game code");return status;}}
- size_t created=0;auto rollback=[&](const char* why){for(size_t i=0;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));if(log)log(why);return status;};
- for(const auto& h:hooks){if(MH_CreateHook((void*)(base+h.rva),h.detour,h.original)!=MH_OK)return rollback("Xray: could not create hooks");++created;}
- for(const auto& h:hooks)if(MH_QueueEnableHook((void*)(base+h.rva))!=MH_OK)return rollback("Xray: could not queue hooks");
+ for(const auto& h:hooks)if(!CodeIs(base+Rva(h.rva),h.bytes,12)){if(log)log("Xray: unexpected game code");return status;}
+ size_t created=0;auto rollback=[&](const char* why){for(size_t i=0;i<created;++i)MH_RemoveHook((void*)(base+Rva(hooks[i].rva)));if(log)log(why);return status;};
+ for(const auto& h:hooks){if(MH_CreateHook((void*)(base+Rva(h.rva)),h.detour,h.original)!=MH_OK)return rollback("Xray: could not create hooks");++created;}
+ for(const auto& h:hooks)if(MH_QueueEnableHook((void*)(base+Rva(h.rva)))!=MH_OK)return rollback("Xray: could not queue hooks");
  if(MH_ApplyQueued()!=MH_OK)return rollback("Xray: could not enable hooks");
  tessellateXray=XrayTessellate;tessellateXrayOn=XrayOn;blockActorXray=XrayBlockActorHidden;xrayScreenWork.store(XrayScreenTick,std::memory_order_release);status=1;if(log)log("Xray: block cache, light, chunk visibility hooks installed; tessellate/block actor/light shared");return status;
 }

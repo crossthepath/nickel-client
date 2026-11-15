@@ -917,7 +917,7 @@ inline bool PfJunkSlot(const PfSelf& s,const std::vector<std::string>& junk,cons
 inline void PfJunkDrop(PfController& k,const PfSelf& s,const std::vector<std::string>& junk,const std::vector<std::string>& throwaway){
  if(ActionCursorBusy(s.c,s.actor)||!k.junkTimer||ActionMs(k.junkNs)<=1000.0)return;k.junkNs=PfNow();k.junkTimer=true;
  int slot=-1;if(!PfJunkSlot(s,junk,throwaway,&slot))return;const uint64_t inv=ActionContainer(s.actor);if(!inv)return;
- reinterpret_cast<void(*)(uint64_t,int,bool,bool,bool)>(s.c.base+0x2af140)(inv,slot,false,true,false);}
+ reinterpret_cast<void(*)(uint64_t,int,bool,bool,bool)>(s.c.base+Rva(0x2af140))(inv,slot,false,true,false);}
 inline bool PfInventoryFull(const PfSelf& s){const uint64_t box=ActionContainer(s.actor);if(!box)return false;const int n=std::min(ActionSize(s.c,box),36);
  for(int i=0;i<n;++i){const uint64_t st=ActionStackAt(s.c,box,i);uint8_t cnt{};if(!ActionItem(st)||!Read(st+0x22,&cnt)||!cnt)return false;}return true;}
 inline void PfMineTick(PfController& k,const PfSelf& s,const PfConfig& cfg,const PfP& cell,float reach,PfProcOut& o){auto& m=k.mine;++m.tick;const bool fast=cfg.fastMine;
@@ -1177,7 +1177,7 @@ inline void PfReleaseItem(const Context& c,uintptr_t actor,uint64_t stack){int32
  uint64_t* head=(uint64_t*)::operator new(0x38);head[0]=head[1]=(uint64_t)head;*(uint64_t*)(inv+8)=(uint64_t)head;*(uint64_t*)(inv+0x10)=0;
  uint64_t* buckets=(uint64_t*)::operator new(0x80);for(int i=0;i<16;++i)buckets[i]=(uint64_t)head;
  *(uint64_t*)(inv+0x18)=(uint64_t)buckets;*(uint64_t*)(inv+0x20)=(uint64_t)(buckets+16);*(uint64_t*)(inv+0x28)=(uint64_t)(buckets+16);*(uint64_t*)(inv+0x30)=7;*(uint64_t*)(inv+0x38)=8;
- DescriptorBuild(c,(uint64_t)(t+0x70),stack);*(uint64_t*)t=c.base+0xeffad60;*(int32_t*)(t+8)=4;*(int32_t*)(t+0x68)=1;*(int32_t*)(t+0x6c)=*sel;memcpy(t+0xd0,pos,12);
+ DescriptorBuild(c,(uint64_t)(t+0x70),stack);*(uint64_t*)t=c.base+Rva(0xeffad60);*(int32_t*)(t+8)=4;*(int32_t*)(t+0x68)=1;*(int32_t*)(t+0x6c)=*sel;memcpy(t+0xd0,pos,12);
  SendUseTransaction(c,actor,t);}
 inline bool PfAutoEat(PfController& k,const PfSelf& s,const PfConfig& cfg){
  if(k.eating){if(!k.eatTimer)return true;if(ActionMs(k.eatNs)<=1750.0)return true;
@@ -1377,7 +1377,7 @@ inline void PcReceiveWork(uintptr_t packet){auto& s=PearlChaser();if(!s.enabled.
  PcShared::Seen e;if(!Read(packet+0x38,&e.id)||!Floats(packet+0x60,e.pos,3)||!Floats(packet+0x6c,e.vel,3))return;std::lock_guard<std::mutex> l(s.guard);if(s.seen.size()<64)s.seen.push_back(e);}
 inline void PearlChaserReceive(uintptr_t packet){static volatile long stopped_=0;if(!game::FeatureStopped(&stopped_))__try{PcReceiveWork(packet);}__except(game::FeatureFault("PearlChaserReceive",&stopped_,GetExceptionInformation())){game::FeatureFlush();}}
 inline float PcDist(const float* a,const float* b){const float x=a[0]-b[0],y=a[1]-b[1],z=a[2]-b[2];return std::sqrt(x*x+y*y+z*z);}
-inline bool PcStartRaw(const Context& c,float* start){__try{reinterpret_cast<float*(*)(float*,uint64_t,float)>(c.base+0x2ceda40)(start,c.actor,1.0f);return Floats((uintptr_t)start,start,3);}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
+inline bool PcStartRaw(const Context& c,float* start){__try{reinterpret_cast<float*(*)(float*,uint64_t,float)>(c.base+Rva(0x2ceda40))(start,c.actor,1.0f);return Floats((uintptr_t)start,start,3);}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
 inline void PcFinish(int result){auto& s=PearlChaser();s.fixed=false;s.pitchKnown=false;if(result==0){s.seqAt=ActionNs();s.seqSet=true;}RotRelease(kRotPearlChaser);}
 // Thrower: the player nearest to the pearl's spawn point (within 3 blocks), within Max Distance of the local player; local player, bots and (without Teammates) teammates are skipped.
 inline uintptr_t PcThrower(const Context& c,const PcShared::Seen& e,float maxDistance,bool teammates){uintptr_t best=0;float bestD=9.f;CombatTargetFilter filter;float me[3]{};if(!ActorPos(c.actor,me))return 0;

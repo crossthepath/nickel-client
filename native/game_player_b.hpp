@@ -101,7 +101,7 @@ inline bool PbGameFocused(){DWORD pid=0;const HWND w=GetForegroundWindow();if(!w
 // ---- containers
 inline bool PbChestEnum(uint8_t e){return e<0x3b&&((0x400000040000080ull>>e)&1);}   // 7, 0x1e, 0x3a
 // Container of an enum name in the screen context (tables +0x108 then +0xc8).
-inline uint64_t PbContainer(const Context& c,uint64_t mgr,uint8_t e){const uint64_t ctx=reinterpret_cast<uint64_t(*)(uint64_t)>(c.base+0x2b6c950)(mgr);if(!ctx)return 0;
+inline uint64_t PbContainer(const Context& c,uint64_t mgr,uint8_t e){const uint64_t ctx=reinterpret_cast<uint64_t(*)(uint64_t)>(c.base+Rva(0x2b6c950))(mgr);if(!ctx)return 0;
  for(uint32_t off:{0x108u,0xc8u}){uint64_t head{},node{};if(!Read(ctx+off+8,&head)||!head||!Read(head,&node))continue;
   for(int g=0;g<4096&&node&&node!=head;++g){uint8_t key{};uint64_t holder{},box{};if(Read(node+0x10,&key)&&key==e&&Read(node+0x50,&holder)&&holder&&Read(holder+8,&box)&&box)return box;if(!Read(node,&node))break;}}
  return 0;}
@@ -112,7 +112,7 @@ inline void PbRelease(const Context& c,uint64_t control){if(!control)return;if(I
 // container found by enum name 7, 0x3a, then 0x1e.
 inline bool PbOpenEnum(const Context& c,uintptr_t actor,uint8_t window,uint8_t type,int* e){uint64_t model{};uint8_t w{},t{};
  if(!Read(actor+0x5c8,&model)||!model||!Read(model+0x50,&w)||w!=window||!Read(model+0x51,&t)||t!=type)return false;
- for(int name:{7,0x3a,0x1e}){uint64_t out[2]{};reinterpret_cast<uint64_t*(*)(uint64_t,uint64_t*,int)>(c.base+0x3a6e6b0)(model,out,name);const bool found=out[0]!=0;PbRelease(c,out[1]);if(found){*e=name;return true;}}
+ for(int name:{7,0x3a,0x1e}){uint64_t out[2]{};reinterpret_cast<uint64_t*(*)(uint64_t,uint64_t*,int)>(c.base+Rva(0x3a6e6b0))(model,out,name);const bool found=out[0]!=0;PbRelease(c,out[1]);if(found){*e=name;return true;}}
  return false;}
 
 // ---- transfer (type 1 = whole stack to an empty slot, type 2 = swap / place). Same request as InvMoveStack, except that
@@ -122,7 +122,7 @@ inline int PbTransfer(const Context& c,uintptr_t actor,int type,uint8_t srcC,int
  if(ActionCursorBusy(c,actor))return 2;uint64_t mgr{};if(!Read(actor+0xae0,&mgr)||!mgr)return 1;
  const uint64_t enabled=Virtual0(c,mgr,8);if(!enabled||!(reinterpret_cast<bool(*)(uint64_t)>(enabled)(mgr)))return 1;
  const bool screen=PbChestEnum(srcC)||PbChestEnum(dstC)||InvScreenOpen();
- bool valid=false;{uint64_t cur{};if(Read(mgr+0x68,&cur)&&!cur){reinterpret_cast<void(*)(uint64_t,int)>(c.base+0x2b71330)(mgr,screen?0:1);Read(mgr+0x68,&cur);valid=cur!=0;}}
+ bool valid=false;{uint64_t cur{};if(Read(mgr+0x68,&cur)&&!cur){reinterpret_cast<void(*)(uint64_t,int)>(c.base+Rva(0x2b71330))(mgr,screen?0:1);Read(mgr+0x68,&cur);valid=cur!=0;}}
  if(!valid)return 2;
  int result=5;InvSlot src{},dst{};
  if(count>=1&&count<=255&&InvResolve(c,mgr,srcC,srcSlot,&src)&&InvResolve(c,mgr,dstC,dstSlot,&dst)){
@@ -133,16 +133,16 @@ inline int PbTransfer(const Context& c,uintptr_t actor,int type,uint8_t srcC,int
   else if(src.container==dst.container&&srcSlot==dstSlot)result=4;
   else if(type==1&&(count!=have||StackItem(dstStackLocal)))result=1;
   else{const uint64_t dstModel=ActionStackAt(c,dst.container,dstSlot);const InvSlotInfo si=InvInfo(src,srcStack),di=InvInfo(dst,dstModel);
-   alignas(16) uint8_t oldSrc[0x100]{},oldDst[0x100]{};auto copy=reinterpret_cast<void(*)(void*,uint64_t)>(c.base+0x1a52620);auto kill=[&](void* stack){reinterpret_cast<void(*)(void*,int)>(c.base+0x2f5950)(stack,0);};
+   alignas(16) uint8_t oldSrc[0x100]{},oldDst[0x100]{};auto copy=reinterpret_cast<void(*)(void*,uint64_t)>(c.base+Rva(0x1a52620));auto kill=[&](void* stack){reinterpret_cast<void(*)(void*,int)>(c.base+Rva(0x2f5950))(stack,0);};
    copy(oldSrc,srcStack);copy(oldDst,dstStackLocal);
    const uint64_t setSrc=Virtual0(c,src.container,0x68),setDst=Virtual0(c,dst.container,0x68);
    if(setSrc)reinterpret_cast<void(*)(uint64_t,int,void*,int)>(setSrc)(src.container,srcSlot,oldDst,0);if(setDst)reinterpret_cast<void(*)(uint64_t,int,void*,int)>(setDst)(dst.container,dstSlot,oldSrc,0);
    if(srcC==0xc&&local&&local!=src.container){const uint64_t f=Virtual0(c,local,0x68);if(f)reinterpret_cast<void(*)(uint64_t,int,void*,int)>(f)(local,srcSlot,oldDst,0);}
    if(dstC==0xc&&local&&local!=dst.container){const uint64_t f=Virtual0(c,local,0x68);if(f)reinterpret_cast<void(*)(uint64_t,int,void*,int)>(f)(local,dstSlot,oldSrc,0);}
-   const bool place=type==1||ActionItem((uint64_t)oldDst)==0;invWriteAddress=c.base+0x2b80b40;uint8_t* action=place?InvNewAction(1,(uint8_t)count,si,di):InvNewAction(2,0,si,di);
-   uint8_t* owned=action;reinterpret_cast<void(*)(uint64_t,uint8_t**)>(c.base+0x2b72b40)(mgr,&owned);if(owned)InvActionDtor(owned,1);
+   const bool place=type==1||ActionItem((uint64_t)oldDst)==0;invWriteAddress=c.base+Rva(0x2b80b40);uint8_t* action=place?InvNewAction(1,(uint8_t)count,si,di):InvNewAction(2,0,si,di);
+   uint8_t* owned=action;reinterpret_cast<void(*)(uint64_t,uint8_t**)>(c.base+Rva(0x2b72b40))(mgr,&owned);if(owned)InvActionDtor(owned,1);
    kill(oldDst);kill(oldSrc);result=0;}}
- reinterpret_cast<void(*)(uint64_t)>(c.base+0x2b71680)(mgr);reinterpret_cast<void(*)(uint64_t)>(c.base+0x2b72860)(mgr);
+ reinterpret_cast<void(*)(uint64_t)>(c.base+Rva(0x2b71680))(mgr);reinterpret_cast<void(*)(uint64_t)>(c.base+Rva(0x2b72860))(mgr);
  return result;}
 
 // ---- Chest Stealer / Chest Filler
@@ -250,7 +250,7 @@ inline unsigned ManagerReserved(const Context& c,uintptr_t actor,const ManagerCf
  for(int j=0;j<9;++j){const bool r=(j==p.sword&&p.bestSword>=0)||(j==p.pick&&p.bestPick>=0)||(j==p.axe&&p.bestAxe>=0)||(j!=p.sword&&j!=p.pick&&j!=p.axe&&p.low<=j&&j<=p.high&&src>=0);if(r)mask|=1u<<j;}
  return mask;}
 inline void ManagerStep(const Context& c,uintptr_t actor,const ManagerCfg& k,bool lock){if(ActionCursorBusy(c,actor))return;ManagerPlan p;ManagerBuildPlan(c,actor,k,lock,&p);const ManagerAction a=ManagerDecide(c,p);if(!a.present)return;
- if(a.kind==1)reinterpret_cast<void(*)(uint64_t,int,bool,bool,bool)>(c.base+0x2af140)(p.inv,a.src,false,true,false);   // Inventory::dropSlot
+ if(a.kind==1)reinterpret_cast<void(*)(uint64_t,int,bool,bool,bool)>(c.base+Rva(0x2af140))(p.inv,a.src,false,true,false);   // Inventory::dropSlot
  else{if(a.op==0)return;if(PbTransfer(c,actor,a.op==2?2:1,0xc,a.src,0xc,a.dst,PbCount(ActionStackAt(c,p.inv,a.src)))!=0)return;}
  auto& s=PlayerB();std::lock_guard<std::recursive_mutex> l(s.guard);s.imLastAt=ActionNs();s.imLastValid=true;}
 inline void ManagerFrame(){auto& s=PlayerB();ManagerCfg k;bool due;const bool open=InvScreenOpen();

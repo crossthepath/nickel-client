@@ -106,7 +106,7 @@ inline const uint8_t kPiercingContext[10]={0x44,0x0f,0x2e,0xc0,0x0f,0x86,0xea,0x
 inline const uint8_t kPiercingNop[6]={0x66,0x0f,0x1f,0x44,0x00,0x00};
 inline std::atomic<int> piercingPatched{-1};
 // Applies (true) or removes (false) the through-blocks patch. Returns false when the game code is not the expected one.
-inline bool PiercingPatch(bool on,void(*log)(const char*)){static int checked=0;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return false;const uintptr_t at=base+kPiercingJump;
+inline bool PiercingPatch(bool on,void(*log)(const char*)){static int checked=0;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return false;const uintptr_t at=base+Rva(kPiercingJump);
  if(!checked){uint8_t now[10]{};bool readable=true;for(int i=0;i<10;++i)if(!Read(at-4+i,&now[i])){readable=false;break;}
   const bool game=readable&&memcmp(now,kPiercingContext,10)==0;const bool patched=readable&&memcmp(now,kPiercingContext,4)==0&&memcmp(now+4,kPiercingNop,6)==0;
   checked=game||patched?1:-1;if(checked<0&&log)log("Piercing: unexpected game code at the block/entity choice, through-blocks unavailable");}

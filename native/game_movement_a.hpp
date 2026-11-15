@@ -122,7 +122,7 @@ inline bool InventoryScreenIs(const Context& c,const char* wanted){
  reinterpret_cast<void*(*)(uint64_t,void*)>(get)(c.client,text);char name[32]{};const bool ok=Text(reinterpret_cast<uintptr_t>(text),name,sizeof(name));
  uint64_t capacity{};memcpy(&capacity,text+0x18,8);if(capacity>15){uint64_t heap{};memcpy(&heap,text,8);if(heap)MoveBFree(heap,capacity+1);}   // the game's heap, not ours
  return ok&&strcmp(name,wanted)==0;}
-inline bool InventoryClientPredicate(const Context& c){return reinterpret_cast<uint8_t(*)(uint64_t)>(c.base+0x65b0a70)(c.client)!=0;}
+inline bool InventoryClientPredicate(const Context& c){return reinterpret_cast<uint8_t(*)(uint64_t)>(c.base+Rva(0x65b0a70))(c.client)!=0;}
 inline void InventoryReset(){auto& m=InventoryMove();std::lock_guard<std::mutex> l(m.guard);m.state=InventoryMoveState{};}
 inline void InventorySprintWork(uint64_t input,uint64_t state,uint64_t vector){
  if(!MoveA().inventory)return;Context c{};uint64_t mine{};if(!Local(&c)||!Read(c.actor+0x240,&mine)||mine!=state||!input||!vector)return;
@@ -152,7 +152,8 @@ inline bool MoveASendAll(uintptr_t packet){InventorySend(packet);return MoveSend
 
 // ---- Hook installation (prologues verified, rollback on failure; attempted once) ----
 // Prologue check with a wildcard over the rip-relative displacement of the stack cookie load.
-inline bool MoveACheck(uintptr_t base,uint32_t rva,const uint8_t* bytes,const uint8_t* mask,int count){for(int i=0;i<count;++i){uint8_t b{};if(!Read(base+rva+i,&b))return false;if(mask[i]&&b!=bytes[i])return false;}return true;}
+// Bytes outside the mask may be anything: they take the game's own value, then the whole run is checked with CodeIs.
+inline bool MoveACheck(uintptr_t base,uint32_t rva,const uint8_t* bytes,const uint8_t* mask,int count){if(count>64)return false;uint8_t expect[64];for(int i=0;i<count;++i){uint8_t b{};if(!Read(base+Rva(rva)+i,&b))return false;expect[i]=mask[i]?bytes[i]:b;}return CodeIs(base+Rva(rva),expect,count);}
 // 1 installed, -1 refused.
 inline int InstallSpeedHooks(void(*log)(const char*)){
  static int status=0;if(status)return status;status=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size)){if(log)log("Speed: not the supported Minecraft image, no hook installed");return status;}
@@ -161,16 +162,16 @@ inline int InstallSpeedHooks(void(*log)(const char*)){
  const uint8_t mask[20]={1,1,1,1,1,1,1,1,0,0,0,0,1,1,1,1,1,1,1,1};
  struct Hook{uint32_t rva;void* detour;void** original;};const Hook hooks[]={{0x6d218d0,(void*)SpeedDetourA,(void**)&speedOriginalA},{0x6d22cf0,(void*)SpeedDetourB,(void**)&speedOriginalB}};
  for(const auto& h:hooks)if((uint64_t)h.rva+20>size||!MoveACheck(base,h.rva,bytes,mask,20)){if(log)log("Speed: unexpected bytes at the movement speed systems, no hook installed");return status;}
- size_t created=0;auto rollback=[&](const char* why){for(size_t i=0;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));if(log)log(why);return status;};
- for(const auto& h:hooks){if(MH_CreateHook((void*)(base+h.rva),h.detour,h.original)!=MH_OK)return rollback("Speed: could not create hooks");++created;}
- for(const auto& h:hooks)if(MH_QueueEnableHook((void*)(base+h.rva))!=MH_OK)return rollback("Speed: could not queue hooks");
+ size_t created=0;auto rollback=[&](const char* why){for(size_t i=0;i<created;++i)MH_RemoveHook((void*)(base+Rva(hooks[i].rva)));if(log)log(why);return status;};
+ for(const auto& h:hooks){if(MH_CreateHook((void*)(base+Rva(h.rva)),h.detour,h.original)!=MH_OK)return rollback("Speed: could not create hooks");++created;}
+ for(const auto& h:hooks)if(MH_QueueEnableHook((void*)(base+Rva(h.rva)))!=MH_OK)return rollback("Speed: could not queue hooks");
  if(MH_ApplyQueued()!=MH_OK)return rollback("Speed: could not enable hooks");
  status=1;if(log)log("Speed: movement speed hooks installed (prologues verified)");return status;}
 inline int InstallItemUseSlowdownHook(void(*log)(const char*)){
  static int status=0;if(status)return status;status=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size)){if(log)log("No Slow Down: not the supported Minecraft image, no hook installed");return status;}
  const uint8_t bytes[16]={0x56,0x57,0x53,0x48,0x83,0xec,0x40,0x0f,0x29,0x74,0x24,0x30,0x4c,0x89,0xc6,0x48};const uint8_t mask[16]={1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
  const uint32_t rva=0xce35400;if((uint64_t)rva+16>size||!MoveACheck(base,rva,bytes,mask,16)){if(log)log("No Slow Down: unexpected bytes at the item use slowdown function, no hook installed");return status;}
- if(MH_CreateHook((void*)(base+rva),(void*)ItemUseSlowdownDetour,(void**)&itemUseOriginal)!=MH_OK){if(log)log("No Slow Down: could not create the hook");return status;}
- if(MH_EnableHook((void*)(base+rva))!=MH_OK){MH_RemoveHook((void*)(base+rva));if(log)log("No Slow Down: could not enable the hook");return status;}
+ if(MH_CreateHook((void*)(base+Rva(rva)),(void*)ItemUseSlowdownDetour,(void**)&itemUseOriginal)!=MH_OK){if(log)log("No Slow Down: could not create the hook");return status;}
+ if(MH_EnableHook((void*)(base+Rva(rva)))!=MH_OK){MH_RemoveHook((void*)(base+Rva(rva)));if(log)log("No Slow Down: could not enable the hook");return status;}
  status=1;if(log)log("No Slow Down: item use slowdown hook installed (prologue verified)");return status;}
 }

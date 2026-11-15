@@ -37,8 +37,8 @@ inline bool FreeLookPerspective(int* current,uint64_t* options){Context context{
  if(!*options||!Read(*options+0x10+8ull*3,&option)||!option||!Read(option+0x18,&value))return false;*current=value;return true;}
 inline bool FreeLookSetPerspective(uint64_t options,int value){
  static int checked=0;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return false;
- if(!checked){checked=-1;const uint8_t bytes[16]={0x56,0x57,0x48,0x83,0xec,0x48,0x89,0xd6,0x48,0x8b,0x81,0x40,0x1b,0x00,0x00,0x48};bool same=true;for(int i=0;i<16&&same;++i){uint8_t byte{};same=Read(base+0x5b6fe70+i,&byte)&&byte==bytes[i];}if(same)checked=1;}
- if(checked!=1)return false;reinterpret_cast<void(*)(uint64_t,int)>(base+0x5b6fe70)(options,value);return true;
+ if(!checked){checked=-1;const uint8_t bytes[16]={0x56,0x57,0x48,0x83,0xec,0x48,0x89,0xd6,0x48,0x8b,0x81,0x40,0x1b,0x00,0x00,0x48};bool same=true;for(int i=0;i<16&&same;++i){uint8_t byte{};same=Read(base+Rva(0x5b6fe70)+i,&byte)&&byte==bytes[i];}if(same)checked=1;}
+ if(checked!=1)return false;reinterpret_cast<void(*)(uint64_t,int)>(base+Rva(0x5b6fe70))(options,value);return true;
 }
 // Camera angles: last entity of the camera view (same storages as Freecam); option 3 == 2 -> inverted vector.
 inline bool FreeLookCameraAngles(const Context& context,float* pitch,float* yaw){
@@ -56,7 +56,7 @@ inline void FreeLookDisable(FreeLookShared& shared,bool keep){
  Context context{};const bool local=Local(&context)&&context.actor==shared.actor;
  if(local&&shared.active&&!keep){float pitch{},yaw{};if(FreeLookCameraAngles(context,&pitch,&yaw)){uintptr_t base{};uint32_t size{};
   // Game RVA 0x6da57d0: if Freecam hooks it, the call goes through its detour.
-  if(Supported(&base,&size)){float turn[2];const auto value=nickel::visual::free_look_release_turn(shared.saved,pitch,yaw);turn[0]=value[0];turn[1]=value[1];reinterpret_cast<void(*)(uint64_t,float*)>(base+0x6da57d0)(context.actor,turn);}}}
+  if(Supported(&base,&size)){float turn[2];const auto value=nickel::visual::free_look_release_turn(shared.saved,pitch,yaw);turn[0]=value[0];turn[1]=value[1];reinterpret_cast<void(*)(uint64_t,float*)>(base+Rva(0x6da57d0))(context.actor,turn);}}}
  if(shared.perspectiveSaved){int current{};uint64_t options{};if(FreeLookPerspective(&current,&options))FreeLookSetPerspective(options,shared.savedPerspective);}
  if(local&&shared.active)FreeLookWriteRotation(context,shared.saved);
  shared.active=false;shared.perspectiveSaved=false;shared.actor=0;
@@ -98,10 +98,10 @@ inline int InstallFreeLookHooks(void(*log)(const char*)){
  const Hook hooks[]={
   {0x879010,{0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xec,0xc0,0x00,0x00,0x00,0x48,0x8d,0xac},(void*)FreeLookGameUpdateDetour,(void**)&freeLookGameUpdateOriginal},
   {0x6f31ff0,{0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x55,0x53,0x48,0x81,0xec,0xd8},(void*)FreeLookCameraDetour,(void**)&freeLookCameraOriginal}};
- for(const auto& hook:hooks){if((uint64_t)hook.rva+16>size)return status;for(int i=0;i<16;++i){uint8_t byte{};if(!Read(base+hook.rva+i,&byte)||byte!=hook.bytes[i]){if(log)log("Free Look: unexpected game code; hooks not installed");return status;}}}
- size_t created=0;auto rollback=[&](const char* why){for(size_t i=0;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));if(log)log(why);return status;};
- for(const auto& hook:hooks){if(MH_CreateHook((void*)(base+hook.rva),hook.detour,hook.original)!=MH_OK)return rollback("Free Look: could not create hooks");++created;}
- for(const auto& hook:hooks)if(MH_QueueEnableHook((void*)(base+hook.rva))!=MH_OK)return rollback("Free Look: could not queue hooks");
+ for(const auto& hook:hooks){if((uint64_t)hook.rva+16>size)return status;if(!CodeIs(base+Rva(hook.rva),hook.bytes,16)){if(log)log("Free Look: unexpected game code; hooks not installed");return status;}}
+ size_t created=0;auto rollback=[&](const char* why){for(size_t i=0;i<created;++i)MH_RemoveHook((void*)(base+Rva(hooks[i].rva)));if(log)log(why);return status;};
+ for(const auto& hook:hooks){if(MH_CreateHook((void*)(base+Rva(hook.rva)),hook.detour,hook.original)!=MH_OK)return rollback("Free Look: could not create hooks");++created;}
+ for(const auto& hook:hooks)if(MH_QueueEnableHook((void*)(base+Rva(hook.rva)))!=MH_OK)return rollback("Free Look: could not queue hooks");
  if(MH_ApplyQueued()!=MH_OK)return rollback("Free Look: could not enable hooks");
  status=1;if(log)log("Free Look: GameUpdate and UpdatePlayerFromCamera hooks installed (prologues verified)");return status;
 }

@@ -91,8 +91,8 @@ inline bool LagReceive(void* shared){auto& s=Lag();if(s.fault||!s.active||!s.act
 
 inline int InstallLagHooks(void(*log)(const char*)){static int state=0;if(state)return state;lagLog=log;state=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return state;
  const uint8_t bytes[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x83,0xec,0x58};
- for(int i=0;i<16;++i){uint8_t b{};if(!Read(base+0x2383370+i,&b)||b!=bytes[i]){if(log)log("Lag: unexpected code at the serialized send function");return state;}}
- if(MH_CreateHook((void*)(base+0x2383370),(void*)LagSendDetour,(void**)&lagSendOriginal)!=MH_OK||MH_EnableHook((void*)(base+0x2383370))!=MH_OK){if(log)log("Lag: hook not installed");return state;}
+ if(!CodeIs(base+Rva(0x2383370),bytes,16)){if(log)log("Lag: unexpected code at the serialized send function");return state;}
+ if(MH_CreateHook((void*)(base+Rva(0x2383370)),(void*)LagSendDetour,(void**)&lagSendOriginal)!=MH_OK||MH_EnableHook((void*)(base+Rva(0x2383370)))!=MH_OK){if(log)log("Lag: hook not installed");return state;}
  if(log)log("Lag: serialized send hook installed");state=1;return state;}
 
 // ---- Blink (bit 1): event, GameUpdate, enable / disable

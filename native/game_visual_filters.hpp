@@ -40,13 +40,13 @@ inline void FoliageWork(void*){
  auto finish=[&](bool ack){std::lock_guard<std::mutex> lock(shared.guard);if(ack)nickel::visual::acknowledge_foliage(shared.state,generation);shared.working=false;};
  struct Probe{unsigned char b[16];};static const unsigned char expected[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x83,0xec,0x78};
  uintptr_t base{};uint32_t size{};Probe probe{};
- if(!Supported(&base,&size)||!Read(base+0x7921b70,&probe)||std::memcmp(probe.b,expected,16))return finish(false);
+ if(!Supported(&base,&size)||!Read(base+Rva(0x7921b70),&probe)||std::memcmp(probe.b,expected,16))return finish(false);
  Context context{};if(!Client(&context))return finish(false);
  const uint64_t rendererOf=Virtual(context,context.client,0x5c8);if(!rendererOf)return finish(false);
  const uint64_t renderer=reinterpret_cast<uint64_t(*)(uint64_t)>(rendererOf)(context.client);if(!renderer)return finish(false);
  const auto targets=nickel::visual::read_foliage_targets(renderer,[](uintptr_t at,uint64_t* value){return Read(at,value);});
  if(!targets.known)return finish(false);
- const auto refresh=reinterpret_cast<void(*)(uintptr_t,uint32_t,uint32_t)>(base+0x7921b70);
+ const auto refresh=reinterpret_cast<void(*)(uintptr_t,uint32_t,uint32_t)>(base+Rva(0x7921b70));
  for(uintptr_t target:targets.values)refresh(target,1,1);
  finish(true);
 }

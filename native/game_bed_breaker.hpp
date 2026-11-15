@@ -73,7 +73,7 @@ inline int BbBestSlot(const Context& c,uintptr_t actor,uint64_t block,int curren
  for(int i=0;i<n;++i){const float s=BbSpeed(c,ActionStackAt(c,box,i),block);if(s>score){score=s;best=i;}}return best;}
 struct BbCost{int slot=-1;int ticks=0;bool ok=false;};
 inline BbCost BbCostOf(const BbCtx& x,std::unordered_map<uint64_t,BbCost>& cache,uint64_t block){auto f=cache.find(block);if(f!=cache.end())return f->second;BbCost r{};
- int32_t* sel=ActionSelected(x.actor);if(sel&&block){const int s=BbBestSlot(x.c,x.actor,block,*sel);if(s>=0){const int32_t saved=*sel;*sel=s;const float p=reinterpret_cast<float(*)(uint64_t,uint64_t)>(x.c.base+0x376b010)(x.gm,block);*sel=saved;
+ int32_t* sel=ActionSelected(x.actor);if(sel&&block){const int s=BbBestSlot(x.c,x.actor,block,*sel);if(s>=0){const int32_t saved=*sel;*sel=s;const float p=reinterpret_cast<float(*)(uint64_t,uint64_t)>(x.c.base+Rva(0x376b010))(x.gm,block);*sel=saved;
    if(std::isfinite(p)&&p>0){r.slot=s;r.ticks=(int)std::ceil(0.99999f/p);r.ok=true;}}}
  cache.emplace(block,r);return r;}
 // Exposed face: faces 0 down, 1 up, 2 north, 3 south, 4 west, 5 east

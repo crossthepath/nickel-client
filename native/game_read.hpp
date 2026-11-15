@@ -11,6 +11,9 @@
 #include <cstring>
 #include "game_fault.hpp"
 #include "game_build.hpp"
+extern "C" {
+#include "../vendor/minhook/src/hde/hde64.h"
+}
 
 namespace game {
 struct Player{float position[3];float previous[3];float velocity[3];bool onGround;};
@@ -19,6 +22,23 @@ struct Server{bool singleplayer;char address[256];uint32_t port;};
 struct Context{uintptr_t base;uint32_t size;uintptr_t client,registry,actor;uint32_t entity;};
 
 template<class T>inline bool Read(uintptr_t address,T* value){__try{*value=*reinterpret_cast<const T*>(address);return true;}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
+inline bool ReadBytes(uintptr_t address,uint8_t* out,int count){__try{memcpy(out,reinterpret_cast<const void*>(address),(size_t)count);return true;}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
+// True when the game code at address holds the reference build's bytes (count <= 64), the check every hook and patch
+// makes before it touches game code. In the reference build the bytes must be identical; in a translated build the
+// instructions must be identical except their relative fields (RIP-relative displacements and rel32 branch targets,
+// decoded with MinHook's hde64), the only bytes a relinked build changes in an identical function.
+inline bool CodeIs(uintptr_t address,const uint8_t* expected,int count){
+ uint8_t now[64];if(count<=0||count>64||!ReadBytes(address,now,count))return false;
+ if(currentBuild<=0)return !memcmp(now,expected,(size_t)count);
+ uint8_t padded[64+16]{};memcpy(padded,expected,(size_t)count);
+ for(int at=0;at<count;){hde64s hs{};const unsigned len=hde64_disasm(padded+at,&hs);if(!len||(hs.flags&F_ERROR))return false;
+  const unsigned imm=(hs.flags&F_IMM64)?8:(hs.flags&F_IMM32)?4:(hs.flags&F_IMM16)?2:(hs.flags&F_IMM8)?1:0;
+  int skipFrom=-1,skipTo=-1;
+  if((hs.flags&F_RELATIVE)&&imm>=4){skipFrom=(int)(len-imm);skipTo=(int)len;}                                     // call / jmp / jcc rel32
+  else if((hs.flags&F_MODRM)&&hs.modrm_mod==0&&hs.modrm_rm==5){skipFrom=(int)(len-imm-4);skipTo=(int)(len-imm);}   // [rip+disp32]
+  for(unsigned k=0;k<len&&at+(int)k<count;++k)if(((int)k<skipFrom||(int)k>=skipTo)&&now[at+k]!=expected[at+k])return false;
+  at+=(int)len;}
+ return true;}
 inline constexpr uint32_t Fnv(const char* text){uint32_t value=2166136261u;for(;*text;++text)value=(value^(uint8_t)*text)*16777619u;return value;}
 
 // Hash table of the registry's component storages: buckets at +0x48/+0x50, 0x20-byte nodes at +0x68/+0x70.
@@ -48,7 +68,6 @@ inline bool LocalActor(uintptr_t registry,uint32_t entity,uintptr_t* actor){
 // Active only in Minecraft.Windows.exe holding a validated build: its version resource and its section layout
 // (game_build.hpp). Any installation of that build is accepted (Microsoft Store / Xbox app, LeviLauncher, other
 // launchers), whatever its file size or hash; each hook still checks the code it patches before installing.
-inline int currentBuild=-1;
 inline bool Supported(uintptr_t* base,uint32_t* size){
  static int state=0;static uintptr_t image=0;static uint32_t imageSize=0;
  if(!state){state=-1;wchar_t path[MAX_PATH]{};GetModuleFileNameW(nullptr,path,MAX_PATH);auto file=wcsrchr(path,L'\\');
@@ -60,7 +79,7 @@ inline bool Supported(uintptr_t* base,uint32_t* size){
 inline bool Client(Context* context){
  if(!Supported(&context->base,&context->size))return false;
  uint64_t game{},first{},second{},third{},head{},node{};
- if(!Read(context->base+0x128c0f90,&game)||!game||!Read(game+8,&first)||!Read(first+0x20,&second)||!Read(second+0x48,&third))return false;
+ if(!Read(context->base+Rva(0x128c0f90),&game)||!game||!Read(game+8,&first)||!Read(first+0x20,&second)||!Read(second+0x48,&third))return false;
  const uint64_t root=third+0x30;if(!Read(root+0x9a0,&head)||!Read(head+8,&node))return false;
  uint64_t candidate=head;bool found=false;
  for(int i=0;i<128;++i){uint8_t flag{};if(!Read(node+0x19,&flag))return false;if(flag){found=true;break;}candidate=node;if(!Read(node,&node))return false;}
@@ -124,7 +143,7 @@ inline bool ReadServer(Server* server){
 // Guards: both vtables must lie in the game image and both functions in its code section (.text: RVA 0x1000,
 // size 0xeec6600); calls run under SEH and the output is a zeroed 256-byte buffer. `trace` records how far the chain got.
 struct PingTrace{int step;uint64_t getter,status;};   // step = last link reached; getter / status = RVAs of the two called functions
-inline bool InCode(const Context& context,uint64_t address){return address>=context.base+0x1000&&address<context.base+0x1000+0xeec6600ull;}
+inline bool InCode(const Context& context,uint64_t address){if(currentBuild<0)return false;const GameSection& text=kGameBuilds[currentBuild].sections[0];return address>=context.base+text.address&&address<context.base+text.address+text.size;}
 inline bool CallGetter(uint64_t function,uint64_t self,uint64_t* result){__try{*result=reinterpret_cast<uint64_t(*)(uint64_t)>(function)(self);return true;}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
 inline bool CallFill(uint64_t function,uint64_t self,void* out){__try{reinterpret_cast<void*(*)(uint64_t,void*)>(function)(self,out);return true;}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
 // 1: latency read; 0: no latency (singleplayer or not yet connected, shown as 0 ms); -1: no player or a guard failed.
@@ -160,7 +179,7 @@ inline void(*volatile sprintMovement)(uint64_t input,uint64_t state,uint64_t fla
 // threads the overlay runs work from; the registry seen on the level tick is lent there for the duration of the call.
 struct ItemRegistryShared{std::atomic<uint64_t> object{0},control{0};};
 inline ItemRegistryShared& ItemRegistry(){static auto* s=new ItemRegistryShared;return *s;}
-inline uint64_t* ItemRegistrySlotAt(uintptr_t base){const uint32_t index=*reinterpret_cast<const uint32_t*>(base+0x128767c8);
+inline uint64_t* ItemRegistrySlotAt(uintptr_t base){const uint32_t index=*reinterpret_cast<const uint32_t*>(base+Rva(0x128767c8));
  const uint64_t* table=reinterpret_cast<const uint64_t*>(__readgsqword(0x58));if(!table)return nullptr;uint8_t* block=reinterpret_cast<uint8_t*>(table[index]);
  return block&&block[0x120]?reinterpret_cast<uint64_t*>(block+0xce8):nullptr;}
 // Lends the registry to this thread when its slot is empty; returns the slot to give back (nullptr: nothing lent).

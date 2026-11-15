@@ -97,12 +97,12 @@ inline int InstallEvents(void(*log)(const char*)){
   {0x23a7320,{0x4c,0x89,0xc1,0x4d,0x8b,0x01,0x48,0x8b,0x01,0x48,0x8b,0x80,0xd8,0x06,0x00,0x00},(void*)ActorEventDetour,(void**)&actorEventOriginal},
   {0x23a6fb0,{0x4c,0x89,0xc1,0x4d,0x8b,0x01,0x48,0x8b,0x01,0x48,0x8b,0x80,0x98,0x07,0x00,0x00},(void*)StartGameDetour,(void**)&startGameOriginal},
   {0x23a7260,{0x4c,0x89,0xc1,0x4d,0x8b,0x01,0x48,0x8b,0x01,0x48,0x8b,0x80,0x08,0x07,0x00,0x00},(void*)LevelEventDetour,(void**)&levelEventOriginal}};
- for(auto& hook:hooks)for(int i=0;i<16;++i){uint8_t byte{};if(!Read(base+hook.rva+i,&byte)||byte!=hook.bytes[i]){if(log)log("Game events: unexpected bytes at a hook target, no game hook installed");return state;}}
+ for(auto& hook:hooks)if(!CodeIs(base+Rva(hook.rva),hook.bytes,16)){if(log)log("Game events: unexpected bytes at a hook target, no game hook installed");return state;}
  // all or nothing: on a failure, hooks never enabled are removed and enabled ones are only disabled (their
  // trampolines stay valid for a thread that may already be inside the detour)
- int created=0,enabled=0;for(auto& hook:hooks){if(MH_CreateHook((void*)(base+hook.rva),hook.detour,hook.original)!=MH_OK)break;++created;}
- if(created==4)for(auto& hook:hooks){if(MH_EnableHook((void*)(base+hook.rva))!=MH_OK)break;++enabled;}
- if(enabled!=4){for(int i=0;i<enabled;++i)MH_DisableHook((void*)(base+hooks[i].rva));for(int i=enabled;i<created;++i)MH_RemoveHook((void*)(base+hooks[i].rva));
+ int created=0,enabled=0;for(auto& hook:hooks){if(MH_CreateHook((void*)(base+Rva(hook.rva)),hook.detour,hook.original)!=MH_OK)break;++created;}
+ if(created==4)for(auto& hook:hooks){if(MH_EnableHook((void*)(base+Rva(hook.rva)))!=MH_OK)break;++enabled;}
+ if(enabled!=4){for(int i=0;i<enabled;++i)MH_DisableHook((void*)(base+Rva(hooks[i].rva)));for(int i=enabled;i<created;++i)MH_RemoveHook((void*)(base+Rva(hooks[i].rva)));
   if(log)log("Game events: MinHook could not install every hook, none left active");return state;}
  if(log)log("Game events: attack, ActorEvent, StartGame and LevelEvent hooks installed");state=1;return state;
 }
@@ -186,7 +186,7 @@ inline std::string EntityId(const Context& context,uint64_t actor){char raw[96]{
 inline void EntityName(const Context& context,uint64_t actor,char* out,size_t capacity){
  struct Known{uint64_t table;char name[64];};static Known known[32]{};static int next=0;out[0]=0;uint64_t table{};if(!Read(actor,&table)||!table)return;
  for(auto& entry:known)if(entry.table==table){strncpy_s(out,capacity,entry.name,_TRUNCATE);return;}
- const uint64_t key=Virtual0(context,actor,0xf0),i18n=context.base+0x128d1290,translate=Virtual0(context,i18n,0x80);Known& slot=known[next++%32];slot.table=table;slot.name[0]=0;
+ const uint64_t key=Virtual0(context,actor,0xf0),i18n=context.base+Rva(0x128d1290),translate=Virtual0(context,i18n,0x80);Known& slot=known[next++%32];slot.table=table;slot.name[0]=0;
  if(key&&translate)EntityNameCall(key,i18n,translate,actor,slot.name,sizeof(slot.name));strncpy_s(out,capacity,slot.name,_TRUNCATE);
 }
 inline bool FillTarget(const Context& context,uintptr_t actor,Target* target){

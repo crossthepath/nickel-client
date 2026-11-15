@@ -22,7 +22,7 @@ inline void TrajectoryWork(const Context& context,const float* camera,std::vecto
    for(auto& e:edges){WorldLine line{};const int a=e[0],b=e[1];line.a[0]=a&1?hi[0]:lo[0];line.a[1]=a&4?hi[1]:lo[1];line.a[2]=a&2?hi[2]:lo[2];line.b[0]=b&1?hi[0]:lo[0];line.b[1]=b&4?hi[1]:lo[1];line.b[2]=b&2?hi[2]:lo[2];
     memcpy(line.colorA,color,16);memcpy(line.colorB,color,16);line.thickness=thickness;line.depth=true;out->push_back(line);}}};
  {TrajectoryParams p{};if(TrajectoryPrepare(context,context.actor,alpha,&p)){float start[3]{};uint64_t rotation{};float angles[2]{};
-   reinterpret_cast<float*(*)(float*,uint64_t,float)>(context.base+0x2ceda40)(start,context.actor,alpha);
+   reinterpret_cast<float*(*)(float*,uint64_t,float)>(context.base+Rva(0x2ceda40))(start,context.actor,alpha);
    if(Read(context.actor+0x250,&rotation)&&rotation&&Floats(rotation,angles,2))TrajectoryShooter(context,context.actor,p,start,angles[1],angles[0],camera,emit);}}
  if(others){uintptr_t owners{},positions{};uint64_t begin{},end{};if(!Storage(context.registry,Fnv("ActorOwnerComponent"),&owners)||!Storage(context.registry,Fnv("RenderPositionComponent"),&positions)||!Read(owners+0x20,&begin)||!Read(owners+0x28,&end)||end<begin||(end-begin)>4*65536)return;
   for(uint64_t at=begin;at<end;at+=4){uint32_t entity{};uintptr_t slot{},element{};uint64_t actor{},rotation{};if(!Read(at,&entity)||entity>=0xfffc0000u||entity==context.entity)continue;
@@ -89,7 +89,7 @@ inline void(*volatile schematicPrep)(void*,void*)=nullptr;   // Schematics ghost
 inline void(*volatile levelPrepStart)()=nullptr;
 inline void WorldPrepDetour(void* a,void* b,void* c,void* d){if(auto start=levelPrepStart)start();InterlockedExchange(&levelRenderPrep,1);worldPrepOriginal(a,b,c,d);InterlockedExchange(&levelRenderPrep,0);if(auto esp=levelPrepListener)esp(b,c);if(auto sp=schematicPrep)sp(b,c);WorldGuarded(b,c);}
 inline int InstallWorldHook(void(*log)(const char*)){static int state=0;if(state)return state;state=-1;World().log=log;const uint8_t bytes[16]={0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x28};state=InstallOne(0x4e09290,bytes,16,(void*)WorldPrepDetour,(void**)&worldPrepOriginal,"World drawing",log);return state;}
-inline bool ReadReachLimit(float* range){uintptr_t base{};uint32_t size{};if(!Supported(&base,&size)||0xef3f020+4>size)return false;float value{};if(!Read(base+0xef3f020,&value)||!std::isfinite(value)||value<=0||value>64)return false;*range=value;return true;}
+inline bool ReadReachLimit(float* range){uintptr_t base{};uint32_t size{};if(!Supported(&base,&size)||0xef3f020+4>size)return false;float value{};if(!Read(base+Rva(0xef3f020),&value)||!std::isfinite(value)||value<=0||value>64)return false;*range=value;return true;}
 struct ReachFlags{volatile long enabled=0,cancel=0;};
 inline ReachFlags& WorldReach(){static ReachFlags* flags=new ReachFlags;return *flags;}
 inline bool CancelOutOfReach(uintptr_t local,uintptr_t target){

@@ -42,6 +42,20 @@ public static class GameBuilds
    new(".pdata", 0x12bdf000, 0xb59b60, "843683dccddf06209a5a16a54516c6eeda5ba8c42fbde899a09aaa3ff923bb02"),
    new(".reloc", 0x13742000, 0xfa3c4, "3130b70506c2d712e5fce5dca4251db1c982630874da1c2a2f57eb6a6acde9a5"),
   ]),
+  // Same game code as 1.26.62.1 (every function Nickel uses is identical), relinked: the overlay translates its
+  // addresses (native/generated_build_1_26_63_1.hpp, tools/port_build.py).
+  new("Minecraft 1.26.63.1", 1, 26, 63, 0xeea6340,
+  [
+   new(0, 0xf9a4438, 0x162), new(1, 0xf9a459c, 0x6f4), new(3, 0x12bdf000, 0xb59b78), new(5, 0x13742000, 0xfa3c4),
+   new(9, 0xf4f39d0, 0x28), new(10, 0xefc6990, 0x140), new(11, 0, 0), new(12, 0xf9a6ef0, 0x2260), new(13, 0, 0), new(14, 0, 0),
+  ],
+  [
+   new(".text", 0x1000, 0xeec6a86, "59b8c727d734a5197e7dd298bb7a939c0dc6b47fe5072d1af3518793a76a7995"),
+   new(".rdata", 0xeec8000, 0x34412bc, "ceff25ce8c650ebfd49c15292797f655ffb65a26e995b315131d1bec1e419be3"),
+   new(".data", 0x1230a000, 0x8d4b68, "91d273db34e5e4403abe4272a2630ebe16750133c55b161d77246234d8d9a4f7"),
+   new(".pdata", 0x12bdf000, 0xb59b78, "99ef9e1fcb99c725250d6953c9a5178a7736c4b7da9a105655648076243187e4"),
+   new(".reloc", 0x13742000, 0xfa3c4, "4dfd51dff270c7a698325d00b229bfb83d8f9b48b8a2e2eb943fc545f01214cd"),
+  ]),
  ];
 
  /// <summary>True for the file name of the game's executable (any folder).</summary>

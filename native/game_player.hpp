@@ -42,9 +42,13 @@ inline int InstallFastUseHook(void(*log)(const char*)){static int state=0;if(sta
  state=InstallOne(0x65c0c40,bytes,10,(void*)UseDelayDetour,(void**)&useDelayOriginal,"Fast Use",log);return state;}
 // ---- Item Use Delay Fix
 inline int PatchUseDelay(bool on,void(*log)(const char*)){static bool applied=false;if(on==applied)return 1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size))return -1;
- uint8_t* at=(uint8_t*)(base+0x6586c08);const uint8_t call[6]={0xff,0x15,0x92,0x93,0x41,0x09},nops[6]={0x90,0x90,0x90,0x90,0x90,0x90};uint8_t now[6]{};for(int i=0;i<6;++i)if(!Read((uintptr_t)at+i,&now[i]))return -1;
- if(memcmp(now,on?call:nops,6)){if(log)log("Item Use Delay Fix: unexpected bytes at the patch site, nothing written");return -1;}
- DWORD old{};if(!VirtualProtect(at,6,PAGE_EXECUTE_READWRITE,&old))return -1;memcpy(at,on?nops:call,6);VirtualProtect(at,6,old,&old);FlushInstructionCache(GetCurrentProcess(),at,6);applied=on;
+ uint8_t* at=(uint8_t*)(base+Rva(0x6586c08));const uint8_t call[6]={0xff,0x15,0x92,0x93,0x41,0x09},nops[6]={0x90,0x90,0x90,0x90,0x90,0x90};uint8_t now[6]{};for(int i=0;i<6;++i)if(!Read((uintptr_t)at+i,&now[i]))return -1;
+ // The call is RIP-relative (call [rip+disp32]): its bytes differ between builds, so the original bytes read before the
+ // patch are the ones put back, never the reference build's constant.
+ static uint8_t original[6]{};static bool saved=false;
+ if(on?!CodeIs((uintptr_t)at,call,6):(!saved||memcmp(now,nops,6))){if(log)log("Item Use Delay Fix: unexpected bytes at the patch site, nothing written");return -1;}
+ if(on){memcpy(original,now,6);saved=true;}
+ DWORD old{};if(!VirtualProtect(at,6,PAGE_EXECUTE_READWRITE,&old))return -1;memcpy(at,on?nops:original,6);VirtualProtect(at,6,old,&old);FlushInstructionCache(GetCurrentProcess(),at,6);applied=on;
  if(log)log(on?"Item Use Delay Fix: patch applied":"Item Use Delay Fix: original bytes restored");return 1;}
 
 // Current health (attribute 6, +0x7c); negative values are accepted (the test is <= 0).

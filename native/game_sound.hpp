@@ -23,8 +23,8 @@ inline void SoundDetour(void* self,void* description){auto& s=Sounds();if(s.enab
 inline int InstallSoundHook(void(*log)(const char*)){
  static int state=0;if(state)return state;state=-1;uintptr_t base{};uint32_t size{};if(!Supported(&base,&size)){if(log)log("Sound ESP: not the supported Minecraft image, no hook installed");return state;}
  const uint8_t expected[16]={0x55,0x41,0x57,0x41,0x56,0x56,0x57,0x53,0x48,0x83,0xec,0x68,0x48,0x8d,0x6c,0x24};
- for(int i=0;i<16;++i){uint8_t b{};if(!Read(base+0xae8ae0+i,&b)||b!=expected[i]){if(log)log("Sound ESP: unexpected bytes at the sound function, no hook installed");return state;}}
- if(MH_CreateHook((void*)(base+0xae8ae0),(void*)SoundDetour,(void**)&soundOriginal)!=MH_OK||MH_EnableHook((void*)(base+0xae8ae0))!=MH_OK){if(log)log("Sound ESP: MinHook could not install the sound hook");return state;}
+ if(!CodeIs(base+Rva(0xae8ae0),expected,16)){if(log)log("Sound ESP: unexpected bytes at the sound function, no hook installed");return state;}
+ if(MH_CreateHook((void*)(base+Rva(0xae8ae0)),(void*)SoundDetour,(void**)&soundOriginal)!=MH_OK||MH_EnableHook((void*)(base+Rva(0xae8ae0)))!=MH_OK){if(log)log("Sound ESP: MinHook could not install the sound hook");return state;}
  if(log)log("Sound ESP: sound play hook installed");state=1;return state;}
 // Classification: category (0..7: Footsteps, Blocks, Containers, Eating, Projectiles, Combat, Mobs, Other) and label.
 struct SoundRule{const char* prefix;int category;const char* label;bool suffix;};

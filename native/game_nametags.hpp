@@ -63,9 +63,9 @@ inline void NamesWork(void* ui){
   uint64_t gui{};float size[6];
   if(Read(context.client+0x668,&gui)&&gui&&Floats(gui+0x40,size,6)&&size[0]>0&&size[1]>0&&size[4]>0&&size[5]>0){
    uint64_t game{},first{},second{},third{},screenContext{},clientOfUi{};
-   if(Read(context.base+0x128c0f90,&game)&&Read(game+8,&first)&&Read(first+0x20,&second)&&Read(second+0x48,&third)&&third&&Read((uintptr_t)ui+0x10,&screenContext)&&screenContext&&Read((uintptr_t)ui+8,&clientOfUi)&&clientOfUi){
+   if(Read(context.base+Rva(0x128c0f90),&game)&&Read(game+8,&first)&&Read(first+0x20,&second)&&Read(second+0x48,&third)&&third&&Read((uintptr_t)ui+0x10,&screenContext)&&screenContext&&Read((uintptr_t)ui+8,&clientOfUi)&&clientOfUi){
     const float ratioX=size[4]/size[0],ratioY=size[5]/size[1];alignas(16) uint8_t ctx[0x300];memset(ctx,0,sizeof(ctx));
-    reinterpret_cast<void*(*)(uint8_t*,uint64_t,uint64_t,uint64_t)>(context.base+0x57e2560)(ctx,screenContext,clientOfUi,third);
+    reinterpret_cast<void*(*)(uint8_t*,uint64_t,uint64_t,uint64_t)>(context.base+Rva(0x57e2560))(ctx,screenContext,clientOfUi,third);
     for(auto& row:frame->rows){
      uintptr_t registry{};uint32_t eid{};uint64_t stacks[5]{};int n=0;
      if(ActorEntity(row.actor,&registry,&eid)){uintptr_t storage{},equipment{};uint64_t hand{},armor{};
@@ -80,7 +80,7 @@ inline void NamesWork(void* ui){
       if(request.durability){const uint64_t item=ItemOf(stacks[i]),top=Virtual(context,item,0x120);if(top){const int maximum=reinterpret_cast<short(*)(uint64_t)>(top)(item);if(maximum>0){uint64_t data{};const int damage=Read(stacks[i]+0x10,&data)&&data?NbtInt(data,"Damage"):0;const int64_t left=(int64_t)maximum-damage;const int remaining=left<0?0:left>maximum?maximum:(int)left;icon.maximum=maximum;icon.remaining=remaining;}}}
       row.icons.push_back(icon);}
     }
-    reinterpret_cast<void(*)(uint8_t*)>(context.base+0x57e29e0)(ctx);
+    reinterpret_cast<void(*)(uint8_t*)>(context.base+Rva(0x57e29e0))(ctx);
    }
   }
  }
