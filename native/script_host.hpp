@@ -3,11 +3,12 @@
 //
 // The engine reaches the modules, the preferences, the key bindings, the keyboard, notifications and the log only
 // through this interface. The menu provides the implementation used in the game (menu_script_host.hpp); tests provide
-// a fake one (tests/script_host_checks.cpp). Drawing (ImGui) is not part of it yet.
+// a fake one (tests/script_host_checks.cpp).
 // Layers and what remains: docs/architecture/script-engine.md.
 #include <string>
 
 #include "module_registry.hpp"
+#include "script_canvas.hpp"
 
 namespace overlay {
 
@@ -33,6 +34,18 @@ public:
 
     // A line for overlay.log.
     virtual void Log(const std::string& line) = 0;
+
+    // ---- drawing (render3d, render2d)
+
+    // The canvas of `layer` for the current frame; valid until the frame ends.
+    virtual ScriptCanvas& Canvas(CanvasLayer layer) = 0;
+
+    // Size of the game's screen in pixels.
+    virtual CanvasPoint DisplaySize() const = 0;
+
+    // Places the script HUD element `id` (`width` x `height` at scale 1) for this frame: where the HUD layout
+    // editor put it (a new element starts at 20, 200) and at its scale. The host records its bounds for the editor.
+    virtual HudFrame PlaceHud(const std::string& id, float width, float height) = 0;
 };
 
 } // namespace overlay

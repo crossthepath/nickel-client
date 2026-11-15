@@ -23,6 +23,8 @@
 #include "module_registry.hpp"
 #include "script_host.hpp"
 #include "script_modules.hpp"
+#include "imgui_script_canvas.hpp"
+#include "script_draw.hpp"
 #include "game_read.hpp"
 #include "media.hpp"
 #include "game_events.hpp"
@@ -263,8 +265,9 @@ void DrawRegistryIcon(ImDrawList* d,const std::string& name,bool block,ImVec2 lo
  if(cell>=0&&GetImage&&GetImage(5)){const float u=(cell%icons::Cache::PerRow)/(float)icons::Cache::PerRow,v=(cell/icons::Cache::PerRow)/(float)icons::Cache::PerRow,step=1.f/icons::Cache::PerRow;d->AddImage(GetImage(5),lo,hi,ImVec2(u,v),ImVec2(u+step,v+step),IM_COL32(255,255,255,(int)(255*opacity)));}
  else if(cell==-2){const float h=(hi.y-lo.y)*.8f;const float w=Sized(bold,h)->CalcTextSizeA(h,FLT_MAX,0,"?").x;d->AddText(Sized(bold,h),h,ImVec2((lo.x+hi.x-w)/2,lo.y+(hi.y-lo.y-h)/2),IM_COL32(180,168,205,(int)(255*opacity)),"?");}
 }
-ImVec4 ParseColor(const std::string& text){unsigned v=text.size()==9?(unsigned)strtoul(text.c_str()+1,nullptr,16):0xffffffffu;return ImVec4(((v>>24)&255)/255.f,((v>>16)&255)/255.f,((v>>8)&255)/255.f,(v&255)/255.f);}
-std::string FormatColor(ImVec4 c){char text[16]{};snprintf(text,sizeof(text),"#%02x%02x%02x%02x",(int)std::lround(c.x*255),(int)std::lround(c.y*255),(int)std::lround(c.z*255),(int)std::lround(c.w*255));return text;}
+// Colour settings are "#RRGGBBAA" text, read and written as scripts do (script_canvas.hpp).
+ImVec4 ParseColor(const std::string& text){const ScriptColor c=ParseColorText(text);return ImVec4(c.r,c.g,c.b,c.a);}
+std::string FormatColor(ImVec4 c){return FormatColorText({c.x,c.y,c.z,c.w});}
 // Two-colour gradient, sampled by linear blend. Defaults (Nickel palette): Module List orange #ff8a3d -> grey #9494a0,
 // FPS orange -> white.
 void GradientEnds(const std::string& module,const std::string& text,std::string ends[2]){ends[0]="#ff8a3dff";ends[1]=module=="fps"?"#ffffffff":"#9494a0ff";if(text.size()==19&&text[9]==','){ends[0]=text.substr(0,9);ends[1]=text.substr(10);}}

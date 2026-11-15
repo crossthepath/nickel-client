@@ -89,8 +89,37 @@ public:
 
     void Log(const std::string& line) override { logs.push_back(line); }
 
+    ScriptCanvas& Canvas(CanvasLayer) override { return canvas_; }
+
+    CanvasPoint DisplaySize() const override { return {1280, 720}; }
+
+    HudFrame PlaceHud(const std::string&, float, float) override { return {20, 200, 1}; }
+
 private:
+    // Drawing is checked in tests/script_canvas_checks.cpp; here it only has to exist.
+    class NullCanvas final : public ScriptCanvas {
+    public:
+        void Line(CanvasPoint, CanvasPoint, CanvasColor, float) override {}
+
+        void Rect(CanvasPoint, CanvasPoint, CanvasColor, float) override {}
+
+        void FillRect(CanvasPoint, CanvasPoint, CanvasColor, float) override {}
+
+        void FillGradient(CanvasPoint, CanvasPoint, CanvasColor, CanvasColor, CanvasColor, CanvasColor) override {}
+
+        void Circle(CanvasPoint, float, CanvasColor, float) override {}
+
+        void FillCircle(CanvasPoint, float, CanvasColor) override {}
+
+        void FillQuad(CanvasPoint, CanvasPoint, CanvasPoint, CanvasPoint, CanvasColor) override {}
+
+        void Text(CanvasFont, float, CanvasPoint, const char*, CanvasColor) override {}
+
+        float MeasureText(CanvasFont, float, const char*) override { return 0; }
+    };
+
     size_t capacity_;
+    NullCanvas canvas_;
 };
 
 int failed = 0;

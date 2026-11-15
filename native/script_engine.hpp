@@ -68,10 +68,10 @@ void* ScriptAlloc(void* ud,void* ptr,size_t osize,size_t nsize){Script* s=(Scrip
 bool ScriptInvoke(Script& s,int ref,int args=0){lua_State* L=s.L;lua_getref(L,ref);if(args)lua_insert(L,-1-args);return ScriptCall(s,L,args,0);}
 
 // ---------------------------------------------------------------- values
-void PushColor(lua_State* L,const std::string& text){const ImVec4 c=ParseColor(text);lua_createtable(L,4,0);const float v[4]={c.x,c.y,c.z,c.w};for(int i=0;i<4;++i){lua_pushnumber(L,v[i]);lua_rawseti(L,-2,i+1);}}
-ImVec4 ReadColor(lua_State* L,int idx,ImVec4 fallback=ImVec4(1,1,1,1)){if(!lua_istable(L,idx))return fallback;float v[4]={fallback.x,fallback.y,fallback.z,fallback.w};
+void PushColor(lua_State* L,const std::string& text){const ScriptColor c=ParseColorText(text);lua_createtable(L,4,0);const float v[4]={c.r,c.g,c.b,c.a};for(int i=0;i<4;++i){lua_pushnumber(L,v[i]);lua_rawseti(L,-2,i+1);}}
+ScriptColor ReadColor(lua_State* L,int idx,ScriptColor fallback=ScriptColor{}){if(!lua_istable(L,idx))return fallback;float v[4]={fallback.r,fallback.g,fallback.b,fallback.a};
  for(int i=0;i<4;++i){lua_rawgeti(L,idx,i+1);if(lua_isnumber(L,-1))v[i]=(float)std::clamp(lua_tonumber(L,-1),0.0,1.0);lua_pop(L,1);}
- const char* keys[]={"r","g","b","a"};for(int i=0;i<4;++i){lua_rawgetfield(L,idx,keys[i]);if(lua_isnumber(L,-1))v[i]=(float)std::clamp(lua_tonumber(L,-1),0.0,1.0);lua_pop(L,1);}return ImVec4(v[0],v[1],v[2],v[3]);}
+ const char* keys[]={"r","g","b","a"};for(int i=0;i<4;++i){lua_rawgetfield(L,idx,keys[i]);if(lua_isnumber(L,-1))v[i]=(float)std::clamp(lua_tonumber(L,-1),0.0,1.0);lua_pop(L,1);}return ScriptColor{v[0],v[1],v[2],v[3]};}
 bool ReadVector(lua_State* L,int idx,float out[3]){if(lua_isvector(L,idx)){const float* v=lua_tovector(L,idx);out[0]=v[0];out[1]=v[1];out[2]=v[2];return true;}
  if(lua_istable(L,idx)){const char* k[]={"x","y","z"};for(int i=0;i<3;++i){lua_rawgetfield(L,idx,k[i]);if(!lua_isnumber(L,-1)){lua_pop(L,1);lua_rawgeti(L,idx,i+1);}out[i]=(float)lua_tonumber(L,-1);lua_pop(L,1);}return true;}return false;}
 #include "script_values.hpp"   // ReadVectorStrict (tested without the game)
@@ -92,7 +92,7 @@ int SettingType(lua_State* L){Setting* st=SettingFrom(L,1);lua_rawgetfield(L,1,"
 int SettingSet(lua_State* L){int m=-1;Setting* st=SettingFrom(L,1,&m);
  if(st->kind=="bool")st->number=lua_toboolean(L,2)?1:0;
  else if(st->kind=="number"||st->kind=="range"){double v=luaL_checknumber(L,2);if(st->step>=1)v=std::round(v);st->number=std::clamp(v,st->minimum,st->maximum);if(st->kind=="range"&&lua_isnumber(L,3))st->text=std::to_string(std::clamp(lua_tonumber(L,3),st->minimum,st->maximum));}
- else if(st->kind=="color")st->text=FormatColor(ReadColor(L,2));
+ else if(st->kind=="color")st->text=FormatColorText(ReadColor(L,2));
  else if(st->kind=="enum"){std::string v=luaL_checkstring(L,2);if(std::find(st->options.begin(),st->options.end(),v)==st->options.end())luaL_error(L,"'%s' is not an option of %s",v.c_str(),st->name.c_str());st->text=v;}
  else if(st->kind=="key"){std::string v=luaL_checkstring(L,2);const int code=ScriptKeyCode(v);st->text=code?ScriptKeyName(code)+"|"+std::to_string(code):"";}
  else st->text=luaL_checkstring(L,2);
@@ -110,7 +110,7 @@ int AddSetting(lua_State* L,const char* kind,const char* type){
  else if(!strcmp(type,"number")||!strcmp(type,"integer")){const bool whole=!strcmp(type,"integer");st.number=luaL_checknumber(L,3);st.minimum=luaL_checknumber(L,4);st.maximum=luaL_checknumber(L,5);st.step=luaL_optnumber(L,6,whole?1:.1);
   if(whole)st.step=std::max(1.0,std::round(st.step));if(st.maximum<st.minimum)std::swap(st.minimum,st.maximum);st.number=std::clamp(st.number,st.minimum,st.maximum);}
  else if(!strcmp(type,"choice")){luaL_checktype(L,3,LUA_TTABLE);for(int i=1;;++i){lua_rawgeti(L,3,i);if(lua_isnil(L,-1)){lua_pop(L,1);break;}st.options.push_back(lua_tostring(L,-1)?lua_tostring(L,-1):"");lua_pop(L,1);}if(st.options.empty())luaL_error(L,"choice needs at least one option");st.text=st.options[0];st.maximum=1;}
- else if(!strcmp(type,"color"))st.text=FormatColor(ReadColor(L,3));
+ else if(!strcmp(type,"color"))st.text=FormatColorText(ReadColor(L,3));
  else if(!strcmp(type,"text"))st.text=luaL_optstring(L,3,"");
  else if(!strcmp(type,"key")){const char* k=luaL_optstring(L,3,"");const int code=ScriptKeyCode(k);st.text=code?ScriptKeyName(code)+"|"+std::to_string(code):"";}
  const int index=PutScriptSetting(m,st);if(index<0)luaL_error(L,"too many settings");   // script_modules.hpp
@@ -286,31 +286,27 @@ int PlayerLookingAt(lua_State* L){game::DebugInfo d{};if(!game::ReadDebug(&d,tru
  else if(d.target==2){lua_pushstring(L,"entity");lua_setfield(L,-2,"type");}else{lua_pushstring(L,"none");lua_setfield(L,-2,"type");}return 1;}
 
 // ---------------------------------------------------------------- drawing
-struct ScriptDraw{ImDrawList* d=nullptr;bool world=false;float m[16]{},origin[3]{};bool projected=false;float W=0,H=0;};ScriptDraw scriptDraw;
-ImU32 Ink(lua_State* L,int idx,ImVec4 fallback=ImVec4(1,1,1,1)){return ImGui::ColorConvertFloat4ToU32(ReadColor(L,idx,fallback));}
-ImDrawList* DrawOf(lua_State* L,bool world){if(!scriptDraw.d||scriptDraw.world!=world)luaL_error(L,"draw only works inside its %s handler",world?"render3d":"render2d");return scriptDraw.d;}
-int DrawText(lua_State* L){ImDrawList* d=DrawOf(L,false);const char* text=luaL_checkstring(L,2);const float x=(float)luaL_checknumber(L,3),y=(float)luaL_checknumber(L,4),size=(float)luaL_optnumber(L,5,16);const ImU32 c=Ink(L,6);const bool shadow=lua_toboolean(L,7)!=0;
- const std::string font=OptStr(L,8,"font","Regular"),align=OptStr(L,8,"align","Left");ImFont* f=font=="Bold"||font=="ExtraBold"?bold:font=="SemiBold"?semibold:regular;const float w=TextWidth(f,size,text);const float left=align=="Center"?x-w/2:align=="Right"?x-w:x;
- if(shadow)Label(d,f,size,ImVec2(left+1,y+1),text,IM_COL32(0,0,0,(c>>24)*3/4));Label(d,f,size,ImVec2(left,y),text,c);return 0;}
-int DrawFill(lua_State* L){ImDrawList* d=DrawOf(L,false);d->AddRectFilled(ImVec2((float)luaL_checknumber(L,2),(float)luaL_checknumber(L,3)),ImVec2((float)luaL_checknumber(L,4),(float)luaL_checknumber(L,5)),Ink(L,6),(float)luaL_optnumber(L,7,0));return 0;}
-int DrawRect(lua_State* L){ImDrawList* d=DrawOf(L,false);d->AddRect(ImVec2((float)luaL_checknumber(L,2),(float)luaL_checknumber(L,3)),ImVec2((float)luaL_checknumber(L,4),(float)luaL_checknumber(L,5)),Ink(L,6),0,0,(float)luaL_optnumber(L,7,1));return 0;}
-int DrawCircle(lua_State* L){ImDrawList* d=DrawOf(L,false);const ImVec2 p((float)luaL_checknumber(L,2),(float)luaL_checknumber(L,3));const float r=(float)luaL_checknumber(L,4);const ImU32 c=Ink(L,5);if(lua_toboolean(L,6))d->AddCircleFilled(p,r,c);else d->AddCircle(p,r,c,0,(float)luaL_optnumber(L,7,1));return 0;}
-int DrawGradient(lua_State* L){ImDrawList* d=DrawOf(L,false);d->AddRectFilledMultiColor(ImVec2((float)luaL_checknumber(L,2),(float)luaL_checknumber(L,3)),ImVec2((float)luaL_checknumber(L,4),(float)luaL_checknumber(L,5)),Ink(L,6),Ink(L,7),Ink(L,8),Ink(L,9));return 0;}
-bool ScriptProject(const float p[3],ImVec2& out){if(!scriptDraw.projected)return false;nickel::visual::Point point{};if(!nickel::visual::project(scriptDraw.m,scriptDraw.origin,p,scriptDraw.W,scriptDraw.H,&point))return false;out=ImVec2(point.x,point.y);return true;}
-int DrawWorldToScreen(lua_State* L){DrawOf(L,false);float p[3];ImVec2 s;if(!ReadVector(L,2,p)||!ScriptProject(p,s)){lua_pushnil(L);lua_pushnil(L);return 2;}lua_pushnumber(L,s.x);lua_pushnumber(L,s.y);return 2;}
-int DrawSize(lua_State* L){const ImVec2 s=ImGui::GetIO().DisplaySize;lua_pushnumber(L,s.x);lua_pushnumber(L,s.y);return 2;}
-int Draw2DLine(lua_State* L){ImDrawList* d=DrawOf(L,false);d->AddLine(ImVec2((float)luaL_checknumber(L,2),(float)luaL_checknumber(L,3)),ImVec2((float)luaL_checknumber(L,4),(float)luaL_checknumber(L,5)),Ink(L,6),(float)luaL_optnumber(L,7,1));return 0;}
+// Drawing goes through the host's ScriptCanvas (script_canvas.hpp); alignment, projection and box geometry are in
+// script_draw.hpp. Only the argument reading is here.
+struct ScriptDraw{ScriptCanvas* canvas=nullptr;bool world=false;ScriptProjection camera;};ScriptDraw scriptDraw;
+CanvasColor Ink(lua_State* L,int idx,ScriptColor fallback=ScriptColor{}){return PackColor(ReadColor(L,idx,fallback));}
+ScriptCanvas& DrawOf(lua_State* L,bool world){if(!scriptDraw.canvas||scriptDraw.world!=world)luaL_error(L,"draw only works inside its %s handler",world?"render3d":"render2d");return *scriptDraw.canvas;}
+CanvasPoint ArgPoint(lua_State* L,int idx){return {(float)luaL_checknumber(L,idx),(float)luaL_checknumber(L,idx+1)};}
+int DrawText(lua_State* L){ScriptCanvas& d=DrawOf(L,false);const char* text=luaL_checkstring(L,2);const float x=(float)luaL_checknumber(L,3),y=(float)luaL_checknumber(L,4),size=(float)luaL_optnumber(L,5,16);const CanvasColor c=Ink(L,6);const bool shadow=lua_toboolean(L,7)!=0;
+ const std::string font=OptStr(L,8,"font","Regular"),align=OptStr(L,8,"align","Left");DrawAlignedText(d,FontNamed(font),size,x,y,text,c,shadow,align);return 0;}
+int DrawFill(lua_State* L){ScriptCanvas& d=DrawOf(L,false);const CanvasPoint lo=ArgPoint(L,2),hi=ArgPoint(L,4);d.FillRect(lo,hi,Ink(L,6),(float)luaL_optnumber(L,7,0));return 0;}
+int DrawRect(lua_State* L){ScriptCanvas& d=DrawOf(L,false);const CanvasPoint lo=ArgPoint(L,2),hi=ArgPoint(L,4);d.Rect(lo,hi,Ink(L,6),(float)luaL_optnumber(L,7,1));return 0;}
+int DrawCircle(lua_State* L){ScriptCanvas& d=DrawOf(L,false);const CanvasPoint p=ArgPoint(L,2);const float r=(float)luaL_checknumber(L,4);const CanvasColor c=Ink(L,5);if(lua_toboolean(L,6))d.FillCircle(p,r,c);else d.Circle(p,r,c,(float)luaL_optnumber(L,7,1));return 0;}
+int DrawGradient(lua_State* L){ScriptCanvas& d=DrawOf(L,false);const CanvasPoint lo=ArgPoint(L,2),hi=ArgPoint(L,4);const CanvasColor a=Ink(L,6),b=Ink(L,7),c=Ink(L,8),e=Ink(L,9);d.FillGradient(lo,hi,a,b,c,e);return 0;}
+int DrawWorldToScreen(lua_State* L){DrawOf(L,false);float p[3];CanvasPoint s;if(!ReadVector(L,2,p)||!scriptDraw.camera.Project(p,&s)){lua_pushnil(L);lua_pushnil(L);return 2;}lua_pushnumber(L,s.x);lua_pushnumber(L,s.y);return 2;}
+int DrawSize(lua_State* L){const CanvasPoint s=Host().DisplaySize();lua_pushnumber(L,s.x);lua_pushnumber(L,s.y);return 2;}
+int Draw2DLine(lua_State* L){ScriptCanvas& d=DrawOf(L,false);const CanvasPoint a=ArgPoint(L,2),b=ArgPoint(L,4);d.Line(a,b,Ink(L,6),(float)luaL_optnumber(L,7,1));return 0;}
 // World: edges projected to the screen (always drawn through walls, no depth test).
-void Segment(ImDrawList* d,const float a[3],const float b[3],ImU32 c,float t){ImVec2 p,q;if(ScriptProject(a,p)&&ScriptProject(b,q))d->AddLine(p,q,c,t);}
-void BoxEdges(ImDrawList* d,const float lo[3],const float hi[3],ImU32 c,float t){float v[8][3];for(int i=0;i<8;++i){v[i][0]=(i&1)?hi[0]:lo[0];v[i][1]=(i&2)?hi[1]:lo[1];v[i][2]=(i&4)?hi[2]:lo[2];}
- static const int e[12][2]={{0,1},{2,3},{4,5},{6,7},{0,2},{1,3},{4,6},{5,7},{0,4},{1,5},{2,6},{3,7}};for(auto& k:e)Segment(d,v[k[0]],v[k[1]],c,t);}
-int DrawBox(lua_State* L){ImDrawList* d=DrawOf(L,true);float lo[3],hi[3];if(!ReadVector(L,2,lo)||!ReadVector(L,3,hi))luaL_error(L,"vector expected");BoxEdges(d,lo,hi,Ink(L,4),(float)luaL_optnumber(L,5,1));return 0;}
-int DrawFilledBox(lua_State* L){ImDrawList* d=DrawOf(L,true);float lo[3],hi[3];if(!ReadVector(L,2,lo)||!ReadVector(L,3,hi))luaL_error(L,"vector expected");const ImU32 c=Ink(L,4);
- static const int faces[6][4]={{0,1,3,2},{4,5,7,6},{0,1,5,4},{2,3,7,6},{0,2,6,4},{1,3,7,5}};float v[8][3];for(int i=0;i<8;++i){v[i][0]=(i&1)?hi[0]:lo[0];v[i][1]=(i&2)?hi[1]:lo[1];v[i][2]=(i&4)?hi[2]:lo[2];}
- for(auto& f:faces){ImVec2 q[4];bool ok=true;for(int i=0;i<4;++i)ok=ok&&ScriptProject(v[f[i]],q[i]);if(ok)d->AddQuadFilled(q[0],q[1],q[2],q[3],c);}return 0;}
-int Draw3DLine(lua_State* L){ImDrawList* d=DrawOf(L,true);float a[3],b[3];if(!ReadVector(L,2,a)||!ReadVector(L,3,b))luaL_error(L,"vector expected");Segment(d,a,b,Ink(L,4),(float)luaL_optnumber(L,5,1));return 0;}
-int DrawEntityBox(lua_State* L){ImDrawList* d=DrawOf(L,true);const uint64_t id=(uint64_t)luaL_checknumber(L,2);static ScriptEntity list[512];const int n=ReadScriptEntities(list,512,0,false);
- for(int i=0;i<n;++i)if(list[i].id==id&&list[i].box){BoxEdges(d,list[i].lo,list[i].hi,Ink(L,3),(float)luaL_optnumber(L,4,1));lua_pushboolean(L,1);return 1;}lua_pushboolean(L,0);return 1;}
+int DrawBox(lua_State* L){ScriptCanvas& d=DrawOf(L,true);float lo[3],hi[3];if(!ReadVector(L,2,lo)||!ReadVector(L,3,hi))luaL_error(L,"vector expected");const CanvasColor c=Ink(L,4);DrawBoxEdges(d,scriptDraw.camera,lo,hi,c,(float)luaL_optnumber(L,5,1));return 0;}
+int DrawFilledBox(lua_State* L){ScriptCanvas& d=DrawOf(L,true);float lo[3],hi[3];if(!ReadVector(L,2,lo)||!ReadVector(L,3,hi))luaL_error(L,"vector expected");FillBoxFaces(d,scriptDraw.camera,lo,hi,Ink(L,4));return 0;}
+int Draw3DLine(lua_State* L){ScriptCanvas& d=DrawOf(L,true);float a[3],b[3];if(!ReadVector(L,2,a)||!ReadVector(L,3,b))luaL_error(L,"vector expected");const CanvasColor c=Ink(L,4);DrawSegment(d,scriptDraw.camera,a,b,c,(float)luaL_optnumber(L,5,1));return 0;}
+int DrawEntityBox(lua_State* L){ScriptCanvas& d=DrawOf(L,true);const uint64_t id=(uint64_t)luaL_checknumber(L,2);static ScriptEntity list[512];const int n=ReadScriptEntities(list,512,0,false);
+ for(int i=0;i<n;++i)if(list[i].id==id&&list[i].box){const CanvasColor c=Ink(L,3);DrawBoxEdges(d,scriptDraw.camera,list[i].lo,list[i].hi,c,(float)luaL_optnumber(L,4,1));lua_pushboolean(L,1);return 1;}lua_pushboolean(L,0);return 1;}
 
 // ---------------------------------------------------------------- require
 std::string ScriptCompile(const std::string& source,std::string& error){lua_CompileOptions options{};options.optimizationLevel=1;options.debugLevel=1;size_t size=0;char* bytecode=luau_compile(source.data(),source.size(),&options,&size);std::string out(bytecode,size);free(bytecode);
@@ -430,15 +426,15 @@ void ScriptsFrame(std::vector<std::string>& drawn){
  ScriptsWatch();
  Fire(ScriptEvent::Update);
  // Drawing: same projection as the ESP modules (hook #246, matrix captured less than 250 ms earlier).
- auto& view=game::View();uint64_t tick{};AcquireSRWLockShared(&view.lock);memcpy(scriptDraw.m,view.m,sizeof(scriptDraw.m));memcpy(scriptDraw.origin,view.origin,sizeof(scriptDraw.origin));tick=view.tick;ReleaseSRWLockShared(&view.lock);
- scriptDraw.projected=camera&&tick&&GetTickCount64()-tick<250&&!view.fault;scriptDraw.W=ImGui::GetIO().DisplaySize.x;scriptDraw.H=ImGui::GetIO().DisplaySize.y;if(camera)game::InstallScreenHook(WriteLog);
+ auto& view=game::View();uint64_t tick{};AcquireSRWLockShared(&view.lock);memcpy(scriptDraw.camera.matrix,view.m,sizeof(scriptDraw.camera.matrix));memcpy(scriptDraw.camera.origin,view.origin,sizeof(scriptDraw.camera.origin));tick=view.tick;ReleaseSRWLockShared(&view.lock);
+ const CanvasPoint screen=Host().DisplaySize();scriptDraw.camera.valid=camera&&tick&&GetTickCount64()-tick<250&&!view.fault;scriptDraw.camera.width=screen.x;scriptDraw.camera.height=screen.y;if(camera)game::InstallScreenHook(WriteLog);
  for(auto& sp:scripts){Script& s=*sp;if(s.state!=1)continue;for(auto& m:s.mods){m.frame=false;if(!m.hud||m.index<0||!Host().At(m.index).enabled)continue;const std::string id=Host().At(m.index).id;
-  auto& place=Place(id.c_str(),20,200);m.fx=place.x;m.fy=place.y;m.fs=place.scale;m.fw=m.hudW*place.scale;m.fh=m.hudH*place.scale;m.frame=true;place.lo=ImVec2(m.fx,m.fy);place.hi=ImVec2(m.fx+m.fw,m.fy+m.fh);drawn.push_back(id);}}
- scriptDraw.d=ImGui::GetBackgroundDrawList();scriptDraw.world=true;
+  const HudFrame place=Host().PlaceHud(id,m.hudW,m.hudH);m.fx=place.x;m.fy=place.y;m.fs=place.scale;m.fw=m.hudW*place.scale;m.fh=m.hudH*place.scale;m.frame=true;drawn.push_back(id);}}
+ scriptDraw.canvas=&Host().Canvas(CanvasLayer::World);scriptDraw.world=true;
  Dispatch(ScriptEvent::Render3d,[](lua_State* L){lua_newtable(L);luaL_getmetatable(L,"NickelWorldDraw");lua_setmetatable(L,-2);return 1;},[](lua_State*,int){});
- scriptDraw.world=false;scriptDraw.d=HudList();   // script HUDs hide outside play, world drawing stays
+ scriptDraw.world=false;scriptDraw.canvas=&Host().Canvas(CanvasLayer::Hud);   // script HUDs hide outside play, world drawing stays
  Dispatch(ScriptEvent::Render2d,[](lua_State* L){lua_newtable(L);luaL_getmetatable(L,"NickelScreenDraw");lua_setmetatable(L,-2);return 1;},[](lua_State*,int){});
- scriptDraw.d=nullptr;
+ scriptDraw.canvas=nullptr;
  for(auto& sp:scripts){Script& s=*sp;s.frameMs=s.frameMs*.9+s.frameSum*1000*.1;s.frameSum=0;}
 }
 // Key pressed with the menu closed (render thread, HandleKey); key release is not reported.
