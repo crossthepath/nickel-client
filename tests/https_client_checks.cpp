@@ -17,6 +17,8 @@
 #include <chrono>
 #include <cstdio>
 #include <mutex>
+#include <new>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -405,8 +407,12 @@ private:
             Send(client, Reply("200 OK", "Content-Type: text/plain\r\n", body));
         } else if (path == "/agent") {
             Send(client, Reply("200 OK", "", HeaderValue(request.headers, "User-Agent")));
+        } else if (path == "/big" && request.method == "HEAD") {
+            Send(client, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 300000\r\n\r\n");
         } else if (path == "/big") {
             Send(client, Reply("200 OK", "", std::string(300000, 'x')));
+        } else if (path == "/not-modified") {
+            Send(client, "HTTP/1.1 304 Not Modified\r\nConnection: close\r\nContent-Length: 300000\r\n\r\n");
         } else if (path == "/unsized") {
             Send(client, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + std::string(5000, 'y'));
         } else if (path == "/redirect-same") {
@@ -530,6 +536,17 @@ void SizeCaps(const TestServer& server, HttpsClient& client) {
     request.maxBytes = 5000;
     response = client.Send(request);
     Check(response.Ok() && response.body.size() == 5000, "a body exactly at the cap is accepted");
+
+    Request head = Get(server.UrlFor("/big"));
+    head.method = "HEAD";
+    head.maxBytes = 1000;
+    response = client.Send(head);
+    Check(response.Ok() && response.body.empty(), "a HEAD is not refused for the length it declares");
+    Request revalidate = Get(server.UrlFor("/not-modified"));
+    revalidate.maxBytes = 1000;
+    response = client.Send(revalidate);
+    Check(response.error == Error::None && response.status == 304 && response.body.empty(),
+            "a 304 is not refused for the length it declares");
 }
 
 void Redirects(const TestServer& server, HttpsClient& client) {
@@ -583,6 +600,65 @@ void TimeoutsAndCancel(const TestServer& server, HttpsClient& client) {
             "cancelling from another thread aborts the request in flight");
     Check(client.Send(Get(server.UrlFor("/json")), &token).error == Error::Cancelled,
             "a cancelled token refuses the next request at once");
+
+    // One token shared by two requests in flight cancels both, and neither touches the other's handle.
+    CancelToken shared;
+    Error first = Error::None;
+    Error second = Error::None;
+    start = Clock::now();
+    std::thread one([&] { first = client.Send(slow, &shared).error; });
+    std::thread two([&] { second = client.Send(slow, &shared).error; });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    shared.Cancel();
+    one.join();
+    two.join();
+    Check(first == Error::Cancelled && second == Error::Cancelled && MillisecondsSince(start) < 3000,
+            "a token shared by two requests cancels both");
+
+    // Cancels landing at every point of an exchange (before the send, while waiting, between reads) while other
+    // requests run on other threads: the cancelled exchange never reaches another request's handle, so the others
+    // keep their exact status and body, and each cancelled one ends Cancelled or complete, never corrupted.
+    std::atomic<bool> done{false};
+    std::atomic<int> intact{0};
+    std::atomic<int> damaged{0};
+    std::vector<std::thread> readers;
+    for (int i = 0; i < 2; ++i) {
+        readers.emplace_back([&] {
+            while (!done) {
+                const Response other = client.Send(Get(server.UrlFor("/json")));
+                if (other.Ok() && other.body == "{\"ok\":true,\"stars\":42}") {
+                    ++intact;
+                } else {
+                    ++damaged;
+                }
+            }
+        });
+    }
+    int cancelled = 0;
+    int wrong = 0;
+    start = Clock::now();
+    for (int i = 0; i < 40; ++i) {
+        CancelToken racing;
+        const char* path = i % 2 == 0 ? "/slow" : "/json";
+        std::thread canceller([&racing, i] {
+            std::this_thread::sleep_for(std::chrono::microseconds((i * 397) % 4000));
+            racing.Cancel();
+        });
+        const Response raced = client.Send(Get(server.UrlFor(path)), &racing);
+        canceller.join();
+        if (raced.error == Error::Cancelled) {
+            ++cancelled;
+        } else if (!(raced.Ok() && raced.body == "{\"ok\":true,\"stars\":42}")) {
+            ++wrong;
+        }
+    }
+    done = true;
+    for (std::thread& reader : readers) {
+        reader.join();
+    }
+    Check(wrong == 0 && cancelled >= 20, "racing cancels end Cancelled or complete, never corrupted");
+    Check(damaged == 0 && intact > 0, "requests on other threads are untouched by racing cancels");
+    Check(MillisecondsSince(start) < 20000, "racing cancels never wait for a slow server");
 }
 
 void Streaming(const TestServer& server, HttpsClient& client) {
@@ -613,6 +689,30 @@ void Streaming(const TestServer& server, HttpsClient& client) {
 
     response = client.Stream(Get(server.UrlFor("/json")), [](const SseEvent&) { return true; });
     Check(response.error == Error::NotEventStream && response.status == 200, "a 2xx that is not an event stream");
+
+    CancelToken token;
+    events.clear();
+    std::atomic<bool> firstEvent{false};
+    std::thread canceller([&] {
+        while (!firstEvent) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        token.Cancel();
+    });
+    const Clock::time_point cancelStart = Clock::now();
+    response = client.Stream(
+            Get(server.UrlFor("/events-then-wait")),
+            [&](const SseEvent& event) {
+                events.push_back(event);
+                firstEvent = true;
+                return true;
+            },
+            &token);
+    firstEvent = true;  // the canceller ends even if no event came
+    canceller.join();
+    Check(response.error == Error::Cancelled && !events.empty() && MillisecondsSince(cancelStart) < 3000,
+            "cancelling a stream between events aborts it at once");
 
     response = client.Stream(Get(server.UrlFor("/problem")), [](const SseEvent&) { return true; });
     Check(response.error == Error::None && response.status == 404
@@ -669,6 +769,55 @@ void WorkerQueue(const TestServer& server, HttpsClient& client) {
     Check(running != nullptr && worker.Post([](CancelToken&) {}) == nullptr, "no job is accepted after Stop");
 }
 
+void WorkerFailures(const TestServer& server, HttpsClient& client) {
+    std::atomic<bool> afterThrow{false};
+    {
+        Worker worker;
+        Check(worker.Post(Worker::Job{}) == nullptr, "an empty job is refused");
+        Check(worker.Post([](CancelToken&) { throw std::runtime_error("job failure"); }) != nullptr,
+                "a throwing job is accepted");
+        worker.Post([](CancelToken&) { throw std::bad_alloc(); });
+        worker.Post([&](CancelToken&) { afterThrow = true; });
+        const Clock::time_point start = Clock::now();
+        while (!afterThrow && MillisecondsSince(start) < 5000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    Check(afterThrow, "a job that throws does not end the process, and the next job runs");
+
+    // Stop from a job only cancels; the destructor joins the thread.
+    std::atomic<bool> stoppedInside{false};
+    Error later = Error::None;
+    {
+        Worker worker;
+        worker.Post([&](CancelToken&) {
+            worker.Stop();
+            stoppedInside = true;
+        });
+        worker.Post([&](CancelToken& token) { later = client.Send(Get(server.UrlFor("/json")), &token).error; });
+        const Clock::time_point start = Clock::now();
+        while (!stoppedInside && MillisecondsSince(start) < 5000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    Check(stoppedInside && later == Error::Cancelled, "Stop from a job cancels the rest and returns to the job");
+
+    // Two threads stopping at once while a request runs: both return once the thread has ended.
+    Worker worker;
+    Error slowResult = Error::None;
+    Request slow = Get(server.UrlFor("/slow"));
+    slow.timeoutMs = 10000;
+    worker.Post([&](CancelToken& token) { slowResult = client.Send(slow, &token).error; });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    const Clock::time_point start = Clock::now();
+    std::thread a([&] { worker.Stop(); });
+    std::thread b([&] { worker.Stop(); });
+    a.join();
+    b.join();
+    Check(slowResult == Error::Cancelled && MillisecondsSince(start) < 3000,
+            "Stop from two threads at once joins once and both return");
+}
+
 } // namespace
 
 int main() {
@@ -690,6 +839,7 @@ int main() {
         TimeoutsAndCancel(server, client);
         Streaming(server, client);
         WorkerQueue(server, client);
+        WorkerFailures(server, client);
     }
     server.Stop();
     std::printf("%s (%d failed)\n",

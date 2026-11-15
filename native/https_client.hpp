@@ -11,7 +11,9 @@
 //   cookies, no automatic authentication, no decompression (the body is the bytes the Content-Digest covers).
 // - Sha256 / ContentDigestMatches: integrity of downloaded files (Content-Digest of RFC 9530, sha256 of the API).
 // - Worker: one background thread running jobs in order, so requests never block the render thread; every job gets
-//   a CancelToken, and cancelling aborts its request in flight (WinHttpCloseHandle on the request handle).
+//   a CancelToken, and cancelling aborts its request in flight. Requests are asynchronous WinHTTP requests that the
+//   calling thread waits on: Cancel only signals an event, and the thread that opened the request handle is the only
+//   one that closes it (WinHTTP does not support closing a synchronous request from another thread).
 // - Stream: a response in text/event-stream is delivered event by event through SseParser (sse_parser.hpp).
 //
 // Nothing here reads or writes files, and nothing runs in DllMain: the owner calls Worker::Stop from the overlay's
@@ -24,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -457,53 +460,37 @@ struct Response {
     }
 };
 
-// Cancels one request (or one Worker job). Cancel may be called from any thread, at any time, more than once.
-// The request being sent with this token is aborted by closing its request handle, which is how a synchronous
-// WinHTTP call is interrupted; a call the owner starts just after fails at once, and the owner stops there.
+// Cancels one request, one Worker job, or every request sharing the token. Cancel may be called from any thread, at
+// any time, more than once: it only sets a flag and an event. The thread running the request waits on that event
+// next to WinHTTP's completion, then closes its own request handle, which aborts the operation in flight; a step it
+// would start next fails at once with Error::Cancelled. The token must outlive the requests that use it.
 class CancelToken {
 public:
-    void Cancel() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        cancelled_ = true;
-        if (request_ != nullptr && !closed_) {
-            WinHttpCloseHandle(request_);
-            closed_ = true;
+    CancelToken() : event_(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
+
+    ~CancelToken() {
+        if (event_ != nullptr) {
+            CloseHandle(event_);
         }
     }
 
-    bool Cancelled() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return cancelled_;
+    CancelToken(const CancelToken&) = delete;
+    CancelToken& operator=(const CancelToken&) = delete;
+
+    void Cancel() {
+        cancelled_.store(true);
+        if (event_ != nullptr) {
+            SetEvent(event_);
+        }
     }
+
+    bool Cancelled() const { return cancelled_.load(); }
 
 private:
     friend class HttpsClient;
 
-    // Registers the request handle; false (and nothing registered) when already cancelled.
-    bool Attach(HINTERNET request) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (cancelled_) {
-            return false;
-        }
-        request_ = request;
-        closed_ = false;
-        return true;
-    }
-
-    // Unregisters and closes the request handle, unless Cancel closed it already.
-    void Release() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (request_ != nullptr && !closed_) {
-            WinHttpCloseHandle(request_);
-        }
-        request_ = nullptr;
-        closed_ = false;
-    }
-
-    mutable std::mutex mutex_;
-    bool cancelled_ = false;
-    bool closed_ = false;
-    HINTERNET request_ = nullptr;
+    std::atomic<bool> cancelled_{false};
+    HANDLE event_;  // manual reset; nullptr if it could not be created (a step in flight then ends at its timeout)
 };
 
 namespace detail {
@@ -592,6 +579,76 @@ inline bool IsRedirect(int status) {
     return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
 
+// What one asynchronous request shares with WinHTTP's callback threads. It has two references: the thread running
+// the request, and WinHTTP from the moment the callback is set until the handle's closing notification, so whichever
+// is last frees it. The request body and the read buffer live here because WinHTTP may use them until the request
+// handle has closed.
+struct AsyncCall {
+    HANDLE completed = CreateEventW(nullptr, FALSE, FALSE, nullptr);  // auto reset: one completion per operation
+    HANDLE closed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::atomic<int> references{1};
+    DWORD error = 0;  // of the last completion, written before `completed` is set (0: it succeeded)
+    DWORD bytes = 0;  // DATA_AVAILABLE: the bytes available; READ_COMPLETE: the bytes read
+    std::string body;
+    std::vector<char> buffer = std::vector<char>(16 * 1024);
+
+    AsyncCall() = default;
+    AsyncCall(const AsyncCall&) = delete;
+    AsyncCall& operator=(const AsyncCall&) = delete;
+
+    ~AsyncCall() {
+        if (completed != nullptr) {
+            CloseHandle(completed);
+        }
+        if (closed != nullptr) {
+            CloseHandle(closed);
+        }
+    }
+
+    void Release() {
+        if (references.fetch_sub(1) == 1) {
+            delete this;
+        }
+    }
+};
+
+inline void CALLBACK OnRequestStatus(HINTERNET, DWORD_PTR context, DWORD status, LPVOID info, DWORD length) {
+    AsyncCall* call = reinterpret_cast<AsyncCall*>(context);
+    if (call == nullptr) {
+        return;
+    }
+    switch (status) {
+        case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
+        case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
+            call->error = 0;
+            call->bytes = 0;
+            SetEvent(call->completed);
+            break;
+        case WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE:
+            call->error = 0;
+            call->bytes = info != nullptr ? *static_cast<const DWORD*>(info) : 0;
+            SetEvent(call->completed);
+            break;
+        case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
+            call->error = 0;
+            call->bytes = length;
+            SetEvent(call->completed);
+            break;
+        case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR: {
+            const auto* result = static_cast<const WINHTTP_ASYNC_RESULT*>(info);
+            call->error = result != nullptr && result->dwError != 0 ? result->dwError : ERROR_WINHTTP_INTERNAL_ERROR;
+            SetEvent(call->completed);
+            break;
+        }
+        case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING:
+            SetEvent(call->closed);
+            call->Release();  // WinHTTP's reference: nothing is called back for this handle after this one
+            break;
+        default:
+            break;
+    }
+}
+
 } // namespace detail
 
 struct ClientOptions {
@@ -599,18 +656,19 @@ struct ClientOptions {
     HostPolicy policy;
 };
 
-// One WinHTTP session. Send and Stream are blocking: call them from a Worker job, never from the render thread.
-// Both may be called from several threads at once.
+// One asynchronous WinHTTP session. Send and Stream block the calling thread until the response (or the stream) has
+// ended: call them from a Worker job, never from the render thread. Both may be called from several threads at once.
 class HttpsClient {
 public:
     static constexpr size_t kMaxEventBytes = 1024 * 1024;  // one SSE event, whatever the stream's cap
+    static constexpr DWORD kCloseWaitMs = 10000;           // for WinHTTP's closing notification of a request
 
     explicit HttpsClient(ClientOptions options) : options_(std::move(options)) {
         session_ = WinHttpOpen(options_.userAgent.c_str(),
                 WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                 WINHTTP_NO_PROXY_NAME,
                 WINHTTP_NO_PROXY_BYPASS,
-                0);
+                WINHTTP_FLAG_ASYNC);
         if (session_ != nullptr) {
             DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
 #ifdef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
@@ -707,12 +765,73 @@ private:
         }
     };
 
-    // The request handle is owned by a CancelToken (the caller's or a local one) for the whole exchange.
-    struct TokenRelease {
-        CancelToken* token;
+    // An asynchronous request handle, owned by the thread running the request: only that thread closes it, which
+    // aborts an operation in flight, and it then waits for WinHTTP's closing notification so that no callback for this
+    // request runs after the exchange has returned.
+    struct AsyncRequest {
+        HINTERNET handle = nullptr;
+        detail::AsyncCall* call = new detail::AsyncCall();
+        bool watched = false;
 
-        ~TokenRelease() { token->Release(); }
+        AsyncRequest() = default;
+        AsyncRequest(const AsyncRequest&) = delete;
+        AsyncRequest& operator=(const AsyncRequest&) = delete;
+
+        ~AsyncRequest() {
+            if (handle != nullptr) {
+                WinHttpCloseHandle(handle);
+                if (watched) {
+                    WaitForSingleObject(call->closed, kCloseWaitMs);
+                }
+            }
+            call->Release();
+        }
+
+        // Routes the handle's completions to `call`; WinHTTP then holds a reference until the handle closes.
+        bool Watch() {
+            DWORD_PTR context = reinterpret_cast<DWORD_PTR>(call);
+            if (!WinHttpSetOption(handle, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context))) {
+                return false;
+            }
+            call->references.fetch_add(1);
+            const DWORD notifications = WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES;
+            if (WinHttpSetStatusCallback(handle, detail::OnRequestStatus, notifications, 0)
+                    == WINHTTP_INVALID_STATUS_CALLBACK) {
+                call->references.fetch_sub(1);
+                return false;
+            }
+            watched = true;
+            return true;
+        }
     };
+
+    // Starts one asynchronous operation and waits for its completion, or for the token. Error::Cancelled as soon as
+    // the token is cancelled: the caller then returns, and closing the handle aborts the operation.
+    template <typename Start>
+    static Error Step(const CancelToken& token, detail::AsyncCall* call, DWORD* code, Start&& start) {
+        if (token.Cancelled()) {
+            return Error::Cancelled;
+        }
+        if (!start()) {
+            *code = GetLastError();
+            return token.Cancelled() ? Error::Cancelled : detail::FromWinHttp(*code);
+        }
+        const HANDLE events[2] = {call->completed, token.event_};
+        const DWORD count = token.event_ != nullptr ? 2 : 1;
+        const DWORD woke = WaitForMultipleObjects(count, events, FALSE, INFINITE);
+        if (woke == WAIT_OBJECT_0) {
+            if (call->error == 0) {
+                return Error::None;
+            }
+            *code = call->error;
+            return token.Cancelled() ? Error::Cancelled : detail::FromWinHttp(call->error);
+        }
+        if (woke == WAIT_OBJECT_0 + 1) {
+            return Error::Cancelled;
+        }
+        *code = GetLastError();
+        return Error::Network;
+    }
 
     static Response Failure(Error error, DWORD code = 0) {
         Response response;
@@ -814,36 +933,35 @@ private:
     }
 
     // Reads the body: into response->body, or chunk by chunk into sink (which may stop the read, or set an error).
-    static void ReadBody(HINTERNET request,
+    static void ReadBody(const AsyncRequest& exchange,
             const Request& options,
             const CancelToken& token,
             std::function<bool(Response&, std::string_view)>* sink,
             Response* response) {
-        std::vector<char> buffer(16 * 1024);
+        detail::AsyncCall* call = exchange.call;
         size_t total = 0;
         for (;;) {
             // Wait for what has arrived, then read only that: a read of a whole buffer would wait for it to fill,
             // which holds back the events of a stream.
-            DWORD available = 0;
-            if (!WinHttpQueryDataAvailable(request, &available)) {
-                const DWORD code = GetLastError();
-                response->error = token.Cancelled() ? Error::Cancelled : detail::FromWinHttp(code);
+            DWORD code = 0;
+            Error error = Step(token, call, &code, [&] { return WinHttpQueryDataAvailable(exchange.handle, nullptr); });
+            if (error == Error::None) {
+                const DWORD available = call->bytes;
+                if (available == 0) {
+                    return;
+                }
+                const DWORD wanted = (std::min)(available, static_cast<DWORD>(call->buffer.size()));
+                error = Step(token, call, &code, [&] {
+                    return WinHttpReadData(exchange.handle, call->buffer.data(), wanted, nullptr);
+                });
+            }
+            if (error != Error::None) {
+                response->error = error;
                 response->systemError = code;
                 response->body.clear();
                 return;
             }
-            if (available == 0) {
-                return;
-            }
-            DWORD got = 0;
-            const DWORD wanted = (std::min)(available, static_cast<DWORD>(buffer.size()));
-            if (!WinHttpReadData(request, buffer.data(), wanted, &got)) {
-                const DWORD code = GetLastError();
-                response->error = token.Cancelled() ? Error::Cancelled : detail::FromWinHttp(code);
-                response->systemError = code;
-                response->body.clear();
-                return;
-            }
+            const DWORD got = call->bytes;
             if (got == 0) {
                 return;
             }
@@ -853,7 +971,7 @@ private:
                 response->body.clear();
                 return;
             }
-            const std::string_view chunk(buffer.data(), got);
+            const std::string_view chunk(call->buffer.data(), got);
             if (sink == nullptr) {
                 response->body.append(chunk.data(), chunk.size());
             } else if (!(*sink)(*response, chunk)) {
@@ -875,7 +993,7 @@ private:
             return Failure(Error::Network, ERROR_INVALID_HANDLE);
         }
         CancelToken local;
-        CancelToken& token = cancel != nullptr ? *cancel : local;
+        const CancelToken& token = cancel != nullptr ? *cancel : local;
         if (token.Cancelled()) {
             return Failure(Error::Cancelled);
         }
@@ -883,38 +1001,46 @@ private:
         if (connection.handle == nullptr) {
             return LastFailure(token);
         }
-        const HINTERNET handle = WinHttpOpenRequest(connection.handle,
+        AsyncRequest exchange;  // declared after the connection, so the request handle closes first
+        exchange.handle = WinHttpOpenRequest(connection.handle,
                 detail::Widen(request.method).c_str(),
                 detail::Widen(url.target).c_str(),
                 nullptr,
                 WINHTTP_NO_REFERER,
                 WINHTTP_DEFAULT_ACCEPT_TYPES,
                 url.scheme == "https" ? WINHTTP_FLAG_SECURE : 0);
-        if (handle == nullptr) {
+        if (exchange.handle == nullptr || exchange.call->completed == nullptr || exchange.call->closed == nullptr
+                || !exchange.Watch()) {
             return LastFailure(token);
         }
-        if (!token.Attach(handle)) {
-            WinHttpCloseHandle(handle);
-            return Failure(Error::Cancelled);
-        }
-        TokenRelease release{&token};
-        Configure(handle, url, request.timeoutMs);
-        const DWORD bodySize = static_cast<DWORD>(request.body.size());
-        void* body = bodySize > 0 ? const_cast<char*>(request.body.data()) : WINHTTP_NO_REQUEST_DATA;
-        if (!WinHttpSendRequest(handle,
+        Configure(exchange.handle, url, request.timeoutMs);
+        detail::AsyncCall* call = exchange.call;
+        call->body = request.body;
+        const DWORD bodySize = static_cast<DWORD>(call->body.size());
+        void* body = bodySize > 0 ? call->body.data() : WINHTTP_NO_REQUEST_DATA;
+        DWORD code = 0;
+        Error error = Step(token, call, &code, [&] {
+            return WinHttpSendRequest(exchange.handle,
                     headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(),
                     headers.empty() ? 0 : static_cast<DWORD>(-1L),
                     body,
                     bodySize,
                     bodySize,
-                    0)
-                || !WinHttpReceiveResponse(handle, nullptr)) {
-            return LastFailure(token);
+                    reinterpret_cast<DWORD_PTR>(call));
+        });
+        if (error == Error::None) {
+            error = Step(token, call, &code, [&] { return WinHttpReceiveResponse(exchange.handle, nullptr); });
+        }
+        if (error != Error::None) {
+            return Failure(error, code);
         }
         Response response;
         response.url = url.scheme + "://" + url.host + ":" + std::to_string(url.port) + url.target;
-        ReadStatusAndHeaders(handle, &response);
-        if (DeclaredTooLarge(response, request.maxBytes)) {
+        ReadStatusAndHeaders(exchange.handle, &response);
+        // A HEAD, 1xx, 204 or 304 has no body, whatever length it declares.
+        const bool bodiless = request.method == "HEAD" || response.status < 200 || response.status == 204
+                || response.status == 304;
+        if (!bodiless && DeclaredTooLarge(response, request.maxBytes)) {
             response.error = Error::TooLarge;
             return response;
         }
@@ -925,7 +1051,7 @@ private:
                 return response;
             }
         }
-        ReadBody(handle, request, token, sink, &response);
+        ReadBody(exchange, request, token, sink, &response);
         return response;
     }
 
@@ -950,8 +1076,11 @@ public:
 
     ~Worker() { Stop(); }
 
-    // Queues a job; nullptr (and the job is dropped) once Stop was called.
+    // Queues a job; nullptr (and the job is dropped) once Stop was called, or for an empty job.
     std::shared_ptr<CancelToken> Post(Job job) {
+        if (!job) {
+            return nullptr;
+        }
         auto token = std::make_shared<CancelToken>();
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -961,6 +1090,7 @@ public:
             queue_.emplace_back(token, std::move(job));
             if (!thread_.joinable()) {
                 thread_ = std::thread([this] { Run(); });
+                threadId_ = thread_.get_id();
             }
         }
         wake_.notify_one();
@@ -968,7 +1098,9 @@ public:
     }
 
     // Cancels every queued job and the running one, lets them finish, and joins the thread. Not from DllMain (the
-    // loader lock would deadlock the join). The worker cannot be restarted.
+    // loader lock would deadlock the join). The worker cannot be restarted. From a job, Stop only cancels: the thread
+    // ends after that job, and the destructor (or a Stop from another thread) joins it. Several threads may call
+    // Stop at once; each returns once the thread has ended.
     void Stop() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -979,8 +1111,13 @@ public:
             if (running_) {
                 running_->Cancel();
             }
+            if (threadId_ == std::this_thread::get_id()) {
+                return;
+            }
         }
         wake_.notify_one();
+        // Post no longer touches thread_ once stopping_ is set, so only this mutex guards the join.
+        std::lock_guard<std::mutex> join(joinMutex_);
         if (thread_.joinable()) {
             thread_.join();
         }
@@ -1004,7 +1141,11 @@ private:
             queue_.pop_front();
             running_ = entry.first;
             lock.unlock();
-            entry.second(*entry.first);
+            try {
+                entry.second(*entry.first);
+            } catch (...) {
+                // An exception leaving this thread would end the game; the job's owner hears nothing back.
+            }
             lock.lock();
             running_.reset();
         }
@@ -1014,7 +1155,9 @@ private:
     std::condition_variable wake_;
     std::deque<std::pair<std::shared_ptr<CancelToken>, Job>> queue_;
     std::shared_ptr<CancelToken> running_;
+    std::mutex joinMutex_;
     std::thread thread_;
+    std::thread::id threadId_;
     bool stopping_ = false;
 };
 
