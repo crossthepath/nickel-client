@@ -10,6 +10,7 @@
 // Threads: all Luau code runs under `scriptGuard`; update / render2d / render3d / key / timers run on the render thread,
 // tick / packetSend / packetReceive / chat / attack on the game thread (shared hooks).
 // The 2.1 API lives in script_api21.hpp (inventory, container, path, projectile, player.simulate, the 2.1 events).
+#include "script_limits.hpp"   // ScriptOverLimit (tested without the game)
 struct ScriptHandler{std::string event;int ref;};
 struct ScriptModule{int index=-1;std::string name;int enableRef=0,disableRef=0;std::vector<ScriptHandler> handlers;bool was=false;int activation=0;bool hud=false;float hudW=0,hudH=0;bool frame=false;float fx=0,fy=0,fs=1,fw=0,fh=0;
  bool rotating=false;float yaw=0,pitch=0;};
@@ -19,7 +20,7 @@ struct Script{
  std::wstring file;std::string name;uint64_t stamp=0;lua_State* L=nullptr;int threadRef=0;
  int state=0;   // 0 Stopped, 1 Running, 2 Stopped after errors, 3 Failed to load
  std::vector<ScriptModule> mods;std::vector<ScriptCommand> commands;std::deque<std::string> errors;std::deque<double> errorTimes;
- size_t memory=0;double frameMs=0,frameSum=0,frameStart=0;std::vector<ScriptTimer> timers;int nextTimer=1;bool loading=false;double callStart=0,limit=.05;
+ size_t memory=0;double frameMs=0,frameSum=0,frameStart=0;std::vector<ScriptTimer> timers;int nextTimer=1;bool loading=false;double callStart=0,limit=.05;bool expired=false;
  bool userStopped=false;std::map<std::string,int> required;std::vector<std::string> requiring;
 };
 std::recursive_mutex scriptGuard;std::vector<std::unique_ptr<Script>> scripts;int scriptSelected=-1;char scriptSearch[64]{};double scriptScanAt=0;
@@ -48,9 +49,10 @@ void ScriptError(Script& s,const std::string& message){
 }
 // Stack: function then arguments; returns true if the call finished without error (results left on the stack).
 bool ScriptCall(Script& s,lua_State* L,int args,int results){
- s.callStart=ScriptNow();const int status=lua_pcall(L,args,results,0);const double spent=ScriptNow()-s.callStart;if(!s.loading)s.frameSum+=spent;s.callStart=0;
+ const double began=ScriptNow();const ScriptCallState outer=ScriptCallBegin(s.callStart,s.expired,began);
+ const int status=lua_pcall(L,args,results,0);const double spent=ScriptNow()-began;if(!s.loading)s.frameSum+=spent;ScriptCallEnd(s.callStart,s.expired,outer);
  if(status!=LUA_OK){const char* text=lua_tostring(L,-1);ScriptError(s,text?text:"error");lua_pop(L,1);return false;}return true;}
-void ScriptInterrupt(lua_State* L,int gc){if(gc>=0)return;Script* s=ScriptOf(L);if(s&&s->callStart>0&&ScriptNow()-s->callStart>s->limit){s->callStart=ScriptNow()+1e9;luaL_error(L,s->loading?"script took longer than one second to load":"script call took longer than 50 ms");}}
+void ScriptInterrupt(lua_State* L,int gc){if(gc>=0)return;Script* s=ScriptOf(L);if(s&&ScriptOverLimit(s->callStart,s->limit,s->expired,ScriptNow())){luaL_error(L,s->loading?"script took longer than one second to load":"script call took longer than 50 ms");}}
 void* ScriptAlloc(void* ud,void* ptr,size_t osize,size_t nsize){Script* s=(Script*)ud;if(nsize==0){free(ptr);s->memory-=std::min(s->memory,osize);return nullptr;}
  if(nsize>osize&&s->memory+(nsize-osize)>64ull*1024*1024)return nullptr;void* p=realloc(ptr,nsize);if(p)s->memory=s->memory-std::min(s->memory,osize)+nsize;return p;}
 // Calls a referenced function with an optional argument already pushed.
