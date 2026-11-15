@@ -3,6 +3,8 @@ build/
 dist/
 desktop/bin/
 desktop/obj/
+tests/launcher_checks/bin/
+tests/launcher_checks/obj/
 **/__pycache__/
 node_modules/
 *.dmp

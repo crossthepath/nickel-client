@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Offline checks of the launcher's pure logic (update trust chain, version order, game build identification).
+    A plain console program: no test framework package, nothing downloaded. The launcher sources are compiled by link,
+    so the checks run against the exact code the launcher ships. Only files without a WPF dependency are linked.
+    Run from the repository root: dotnet run, project tests/launcher_checks, configuration Release (see Program.cs).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Nickel.LauncherChecks</RootNamespace>
+    <AssemblyName>launcher-checks</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../desktop/ReleaseTrust.cs" Link="Launcher/ReleaseTrust.cs" />
+    <Compile Include="../../desktop/GameBuilds.cs" Link="Launcher/GameBuilds.cs" />
+  </ItemGroup>
+</Project>
