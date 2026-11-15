@@ -10,6 +10,12 @@
 using ScriptEvent = nickel::script::Event;
 using ScriptEventMask = nickel::script::EventMask;
 
+// ---- setup
+
+// The program running the engine: modules, preferences, keys, notifications, log (script_host.hpp). Called once,
+// before any script runs; the menu passes its MenuScriptHost.
+void SetScriptHost(ScriptHost* host);
+
 // ---- state, for wiring the game hooks (render thread, every frame)
 
 // True when at least one script is running.

@@ -8,7 +8,8 @@
         "native/hud_crosshair.hpp",
         "native/hud_subtitles.hpp",
         "native/schematic_ui.hpp",
-        "native/menu_waypoints.hpp"
+        "native/menu_waypoints.hpp",
+        "native/menu_script_host.hpp"
       ],
       "identifiers": [
         "scripts",
@@ -46,10 +47,13 @@
       }
     },
     {
-      "name": "the Luau engine reaching into the menu (script_engine.hpp, script_api21.hpp)",
+      "name": "the Luau engine reaching into the menu (script_engine.hpp, script_api21.hpp, and the headers it uses)",
       "files": [
         "native/script_engine.hpp",
-        "native/script_api21.hpp"
+        "native/script_api21.hpp",
+        "native/script_modules.hpp",
+        "native/script_host.hpp",
+        "native/module_registry.hpp"
       ],
       "identifiers": [
         "modules",
@@ -81,25 +85,25 @@
         "ImU32"
       ],
       "baseline": {
-        "modules": 50,
-        "Save": 8,
-        "configPath": 4,
-        "keybinds": 2,
-        "keycodes": 4,
-        "notices": 2,
-        "selected": 7,
-        "opened": 1,
-        "KeysAllowed": 1,
-        "gameWindowForKeys": 2,
+        "modules": 0,
+        "Save": 0,
+        "configPath": 0,
+        "keybinds": 0,
+        "keycodes": 0,
+        "notices": 0,
+        "selected": 0,
+        "opened": 0,
+        "KeysAllowed": 0,
+        "gameWindowForKeys": 0,
         "Label": 2,
         "TextWidth": 1,
         "HudList": 1,
         "Place": 1,
         "ParseColor": 1,
         "FormatColor": 2,
-        "Wide": 7,
-        "Utf8": 3,
-        "WriteLog": 5,
+        "Wide": 2,
+        "Utf8": 1,
+        "WriteLog": 1,
         "regular": 1,
         "bold": 1,
         "semibold": 1,

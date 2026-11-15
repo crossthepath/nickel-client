@@ -2,6 +2,9 @@
 // Label / ModuleById (no #include here: lua.h, lualib.h and luacode.h are included at the top of menu.cpp).
 // The menu, the HUD and the game hooks use the engine only through script_engine_api.hpp (declared there, defined here);
 // event names and their bits are in script_events.hpp.
+// Modules, preferences, key bindings, the keyboard, notifications and the log are reached only through the ScriptHost
+// (script_host.hpp) set with SetScriptHost; the rules about script modules are in script_modules.hpp (both included at
+// the top of menu.cpp, outside its namespace).
 // One Luau VM per .luau file in %APPDATA%\Nickel\scripts: reloaded about a second after saving, unloaded when the file
 // disappears; *.d.luau files are never run; libraries lib/<name>.luau are loaded through require.
 // Limits: 50 ms per call (1 s at load), 64 MB, 256 timers; 5 errors within 10 s stop the script until it is saved again.
@@ -26,6 +29,9 @@ struct Script{
  size_t memory=0;double frameMs=0,frameSum=0,frameStart=0;std::vector<ScriptTimer> timers;int nextTimer=1;bool loading=false;double callStart=0,limit=.05;bool expired=false;
  bool userStopped=false;std::map<std::string,int> required;std::vector<std::string> requiring;
 };
+ScriptHost* scriptHost=nullptr;   // the program running the engine (the menu in the game, a fake in tests)
+void SetScriptHost(ScriptHost* host){scriptHost=host;}
+ScriptHost& Host(){return *scriptHost;}
 std::recursive_mutex scriptGuard;std::vector<std::unique_ptr<Script>> scripts;int scriptSelected=-1;char scriptSearch[64]{};double scriptScanAt=0;
 std::wstring ScriptFolder(){wchar_t base[MAX_PATH]{};if(!GetEnvironmentVariableW(L"APPDATA",base,MAX_PATH))return L"";return std::wstring(base)+L"\\Nickel\\scripts";}
 double ScriptNow(){LARGE_INTEGER f{},c{};QueryPerformanceFrequency(&f);QueryPerformanceCounter(&c);return (double)c.QuadPart/(double)f.QuadPart;}
@@ -47,8 +53,8 @@ std::string ScriptKeyName(int code){for(auto& k:scriptKeys)if(k.code==code)retur
 void ScriptUnload(Script& s);
 void ScriptError(Script& s,const std::string& message){
  const double now=ScriptNow();s.errors.push_back(message);while(s.errors.size()>8)s.errors.pop_front();s.errorTimes.push_back(now);while(!s.errorTimes.empty()&&now-s.errorTimes.front()>10)s.errorTimes.pop_front();
- if(WriteLog){std::string line="Script "+s.name+": "+message;WriteLog(line.c_str());}
- if(s.state==1&&s.errorTimes.size()>=5){s.state=2;for(auto& m:s.mods)if(m.index>=0&&modules[m.index].enabled){modules[m.index].enabled=false;Save(modules[m.index]);}}
+ Host().Log("Script "+s.name+": "+message);
+ if(s.state==1&&s.errorTimes.size()>=5){s.state=2;for(auto& m:s.mods)if(m.index>=0)SetModuleEnabled(Host(),m.index,false);}
 }
 // Stack: function then arguments; returns true if the call finished without error (results left on the stack).
 bool ScriptCall(Script& s,lua_State* L,int args,int results){
@@ -73,25 +79,24 @@ int OptInt(lua_State* L,int idx,const char* key,int fallback){if(!lua_istable(L,
 double OptNum(lua_State* L,int idx,const char* key,double fallback){if(!lua_istable(L,idx))return fallback;lua_rawgetfield(L,idx,key);const double v=lua_isnumber(L,-1)?lua_tonumber(L,-1):fallback;lua_pop(L,1);return v;}
 bool OptBool(lua_State* L,int idx,const char* key,bool fallback){if(!lua_istable(L,idx))return fallback;lua_rawgetfield(L,idx,key);const bool v=lua_isboolean(L,-1)?lua_toboolean(L,-1)!=0:fallback;lua_pop(L,1);return v;}
 std::string OptStr(lua_State* L,int idx,const char* key,const char* fallback){if(!lua_istable(L,idx))return fallback;lua_rawgetfield(L,idx,key);std::string v=lua_isstring(L,-1)?lua_tostring(L,-1):fallback;lua_pop(L,1);return v;}
-std::string Slug(const std::string& name){std::string out;for(char c:name){if(std::isalnum((unsigned char)c))out+=(char)std::tolower((unsigned char)c);else if(!out.empty()&&out.back()!='_')out+='_';}while(!out.empty()&&out.back()=='_')out.pop_back();return out.empty()?"x":out;}
 
 // ---------------------------------------------------------------- Setting
-Setting* SettingFrom(lua_State* L,int idx,Module** owner=nullptr){luaL_checktype(L,idx,LUA_TTABLE);lua_rawgetfield(L,idx,"__m");lua_rawgetfield(L,idx,"__s");const int m=(int)lua_tonumber(L,-2),s=(int)lua_tonumber(L,-1);lua_pop(L,2);
- if(m<0||m>=(int)modules.size()||s<0||s>=(int)modules[m].settings.size())luaL_error(L,"setting no longer exists");if(owner)*owner=&modules[m];return &modules[m].settings[s];}
+Setting* SettingFrom(lua_State* L,int idx,int* owner=nullptr){luaL_checktype(L,idx,LUA_TTABLE);lua_rawgetfield(L,idx,"__m");lua_rawgetfield(L,idx,"__s");const int m=(int)lua_tonumber(L,-2),s=(int)lua_tonumber(L,-1);lua_pop(L,2);
+ if(m<0||m>=Host().Count()||s<0||s>=(int)Host().At(m).settings.size())luaL_error(L,"setting no longer exists");if(owner)*owner=m;return &Host().At(m).settings[s];}
 void PushSettingValue(lua_State* L,const Setting& st){
  if(st.kind=="bool")lua_pushboolean(L,st.number!=0);else if(st.kind=="number")lua_pushnumber(L,st.number);else if(st.kind=="color")PushColor(L,st.text);
  else if(st.kind=="key"){const size_t bar=st.text.find('|');const int code=bar==std::string::npos?0:atoi(st.text.c_str()+bar+1);lua_pushstring(L,ScriptKeyName(code).c_str());}else lua_pushstring(L,st.text.c_str());}
 int SettingGet(lua_State* L){PushSettingValue(L,*SettingFrom(L,1));return 1;}
 int SettingName(lua_State* L){lua_pushstring(L,SettingFrom(L,1)->name.c_str());return 1;}
 int SettingType(lua_State* L){Setting* st=SettingFrom(L,1);lua_rawgetfield(L,1,"__t");if(lua_isstring(L,-1))return 1;lua_pop(L,1);lua_pushstring(L,st->kind.c_str());return 1;}
-int SettingSet(lua_State* L){Module* m=nullptr;Setting* st=SettingFrom(L,1,&m);
+int SettingSet(lua_State* L){int m=-1;Setting* st=SettingFrom(L,1,&m);
  if(st->kind=="bool")st->number=lua_toboolean(L,2)?1:0;
  else if(st->kind=="number"||st->kind=="range"){double v=luaL_checknumber(L,2);if(st->step>=1)v=std::round(v);st->number=std::clamp(v,st->minimum,st->maximum);if(st->kind=="range"&&lua_isnumber(L,3))st->text=std::to_string(std::clamp(lua_tonumber(L,3),st->minimum,st->maximum));}
  else if(st->kind=="color")st->text=FormatColor(ReadColor(L,2));
  else if(st->kind=="enum"){std::string v=luaL_checkstring(L,2);if(std::find(st->options.begin(),st->options.end(),v)==st->options.end())luaL_error(L,"'%s' is not an option of %s",v.c_str(),st->name.c_str());st->text=v;}
  else if(st->kind=="key"){std::string v=luaL_checkstring(L,2);const int code=ScriptKeyCode(v);st->text=code?ScriptKeyName(code)+"|"+std::to_string(code):"";}
  else st->text=luaL_checkstring(L,2);
- Save(*m,st);return 0;}
+ Host().SaveModule(m,st);return 0;}
 void PushSetting(lua_State* L,int module,int setting,const char* type=nullptr){lua_createtable(L,0,3);lua_pushnumber(L,module);lua_setfield(L,-2,"__m");lua_pushnumber(L,setting);lua_setfield(L,-2,"__s");if(type){lua_pushstring(L,type);lua_setfield(L,-2,"__t");}
  luaL_getmetatable(L,"NickelSetting");lua_setmetatable(L,-2);}
 
@@ -99,7 +104,7 @@ void PushSetting(lua_State* L,int module,int setting,const char* type=nullptr){l
 ScriptModule& ModuleOf(lua_State* L,int idx){luaL_checktype(L,idx,LUA_TTABLE);lua_rawgetfield(L,idx,"__id");const int id=(int)lua_tonumber(L,-1);lua_pop(L,1);Script* s=ScriptOf(L);if(id<0||id>=(int)s->mods.size())luaL_error(L,"invalid module");return s->mods[id];}
 void RequireLoading(lua_State* L,const char* what){if(!ScriptOf(L)->loading)luaL_error(L,"%s can only be declared while the script loads",what);}
 int AddSetting(lua_State* L,const char* kind,const char* type){
- RequireLoading(L,"settings");ScriptModule& sm=ModuleOf(L,1);Module& m=modules[sm.index];std::string name=luaL_checkstring(L,2);if(name.size()>48)name.resize(48);
+ RequireLoading(L,"settings");ScriptModule& sm=ModuleOf(L,1);Module& m=Host().At(sm.index);std::string name=luaL_checkstring(L,2);if(name.size()>48)name.resize(48);
  Setting st{};st.id=Slug(name);st.name=name;st.kind=kind;st.minimum=0;st.maximum=1;st.step=.01;st.number=0;
  if(!strcmp(type,"boolean")){st.step=1;st.number=lua_toboolean(L,3)?1:0;}
  else if(!strcmp(type,"number")||!strcmp(type,"integer")){const bool whole=!strcmp(type,"integer");st.number=luaL_checknumber(L,3);st.minimum=luaL_checknumber(L,4);st.maximum=luaL_checknumber(L,5);st.step=luaL_optnumber(L,6,whole?1:.1);
@@ -108,12 +113,8 @@ int AddSetting(lua_State* L,const char* kind,const char* type){
  else if(!strcmp(type,"color"))st.text=FormatColor(ReadColor(L,3));
  else if(!strcmp(type,"text"))st.text=luaL_optstring(L,3,"");
  else if(!strcmp(type,"key")){const char* k=luaL_optstring(L,3,"");const int code=ScriptKeyCode(k);st.text=code?ScriptKeyName(code)+"|"+std::to_string(code):"";}
- int index=-1;for(int i=0;i<(int)m.settings.size();++i)if(m.settings[i].id==st.id)index=i;
- if(index<0){if(m.settings.size()>=128)luaL_error(L,"too many settings");m.settings.push_back(st);index=(int)m.settings.size()-1;}
- else{Setting& old=m.settings[index];const bool keep=old.kind==st.kind&&(st.kind!="enum"||std::find(st.options.begin(),st.options.end(),old.text)!=st.options.end());Setting fresh=st;if(keep){fresh.number=st.kind=="number"?std::clamp(old.number,st.minimum,st.maximum):old.number;fresh.text=old.text;}old=fresh;}
- // Saved value (module-preferences.ini), as ReadPreferences does for built-in modules.
- {Setting& t=m.settings[index];static wchar_t text[8192];text[0]=0;GetPrivateProfileStringW(Wide(m.id).c_str(),Wide(t.id).c_str(),L"",text,8192,configPath.c_str());
-  if(text[0]){if(t.kind=="number"||t.kind=="bool"){wchar_t* end{};double v=wcstod(text,&end);if(end&&!*end&&std::isfinite(v)&&v>=t.minimum&&v<=t.maximum)t.number=v;}else{auto v=Utf8(text);if(t.kind=="color"?(v.size()==9&&v[0]=='#'):(t.kind!="enum"||std::find(t.options.begin(),t.options.end(),v)!=t.options.end()))t.text=v;}}}
+ const int index=PutScriptSetting(m,st);if(index<0)luaL_error(L,"too many settings");   // script_modules.hpp
+ ApplySavedSetting(Host(),m.id,m.settings[index]);   // saved value (module-preferences.ini), as ReadPreferences does for built-in modules
  PushSetting(L,sm.index,index,type);return 1;}
 int ModBoolean(lua_State* L){return AddSetting(L,"bool","boolean");}
 int ModNumber(lua_State* L){return AddSetting(L,"number","number");}
@@ -126,8 +127,8 @@ int ModOnEnable(lua_State* L){ScriptModule& m=ModuleOf(L,1);luaL_checktype(L,2,L
 int ModOnDisable(lua_State* L){ScriptModule& m=ModuleOf(L,1);luaL_checktype(L,2,LUA_TFUNCTION);if(m.disableRef)lua_unref(L,m.disableRef);m.disableRef=lua_ref(L,2);return 0;}
 int ModOn(lua_State* L){ScriptModule& m=ModuleOf(L,1);const char* name=luaL_checkstring(L,2);luaL_checktype(L,3,LUA_TFUNCTION);ScriptEvent event{};if(!nickel::script::EventFromName(name,&event))luaL_error(L,"unknown event '%s'",name);   // names: script_events.hpp
  if(m.handlers.size()>=64)luaL_error(L,"too many event handlers");m.handlers.push_back({event,lua_ref(L,3)});m.handlerMask|=nickel::script::Bit(event);return 0;}
-int ModIsEnabled(lua_State* L){ScriptModule& m=ModuleOf(L,1);lua_pushboolean(L,modules[m.index].enabled);return 1;}
-int ModSetEnabled(lua_State* L){ScriptModule& m=ModuleOf(L,1);const bool on=lua_toboolean(L,2)!=0;if(modules[m.index].enabled!=on){modules[m.index].enabled=on;Save(modules[m.index]);}return 0;}
+int ModIsEnabled(lua_State* L){ScriptModule& m=ModuleOf(L,1);lua_pushboolean(L,Host().At(m.index).enabled);return 1;}
+int ModSetEnabled(lua_State* L){ScriptModule& m=ModuleOf(L,1);SetModuleEnabled(Host(),m.index,lua_toboolean(L,2)!=0);return 0;}
 int ModHud(lua_State* L){RequireLoading(L,"HUD elements");ScriptModule& m=ModuleOf(L,1);m.hud=true;m.hudW=(float)std::clamp(luaL_checknumber(L,2),1.0,4000.0);m.hudH=(float)std::clamp(luaL_checknumber(L,3),1.0,4000.0);return 0;}
 int ModHudFrame(lua_State* L){ScriptModule& m=ModuleOf(L,1);if(!m.hud||!m.frame){for(int i=0;i<5;++i)lua_pushnil(L);return 5;}lua_pushnumber(L,m.fx);lua_pushnumber(L,m.fy);lua_pushnumber(L,m.fs);lua_pushnumber(L,m.fw);lua_pushnumber(L,m.fh);return 5;}
 // Rotation: Camera mode only here (Silent/Visible/Packet modes go through the rotation manager in script_api21.hpp).
@@ -136,20 +137,17 @@ bool LocalEye(float eye[3]);bool EntityPosition(uint64_t id,float out[3]);
 int ModAimAt(lua_State* L){ScriptModule& m=ModuleOf(L,1);float target[3],eye[3];if(lua_isnumber(L,2)){if(!EntityPosition((uint64_t)lua_tonumber(L,2),target)){lua_pushboolean(L,0);return 1;}target[1]+=1.4f;}
  else if(!ReadVector(L,2,target)){lua_pushboolean(L,0);return 1;}if(!LocalEye(eye)){lua_pushboolean(L,0);return 1;}
  const float dx=target[0]-eye[0],dy=target[1]-eye[1],dz=target[2]-eye[2];m.yaw=std::atan2(dz,dx)*57.29578f-90;m.pitch=-std::atan2(dy,std::sqrt(dx*dx+dz*dz))*57.29578f;m.rotating=true;lua_pushboolean(L,1);return 1;}
-int ModUseItem(lua_State* L){ScriptModule& m=ModuleOf(L,1);if(lua_istable(L,2)){lua_rawgetfield(L,2,"done");if(lua_isfunction(L,-1)){lua_pushboolean(L,0);lua_call(L,1,0);}else lua_pop(L,1);if(OptBool(L,2,"disable",false)&&modules[m.index].enabled){modules[m.index].enabled=false;Save(modules[m.index]);}}return 0;}
+int ModUseItem(lua_State* L){ScriptModule& m=ModuleOf(L,1);if(lua_istable(L,2)){lua_rawgetfield(L,2,"done");if(lua_isfunction(L,-1)){lua_pushboolean(L,0);lua_call(L,1,0);}else lua_pop(L,1);if(OptBool(L,2,"disable",false))SetModuleEnabled(Host(),m.index,false);}return 0;}
 
-void ScriptHideModules(Script& s){for(auto& m:s.mods)if(m.index>=0){Module& mod=modules[m.index];if(mod.enabled&&s.state!=1){}mod.category.clear();}}
+void ScriptHideModules(Script& s){for(auto& m:s.mods)if(m.index>=0)HideModule(Host(),m.index);}
 int ScriptModuleDecl(lua_State* L){
  RequireLoading(L,"modules");Script* s=ScriptOf(L);luaL_checktype(L,1,LUA_TTABLE);std::string name=OptStr(L,1,"name","");std::string category=OptStr(L,1,"category","");if(name.empty())luaL_error(L,"a module needs a name");if(name.size()>48)luaL_error(L,"module names are at most 48 characters");
- static const char* cats[][2]={{"Combat","Combat"},{"Movement","Movement"},{"Player","Player"},{"Visual","Visuals"},{"Utility","Utility"},{"HUD","HUD"}};const char* menuCategory=nullptr;for(auto& c:cats)if(category==c[0])menuCategory=c[1];
+ const char* menuCategory=ScriptMenuCategory(category);   // rules about script modules: script_modules.hpp
  if(!menuCategory)luaL_error(L,"category must be Combat, Movement, Player, Visual, Utility or HUD");
  for(auto& m:s->mods)if(m.name==name)luaL_error(L,"this script already has a module named '%s'",name.c_str());
- const std::string id="script."+Slug(s->name)+"."+Slug(name);int index=-1;for(int i=0;i<(int)modules.size();++i)if(modules[i].id==id)index=i;
- if(index<0){if(modules.size()>=modules.capacity())luaL_error(L,"too many script modules");Module fresh{};fresh.id=id;modules.push_back(fresh);index=(int)modules.size()-1;
-  modules[index].enabled=GetPrivateProfileIntW(Wide(id).c_str(),L"enabled",0,configPath.c_str())==1;
-  wchar_t bind[65]{};GetPrivateProfileStringW(Wide(id).c_str(),L"keybind",L"",bind,65,configPath.c_str());const int code=GetPrivateProfileIntW(Wide(id).c_str(),L"keycode",0,configPath.c_str());
-  if(bind[0]&&code>0){keybinds[id]=Utf8(bind);keycodes[id]=code;}else{const std::string key=OptStr(L,1,"key","");const int vk=ScriptKeyCode(key);if(vk){keybinds[id]=ScriptKeyName(vk);keycodes[id]=vk;}}}
- Module& m=modules[index];m.name=name;m.category=menuCategory;m.description=OptStr(L,1,"description","");m.settings.clear();
+ const int defaultKey=ScriptKeyCode(OptStr(L,1,"key",""));   // used when no key is saved for this module
+ const int index=DeclareScriptModule(Host(),ScriptModuleId(s->name,name),name,menuCategory,OptStr(L,1,"description",""),ScriptKeyName(defaultKey),defaultKey);
+ if(index<0)luaL_error(L,"too many script modules");
  ScriptModule sm{};sm.index=index;sm.name=name;const std::string act=OptStr(L,1,"activation","Toggle");sm.activation=act=="Hold"?1:act=="OneShot"?2:0;if(act!="Toggle"&&act!="Hold"&&act!="OneShot")luaL_error(L,"activation must be Toggle, Hold or OneShot");
  sm.was=false;s->mods.push_back(sm);
  lua_createtable(L,0,1);lua_pushnumber(L,(double)s->mods.size()-1);lua_setfield(L,-2,"__id");luaL_getmetatable(L,"NickelModule");lua_setmetatable(L,-2);return 1;}
@@ -160,23 +158,23 @@ int ScriptCommandDecl(lua_State* L){RequireLoading(L,"commands");Script* s=Scrip
  lua_pushvalue(L,1);c.specRef=lua_ref(L,-1);lua_pop(L,1);s->commands.push_back(c);return 0;}
 
 // ---------------------------------------------------------------- built-in modules
-int BuiltinFrom(lua_State* L,int idx){luaL_checktype(L,idx,LUA_TTABLE);lua_rawgetfield(L,idx,"__m");const int m=(int)lua_tonumber(L,-1);lua_pop(L,1);if(m<0||m>=(int)modules.size())luaL_error(L,"module no longer exists");return m;}
-int BuiltinName(lua_State* L){lua_pushstring(L,modules[BuiltinFrom(L,1)].name.c_str());return 1;}
-int BuiltinCategory(lua_State* L){const std::string c=modules[BuiltinFrom(L,1)].category;lua_pushstring(L,c=="Visuals"?"Visual":c.c_str());return 1;}
-int BuiltinIsEnabled(lua_State* L){lua_pushboolean(L,modules[BuiltinFrom(L,1)].enabled);return 1;}
-int BuiltinSetEnabled(lua_State* L){Module& m=modules[BuiltinFrom(L,1)];const bool on=lua_toboolean(L,2)!=0;if(m.enabled!=on){m.enabled=on;Save(m);}return 0;}
-int BuiltinToggle(lua_State* L){Module& m=modules[BuiltinFrom(L,1)];m.enabled=!m.enabled;Save(m);return 0;}
-int BuiltinSettings(lua_State* L){Module& m=modules[BuiltinFrom(L,1)];lua_createtable(L,(int)m.settings.size(),0);int n=0;for(auto& st:m.settings)if(st.kind!="hidden"){lua_pushstring(L,st.name.c_str());lua_rawseti(L,-2,++n);}return 1;}
-int BuiltinSetting(lua_State* L){const int mi=BuiltinFrom(L,1);std::string name=luaL_checkstring(L,2);auto& m=modules[mi];for(int i=0;i<(int)m.settings.size();++i)if(m.settings[i].kind!="hidden"&&(m.settings[i].name==name||m.settings[i].id==name)){PushSetting(L,mi,i);return 1;}lua_pushnil(L);return 1;}
-int ModulesList(lua_State* L){lua_createtable(L,(int)modules.size(),0);int n=0;for(auto& m:modules)if(!m.category.empty()){lua_pushstring(L,m.name.c_str());lua_rawseti(L,-2,++n);}return 1;}
-int ModulesGet(lua_State* L){std::string name=luaL_checkstring(L,1);for(int i=0;i<(int)modules.size();++i)if(!modules[i].category.empty()&&modules[i].name==name){lua_createtable(L,0,1);lua_pushnumber(L,i);lua_setfield(L,-2,"__m");luaL_getmetatable(L,"NickelBuiltin");lua_setmetatable(L,-2);return 1;}lua_pushnil(L);return 1;}
+int BuiltinFrom(lua_State* L,int idx){luaL_checktype(L,idx,LUA_TTABLE);lua_rawgetfield(L,idx,"__m");const int m=(int)lua_tonumber(L,-1);lua_pop(L,1);if(m<0||m>=Host().Count())luaL_error(L,"module no longer exists");return m;}
+int BuiltinName(lua_State* L){lua_pushstring(L,Host().At(BuiltinFrom(L,1)).name.c_str());return 1;}
+int BuiltinCategory(lua_State* L){lua_pushstring(L,ScriptCategoryName(Host().At(BuiltinFrom(L,1)).category).c_str());return 1;}
+int BuiltinIsEnabled(lua_State* L){lua_pushboolean(L,Host().At(BuiltinFrom(L,1)).enabled);return 1;}
+int BuiltinSetEnabled(lua_State* L){SetModuleEnabled(Host(),BuiltinFrom(L,1),lua_toboolean(L,2)!=0);return 0;}
+int BuiltinToggle(lua_State* L){ToggleModule(Host(),BuiltinFrom(L,1));return 0;}
+int BuiltinSettings(lua_State* L){Module& m=Host().At(BuiltinFrom(L,1));lua_createtable(L,(int)m.settings.size(),0);int n=0;for(auto& st:m.settings)if(st.kind!="hidden"){lua_pushstring(L,st.name.c_str());lua_rawseti(L,-2,++n);}return 1;}
+int BuiltinSetting(lua_State* L){const int mi=BuiltinFrom(L,1);const int i=FindVisibleSetting(Host().At(mi),luaL_checkstring(L,2));if(i>=0)PushSetting(L,mi,i);else lua_pushnil(L);return 1;}
+int ModulesList(lua_State* L){lua_createtable(L,Host().Count(),0);int n=0;for(auto& name:VisibleModuleNames(Host())){lua_pushstring(L,name.c_str());lua_rawseti(L,-2,++n);}return 1;}
+int ModulesGet(lua_State* L){const int i=FindVisibleModule(Host(),luaL_checkstring(L,1));if(i>=0){lua_createtable(L,0,1);lua_pushnumber(L,i);lua_setfield(L,-2,"__m");luaL_getmetatable(L,"NickelBuiltin");lua_setmetatable(L,-2);return 1;}lua_pushnil(L);return 1;}
 
 // ---------------------------------------------------------------- client, chat, storage
 std::mutex scriptChatGuard;std::vector<std::pair<int,std::string>> scriptChatQueue;   // 0 print, 1 send, 2 command; flushed on the game thread
 int ChatPrint(lua_State* L){std::lock_guard<std::mutex> lock(scriptChatGuard);if(scriptChatQueue.size()<256)scriptChatQueue.push_back({0,luaL_checkstring(L,1)});return 0;}
 int ChatSend(lua_State* L){std::string m=luaL_checkstring(L,1);if(m.size()>512)m.resize(512);std::lock_guard<std::mutex> lock(scriptChatGuard);if(scriptChatQueue.size()<256)scriptChatQueue.push_back({1,m});return 0;}
 int ChatCommand(lua_State* L){std::string m=luaL_checkstring(L,1);std::lock_guard<std::mutex> lock(scriptChatGuard);if(scriptChatQueue.size()<256)scriptChatQueue.push_back({2,m});return 0;}
-int ClientNotify(lua_State* L){std::string title=luaL_checkstring(L,1),text=luaL_optstring(L,2,"");if(notices.size()<16)notices.push_back({8,title,text});return 0;}
+int ClientNotify(lua_State* L){std::string title=luaL_checkstring(L,1),text=luaL_optstring(L,2,"");Host().Notify(title,text);return 0;}
 int ClientTime(lua_State* L){lua_pushnumber(L,ScriptNow()*1000);return 1;}
 volatile long scriptTicks=0;
 int ClientTick(lua_State* L){lua_pushnumber(L,(double)scriptTicks);return 1;}
@@ -186,7 +184,7 @@ int ClientAfter(lua_State* L){return AddTimer(L,false);}
 int ClientEvery(lua_State* L){return AddTimer(L,true);}
 int ClientCancel(lua_State* L){Script* s=ScriptOf(L);const int id=(int)luaL_checknumber(L,1);for(size_t i=0;i<s->timers.size();++i)if(s->timers[i].id==id){lua_unref(L,s->timers[i].ref);s->timers.erase(s->timers.begin()+i);lua_pushboolean(L,1);return 1;}lua_pushboolean(L,0);return 1;}
 // A key as scripts see it (client.isKeyDown, Hold modules): only while Minecraft is the foreground window (script_keys.hpp).
-bool ScriptGameKeyDown(int code){return ScriptKeyDown(code,GetForegroundWindow(),gameWindowForKeys?GetAncestor(gameWindowForKeys,GA_ROOT):nullptr,GetAsyncKeyState);}
+bool ScriptGameKeyDown(int code){return Host().GameKeyDown(code);}
 int ClientIsKeyDown(lua_State* L){lua_pushboolean(L,ScriptGameKeyDown(ScriptKeyCode(luaL_checkstring(L,1))));return 1;}
 int ClientServer(lua_State* L){game::Server server{};lua_createtable(L,0,3);if(game::ReadServer(&server)){lua_pushboolean(L,server.singleplayer);lua_setfield(L,-2,"local");if(!server.singleplayer){lua_pushstring(L,server.address);lua_setfield(L,-2,"address");lua_pushnumber(L,server.port);lua_setfield(L,-2,"port");}}else{lua_pushboolean(L,1);lua_setfield(L,-2,"local");}return 1;}
 int ClientTransport(lua_State* L){lua_pushstring(L,game::TransportName(game::CurrentTransport()));return 1;}   // "RakNet", "NetherNet" or "None"
@@ -361,7 +359,7 @@ void RegisterApi(lua_State* L){
 
 // ---------------------------------------------------------------- loading / unloading
 void ScriptUnload(Script& s){
- for(auto& m:s.mods)if(m.index>=0){Module& mod=modules[m.index];if(m.was&&m.disableRef&&s.L&&s.state==1){ScriptInvoke(s,m.disableRef);}mod.category.clear();if(selected==m.index)selected=-1;}
+ for(auto& m:s.mods)if(m.index>=0){if(m.was&&m.disableRef&&s.L&&s.state==1){ScriptInvoke(s,m.disableRef);}HideModule(Host(),m.index);Host().OnModuleRemoved(m.index);}
  s.mods.clear();s.commands.clear();s.timers.clear();s.required.clear();if(s.L){lua_close(s.L);s.L=nullptr;}s.memory=0;}
 void ScriptLoad(Script& s){
  std::lock_guard<std::recursive_mutex> lock(scriptGuard);ScriptUnload(s);s.errors.clear();s.errorTimes.clear();s.state=3;s.frameMs=0;
@@ -373,7 +371,7 @@ void ScriptLoad(Script& s){
  s.loading=true;s.limit=1;s.state=1;const bool ok=ScriptCall(s,T,0,0);s.loading=false;s.limit=.05;
  if(!ok){const auto errors=s.errors;ScriptUnload(s);s.errors=errors;s.state=3;return;}
  s.state=s.userStopped?0:1;if(s.state!=1)ScriptHideModules(s);
- if(WriteLog){std::string line="Script "+s.name+": loaded ("+std::to_string(s.mods.size())+" modules, "+std::to_string(s.commands.size())+" commands)";WriteLog(line.c_str());}}
+ Host().Log("Script "+s.name+": loaded ("+std::to_string(s.mods.size())+" modules, "+std::to_string(s.commands.size())+" commands)");}
 uint64_t FileStamp(const std::wstring& path){WIN32_FILE_ATTRIBUTE_DATA a{};if(!GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&a))return 0;return ((uint64_t)a.ftLastWriteTime.dwHighDateTime<<32|a.ftLastWriteTime.dwLowDateTime)^((uint64_t)a.nFileSizeLow<<1);}
 // Every second: new files, modified files (reloaded, which restarts a script stopped after errors), removed files.
 void ScanScripts(){
@@ -385,8 +383,8 @@ void ScanScripts(){
  if(h!=INVALID_HANDLE_VALUE){do{std::wstring n=data.cFileName;if(n.size()>7&&!_wcsicmp(n.c_str()+n.size()-7,L".d.luau"))continue;found.push_back(n);}while(FindNextFileW(h,&data));FindClose(h);}
  std::lock_guard<std::recursive_mutex> lock(scriptGuard);
  // The selection is kept by identity: the list is sorted by name, so indices shift when scripts come and go.
- Script* selected=scriptSelected>=0&&scriptSelected<(int)scripts.size()?scripts[scriptSelected].get():nullptr;bool added=false;
- for(size_t i=0;i<scripts.size();){auto& s=*scripts[i];const std::wstring n=s.file.substr(s.file.find_last_of(L'\\')+1);if(std::find(found.begin(),found.end(),n)==found.end()){if(&s==selected)selected=nullptr;ScriptUnload(s);scripts.erase(scripts.begin()+i);}else ++i;}
+ Script* kept=scriptSelected>=0&&scriptSelected<(int)scripts.size()?scripts[scriptSelected].get():nullptr;bool added=false;
+ for(size_t i=0;i<scripts.size();){auto& s=*scripts[i];const std::wstring n=s.file.substr(s.file.find_last_of(L'\\')+1);if(std::find(found.begin(),found.end(),n)==found.end()){if(&s==kept)kept=nullptr;ScriptUnload(s);scripts.erase(scripts.begin()+i);}else ++i;}
  // Libraries: any change under lib/ reloads every script.
  static uint64_t libStamp=0;uint64_t lib=0;h=FindFirstFileW((folder+L"\\lib\\*.luau").c_str(),&data);if(h!=INVALID_HANDLE_VALUE){do{lib^=FileStamp(folder+L"\\lib\\"+data.cFileName)*31+data.cFileName[0];}while(FindNextFileW(h,&data));FindClose(h);}
  const bool libChanged=lib!=libStamp;libStamp=lib;
@@ -395,8 +393,8 @@ void ScanScripts(){
   if(!s){auto fresh=std::make_unique<Script>();fresh->file=path;fresh->name=Utf8(n.substr(0,n.size()-5));fresh->stamp=stamp;scripts.push_back(std::move(fresh));added=true;ScriptLoad(*scripts.back());continue;}
   if(stamp!=s->stamp||(libChanged&&s->state==1)){s->stamp=stamp;s->userStopped=false;ScriptLoad(*s);}}
  if(added)std::sort(scripts.begin(),scripts.end(),[](const std::unique_ptr<Script>& a,const std::unique_ptr<Script>& b){return _stricmp(a->name.c_str(),b->name.c_str())<0;});   // order only changes when a script is added
- scriptSelected=-1;if(selected)for(size_t i=0;i<scripts.size();++i)if(scripts[i].get()==selected){scriptSelected=(int)i;break;}}
-void StopScript(Script& s){std::lock_guard<std::recursive_mutex> lock(scriptGuard);for(auto& m:s.mods)if(m.index>=0&&modules[m.index].enabled){modules[m.index].enabled=false;Save(modules[m.index]);}ScriptUnload(s);s.state=0;s.userStopped=true;}
+ scriptSelected=-1;if(kept)for(size_t i=0;i<scripts.size();++i)if(scripts[i].get()==kept){scriptSelected=(int)i;break;}}
+void StopScript(Script& s){std::lock_guard<std::recursive_mutex> lock(scriptGuard);for(auto& m:s.mods)if(m.index>=0)SetModuleEnabled(Host(),m.index,false);ScriptUnload(s);s.state=0;s.userStopped=true;}
 void StartScript(Script& s){s.userStopped=false;ScriptLoad(s);}
 
 // ---------------------------------------------------------------- event dispatch
@@ -405,7 +403,7 @@ int EventCancel(lua_State* L){luaL_checktype(L,1,LUA_TTABLE);lua_pushboolean(L,1
 void NewEvent(lua_State* L){lua_newtable(L);lua_pushcfunction(L,EventCancel,"cancel");lua_setfield(L,-2,"cancel");}
 template<class Fill,class After>bool Dispatch(ScriptEvent event,Fill fill,After after){
  bool cancelled=false;std::lock_guard<std::recursive_mutex> lock(scriptGuard);
- for(auto& sp:scripts){Script& s=*sp;if(s.state!=1||!s.L)continue;for(size_t mi=0;mi<s.mods.size()&&s.state==1;++mi){const ScriptModule m=s.mods[mi];if(m.index<0||!modules[m.index].enabled)continue;
+ for(auto& sp:scripts){Script& s=*sp;if(s.state!=1||!s.L)continue;for(size_t mi=0;mi<s.mods.size()&&s.state==1;++mi){const ScriptModule m=s.mods[mi];if(m.index<0||!Host().At(m.index).enabled)continue;
    for(auto& h:m.handlers){if(h.event!=event||s.state!=1)continue;lua_State* L=s.L;const int top=lua_gettop(L);lua_getref(L,h.ref);const int args=fill(L);
     if(args>0){lua_pushvalue(L,-1);lua_insert(L,top+1);}   // keep a copy of the event below the function
     if(ScriptCall(s,L,args,0)&&args>0){lua_rawgetfield(L,top+1,"cancelled");if(lua_toboolean(L,-1))cancelled=true;lua_pop(L,1);after(L,top+1);}lua_settop(L,top);}}}
@@ -419,8 +417,8 @@ void ScriptsWatch();
 void ScriptsFrame(std::vector<std::string>& drawn){
  ScanScripts();std::lock_guard<std::recursive_mutex> lock(scriptGuard);const double now=ScriptNow();bool camera=false;
  for(auto& sp:scripts){Script& s=*sp;if(s.state!=1||!s.L)continue;s.frameStart=now;
-  for(size_t i=0;i<s.mods.size()&&s.state==1;++i){ScriptModule& m=s.mods[i];if(m.index<0)continue;Module& mod=modules[m.index];
-   if(m.activation==1){auto k=keycodes.find(mod.id);const bool held=k!=keycodes.end()&&ScriptGameKeyDown(k->second)&&!opened&&KeysAllowed();if(mod.enabled!=held)mod.enabled=held;}
+  for(size_t i=0;i<s.mods.size()&&s.state==1;++i){ScriptModule& m=s.mods[i];if(m.index<0)continue;Module& mod=Host().At(m.index);
+   if(m.activation==1){const bool held=ScriptGameKeyDown(Host().KeyOf(mod.id))&&Host().HotkeysAllowed();if(mod.enabled!=held)mod.enabled=held;}   // no key bound: KeyOf is 0, never down
    if(mod.enabled!=m.was){m.was=mod.enabled;const int ref=mod.enabled?m.enableRef:m.disableRef;if(ref)ScriptInvoke(s,ref);}
    if(mod.enabled&&(m.handlerMask&(nickel::script::Bit(ScriptEvent::Render3d)|nickel::script::Bit(ScriptEvent::Render2d))))camera=true;}
   // Expired timers (a timer cancelled during the loop is not called).
@@ -434,7 +432,7 @@ void ScriptsFrame(std::vector<std::string>& drawn){
  // Drawing: same projection as the ESP modules (hook #246, matrix captured less than 250 ms earlier).
  auto& view=game::View();uint64_t tick{};AcquireSRWLockShared(&view.lock);memcpy(scriptDraw.m,view.m,sizeof(scriptDraw.m));memcpy(scriptDraw.origin,view.origin,sizeof(scriptDraw.origin));tick=view.tick;ReleaseSRWLockShared(&view.lock);
  scriptDraw.projected=camera&&tick&&GetTickCount64()-tick<250&&!view.fault;scriptDraw.W=ImGui::GetIO().DisplaySize.x;scriptDraw.H=ImGui::GetIO().DisplaySize.y;if(camera)game::InstallScreenHook(WriteLog);
- for(auto& sp:scripts){Script& s=*sp;if(s.state!=1)continue;for(auto& m:s.mods){m.frame=false;if(!m.hud||m.index<0||!modules[m.index].enabled)continue;const std::string id=modules[m.index].id;
+ for(auto& sp:scripts){Script& s=*sp;if(s.state!=1)continue;for(auto& m:s.mods){m.frame=false;if(!m.hud||m.index<0||!Host().At(m.index).enabled)continue;const std::string id=Host().At(m.index).id;
   auto& place=Place(id.c_str(),20,200);m.fx=place.x;m.fy=place.y;m.fs=place.scale;m.fw=m.hudW*place.scale;m.fh=m.hudH*place.scale;m.frame=true;place.lo=ImVec2(m.fx,m.fy);place.hi=ImVec2(m.fx+m.fw,m.fy+m.fh);drawn.push_back(id);}}
  scriptDraw.d=ImGui::GetBackgroundDrawList();scriptDraw.world=true;
  Dispatch(ScriptEvent::Render3d,[](lua_State* L){lua_newtable(L);luaL_getmetatable(L,"NickelWorldDraw");lua_setmetatable(L,-2);return 1;},[](lua_State*,int){});
@@ -509,7 +507,7 @@ bool ScriptsCommand(const std::string& line){
 bool ScriptsHaveCommands(){std::lock_guard<std::recursive_mutex> lock(scriptGuard);for(auto& s:scripts)if(s->state==1&&!s->commands.empty())return true;return false;}
 // ---------------------------------------------------------------- interface for the menu and the hooks (script_engine_api.hpp)
 bool ScriptsAnyRunning(){std::lock_guard<std::recursive_mutex> lock(scriptGuard);for(auto& sp:scripts)if(sp->state==1)return true;return false;}
-ScriptEventMask ScriptsWantedEvents(){std::lock_guard<std::recursive_mutex> lock(scriptGuard);ScriptEventMask mask=0;for(auto& sp:scripts)if(sp->state==1)for(auto& m:sp->mods)if(m.index>=0&&modules[m.index].enabled)mask|=m.handlerMask;return mask;}
+ScriptEventMask ScriptsWantedEvents(){std::lock_guard<std::recursive_mutex> lock(scriptGuard);ScriptEventMask mask=0;for(auto& sp:scripts)if(sp->state==1)for(auto& m:sp->mods)if(m.index>=0&&Host().At(m.index).enabled)mask|=m.handlerMask;return mask;}
 bool ScriptsWant(ScriptEvent event){return (ScriptsWantedEvents()&nickel::script::Bit(event))!=0;}
 bool ScriptsWantRotations(){return scriptWantsRotations;}
 bool ScriptsWantCamera(){return scriptWantsCamera;}
