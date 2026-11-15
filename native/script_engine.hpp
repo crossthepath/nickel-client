@@ -309,8 +309,7 @@ int DrawEntityBox(lua_State* L){ScriptCanvas& d=DrawOf(L,true);const uint64_t id
  for(int i=0;i<n;++i)if(list[i].id==id&&list[i].box){const CanvasColor c=Ink(L,3);DrawBoxEdges(d,scriptDraw.camera,list[i].lo,list[i].hi,c,(float)luaL_optnumber(L,4,1));lua_pushboolean(L,1);return 1;}lua_pushboolean(L,0);return 1;}
 
 // ---------------------------------------------------------------- require
-std::string ScriptCompile(const std::string& source,std::string& error){lua_CompileOptions options{};options.optimizationLevel=1;options.debugLevel=1;size_t size=0;char* bytecode=luau_compile(source.data(),source.size(),&options,&size);std::string out(bytecode,size);free(bytecode);
- if(!out.empty()&&out[0]==0)error=out.substr(1);return out;}
+std::string ScriptCompile(const std::string& source,std::string& error){return CompileScriptBytecode(source,error);}   // script_compile.hpp
 int Require(lua_State* L){Script* s=ScriptOf(L);RequireLoading(L,"require");const std::string name=luaL_checkstring(L,1);for(char c:name)if(!std::isalnum((unsigned char)c)&&c!='_'&&c!='-'&&c!='/')luaL_error(L,"invalid library name '%s'",name.c_str());
  auto found=s->required.find(name);if(found!=s->required.end()){lua_getref(L,found->second);return 1;}
  if(std::find(s->requiring.begin(),s->requiring.end(),name)!=s->requiring.end())luaL_error(L,"require loop on '%s'",name.c_str());
@@ -401,6 +400,7 @@ class EngineScriptLibrary final:public ScriptLibrary{
 public:
  std::vector<ScriptInfo> List() const override{std::lock_guard<std::recursive_mutex> lock(scriptGuard);std::vector<ScriptInfo> out;out.reserve(scripts.size());for(auto& sp:scripts)out.push_back(DescribeScript(*sp,Host()));return out;}
  std::wstring Folder() const override{return ScriptFolder();}
+ std::vector<CompileError> Compile(const std::string& source) const override{return CompileScript(source);}   // luau_compile only: no VM, no lock
  bool ReadSource(const std::string& name,std::string& source) const override{
   std::wstring file;{std::lock_guard<std::recursive_mutex> lock(scriptGuard);const Script* s=ScriptNamed(name);if(!s)return false;file=s->file;}
   FILE* f=nullptr;if(_wfopen_s(&f,file.c_str(),L"rb")||!f)return false;source.clear();char buf[8192];size_t n;while((n=fread(buf,1,sizeof(buf),f))>0)source.append(buf,n);fclose(f);return true;}

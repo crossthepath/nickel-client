@@ -94,6 +94,11 @@ public:
         return answer;
     }
 
+    std::vector<CompileError> Compile(const std::string&) const override {
+        calls.emplace_back("compile", "");
+        return {};
+    }
+
     bool Start(const std::string& name) override {
         calls.emplace_back("start", name);
         return answer;
@@ -293,6 +298,26 @@ void Commands() {
     Check(!ToggleScript(library, Named("gone", ScriptState::Running)), "the library's answer is returned");
 }
 
+void CompileErrors() {
+    CompileError error = ParseCompileError(":12: Expected 'end' (to close 'function' at line 1), got <eof>");
+    Check(error.line == 12 && error.message == "Expected 'end' (to close 'function' at line 1), got <eof>",
+          "\":12: msg\" gives line 12 and the message");
+    error = ParseCompileError("out of memory");
+    Check(error.line == 0 && error.message == "out of memory", "a message without a line gives line 0 and all the text");
+    error = ParseCompileError(":7:");
+    Check(error.line == 7 && error.message.empty(), "an empty message after the line");
+    error = ParseCompileError("");
+    Check(error.line == 0 && error.message.empty(), "an empty text");
+    error = ParseCompileError(":99999999999999999999: too far");
+    Check(error.line == 2147483647 && error.message == "too far", "a very large line number is saturated");
+    error = ParseCompileError(":12 no colon");
+    Check(error.line == 0 && error.message == ":12 no colon", "a line without its closing colon is part of the message");
+    error = ParseCompileError("::x");
+    Check(error.line == 0 && error.message == "::x", "a colon without digits is part of the message");
+    error = ParseCompileError(":3:  two spaces");
+    Check(error.line == 3 && error.message == " two spaces", "only the one space Luau writes is removed");
+}
+
 } // namespace
 
 int main() {
@@ -304,6 +329,7 @@ int main() {
     Search();
     FileNames();
     Commands();
+    CompileErrors();
     std::printf(failed ? "%d check(s) FAILED\n" : "all checks passed\n", failed);
     return failed ? 1 : 0;
 }

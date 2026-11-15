@@ -235,9 +235,44 @@ inline bool ValidScriptName(const std::string& name) {
     return true;
 }
 
-// The scripts and what can be done with them. List, Folder, ReadSource and WriteSource may be called from any thread
-// (the engine takes its own lock and runs no Lua for them). Start and Stop run the script's Lua (its main chunk, its
-// modules' enable and disable handlers) and change the menu's modules: call them on the render thread only, and
+// A Luau compile error. line is 0 when the compiler gave none.
+struct CompileError {
+    int line = 0;
+    std::string message;
+};
+
+// The error Luau puts after the 0 byte of failed bytecode (":12: Expected 'end' ..."), as a CompileError: the line
+// (saturated at the largest int) and the message after ": ". Text that does not start with ":<digits>:" is the whole
+// message, with line 0.
+inline CompileError ParseCompileError(const std::string& text) {
+    CompileError error;
+    size_t at = 1;
+    while (at < text.size() && text[at] >= '0' && text[at] <= '9') {
+        ++at;
+    }
+    if (text.size() < 3 || text[0] != ':' || at == 1 || at >= text.size() || text[at] != ':') {
+        error.message = text;
+        return error;
+    }
+    long long line = 0;
+    for (size_t i = 1; i < at; ++i) {
+        line = line * 10 + (text[i] - '0');
+        if (line > 2147483647LL) {
+            line = 2147483647LL;
+        }
+    }
+    error.line = static_cast<int>(line);
+    ++at;
+    if (at < text.size() && text[at] == ' ') {
+        ++at;
+    }
+    error.message = text.substr(at);
+    return error;
+}
+
+// The scripts and what can be done with them. List, Folder, ReadSource, Compile and WriteSource may be called from any
+// thread (the engine takes its own lock and runs no Lua for them). Start and Stop run the script's Lua (its main chunk,
+// its modules' enable and disable handlers) and change the menu's modules: call them on the render thread only, and
 // never from inside a script callback.
 // Scripts are named by ScriptInfo::name; a name that is not in List() makes Start, Stop and ReadSource return false.
 class ScriptLibrary {
@@ -255,6 +290,10 @@ public:
     // The source of script `name` as it is on disk (UTF-8 Luau). False when the script or its file is missing.
     // Any thread.
     virtual bool ReadSource(const std::string& name, std::string& source) const = 0;
+
+    // Luau compile errors of `source` (empty: it compiles), with the engine's options and without a leading UTF-8 byte
+    // order mark, so that what compiles here is what loads; no VM is created. Any thread.
+    virtual std::vector<CompileError> Compile(const std::string& source) const = 0;
 
     // ---- commands
 

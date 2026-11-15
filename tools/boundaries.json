@@ -55,7 +55,8 @@
         "native/script_host.hpp",
         "native/module_registry.hpp",
         "native/script_canvas.hpp",
-        "native/script_draw.hpp"
+        "native/script_draw.hpp",
+        "native/script_compile.hpp"
       ],
       "identifiers": [
         "modules",

@@ -60,7 +60,7 @@ void ScriptsMoveGuarded(uint64_t input, uint64_t state, uint64_t movement);
 
 // ---- scripts, for the Scripting tab and other components
 
-// Snapshots of the scripts and the commands on them (list, start, stop, read and write their source); see
-// script_library.hpp and docs/architecture/script-management.md. List, Folder, ReadSource and WriteSource: any
-// thread. Start and Stop: render thread only, never from inside a script callback.
+// Snapshots of the scripts and the commands on them (list, start, stop, read, compile and write their source); see
+// script_library.hpp and docs/architecture/script-management.md. List, Folder, ReadSource, Compile and WriteSource:
+// any thread. Start and Stop: render thread only, never from inside a script callback.
 ScriptLibrary& ScriptsLibrary();
