@@ -18,10 +18,10 @@ public sealed record GameBuild(string Name, int Major, int Minor, int Build, uin
 
 /// <summary>
 /// Identifies the game build of a Minecraft.Windows.exe. A file holds a validated build when its code (.text), constants
-/// (.rdata), initial data (.data) and relocations (.reloc) sit where the build has them with the build's sizes and
-/// bytes, and when its entry point and the directories that decide what runs or is rewritten at load (exports,
-/// imports, exception table, relocations, TLS callbacks, load configuration, import address table, delayed imports)
-/// are the build's. What may differ: signature, resources, debug data, other header fields and added sections, which
+/// (.rdata), initial data (.data), unwind table (.pdata) and relocations (.reloc) sit where the build has them with the
+/// build's sizes and bytes, and when its entry point and the directories that decide what runs or is rewritten at load
+/// (exports, imports, exception table, relocations, TLS callbacks, load configuration, import address table, delayed
+/// imports, .NET header) are the build's. What may differ: signature, resources, debug data, other header fields and added sections, which
 /// installations from the Microsoft Store / Xbox app, LeviLauncher or other launchers change without moving anything the
 /// overlay depends on. The code loaded in the process is then compared with the build (MemoryCodeMatches), so a file
 /// swapped after the game started or code patched at start-up is refused too. Keep in step with native/game_build.hpp.
@@ -33,12 +33,13 @@ public static class GameBuilds
   new("Minecraft 1.26.62.1", 1, 26, 62, 0xeea5e90,
   [
    new(0, 0xf9a4468, 0x162), new(1, 0xf9a45cc, 0x6f4), new(3, 0x12bdf000, 0xb59b60), new(5, 0x13742000, 0xfa3c4),
-   new(9, 0xf4f39c0, 0x28), new(10, 0xefc6990, 0x140), new(11, 0, 0), new(12, 0xf9a6f20, 0x2260), new(13, 0, 0),
+   new(9, 0xf4f39c0, 0x28), new(10, 0xefc6990, 0x140), new(11, 0, 0), new(12, 0xf9a6f20, 0x2260), new(13, 0, 0), new(14, 0, 0),
   ],
   [
    new(".text", 0x1000, 0xeec65d6, "a3443f50ff150994fc0efd0dc35aceb2409d45dd1cd03111bd1bbfe8de4eca15"),
    new(".rdata", 0xeec8000, 0x3441284, "6a52b8635beb1c28af46b43b61934788edb4a033bdd52b2ef5c46273db960b2a"),
    new(".data", 0x1230a000, 0x8d4b68, "6039c0c55e0908235f6fbbfcaf6693ce4b02bdc2cddd7ba2ed8cfde747909f7c"),
+   new(".pdata", 0x12bdf000, 0xb59b60, "843683dccddf06209a5a16a54516c6eeda5ba8c42fbde899a09aaa3ff923bb02"),
    new(".reloc", 0x13742000, 0xfa3c4, "3130b70506c2d712e5fce5dca4251db1c982630874da1c2a2f57eb6a6acde9a5"),
   ]),
  ];
@@ -210,7 +211,7 @@ public static class GameBuilds
   var pinned = GCHandle.Alloc(code, GCHandleType.Pinned);
   try
   {
-   using var self = new SafeProcessHandle(Process.GetCurrentProcess().Handle, false);
+   using var current = Process.GetCurrentProcess(); using var self = new SafeProcessHandle(current.Handle, false);
    var at = (ulong)pinned.AddrOfPinnedObject();
    if (!MemoryCodeMatches(self, at, builds[0])) return "loaded code equal to the build is refused";
    code[0x1000 + 0x33] ^= 1;

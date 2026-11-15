@@ -92,7 +92,8 @@ public sealed class MinecraftConnection : IDisposable
    if(!SameFile(first,first.ToUpperInvariant()))return "the same path in another case is refused";
    if(SameFile(first,other))return "two files with the same content are taken for one";
    if(SameFile(first,Path.Combine(dir,"missing.bin")))return "a missing file is taken for an existing one";
-   if(!CreateHardLink(link,first,0))return "the hard link for the check could not be made";if(!SameFile(first,link))return "two names of one file (hard link) are refused";
+   if(!CreateHardLink(link,first,0)){var error=Marshal.GetLastWin32Error();if(error!=1&&error!=50)return $"the hard link for the check could not be made (error {error})";}   // 1, 50: the volume has no hard links (FAT, some network drives)
+   else if(!SameFile(first,link))return "two names of one file (hard link) are refused";
    return null;
   }
   finally{try{Directory.Delete(dir,true);}catch(IOException){}catch(UnauthorizedAccessException){}}

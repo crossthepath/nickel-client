@@ -35,7 +35,7 @@ for entry in table.split(NL + ' {"')[1:]:   # one profile per entry
     text = ''.join(f'{int(b, 16):02x}' for b in re.findall(r'0x([0-9a-fA-F]{2})', digest.group(1))) if digest else ''
     overlay.append(((int(head.group(1)), int(head.group(2)), int(head.group(3))), num(head.group(4)), dirs, secs, text))
 
-ok = bool(launcher) and launcher == overlay and all(len(b[3]) == 4 and len(b[4]) == 64 for b in launcher)
+ok = bool(launcher) and launcher == overlay and all(len(b[3]) == 5 and len(b[4]) == 64 for b in launcher)
 for name, builds in (('launcher', launcher), ('overlay ', overlay)):
     for b in builds:
         print(name, b[0], hex(b[1]), len(b[2]), 'directories', [s[0] for s in b[3]], b[4][:16])

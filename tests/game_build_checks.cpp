@@ -12,12 +12,12 @@ const GameBuildProfile& B=kGameBuilds[0];
 // Synthetic x64 image headers holding build 0's header facts and sections, then edited.
 template<class Edit> std::vector<uint8_t> Headers(Edit edit,int extra=0){
  std::vector<uint8_t> image(0x1000);auto dos=(IMAGE_DOS_HEADER*)image.data();dos->e_magic=IMAGE_DOS_SIGNATURE;dos->e_lfanew=0x80;
- auto nt=(IMAGE_NT_HEADERS64*)(image.data()+0x80);nt->Signature=IMAGE_NT_SIGNATURE;nt->FileHeader.Machine=IMAGE_FILE_MACHINE_AMD64;nt->FileHeader.NumberOfSections=(WORD)(4+extra);
+ auto nt=(IMAGE_NT_HEADERS64*)(image.data()+0x80);nt->Signature=IMAGE_NT_SIGNATURE;nt->FileHeader.Machine=IMAGE_FILE_MACHINE_AMD64;nt->FileHeader.NumberOfSections=(WORD)(5+extra);
  nt->FileHeader.SizeOfOptionalHeader=sizeof(IMAGE_OPTIONAL_HEADER64);nt->OptionalHeader.Magic=IMAGE_NT_OPTIONAL_HDR64_MAGIC;nt->OptionalHeader.NumberOfRvaAndSizes=16;
  nt->OptionalHeader.AddressOfEntryPoint=B.entryPoint;for(const auto& d:B.directories){nt->OptionalHeader.DataDirectory[d.index].VirtualAddress=d.address;nt->OptionalHeader.DataDirectory[d.index].Size=d.size;}
  nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY].VirtualAddress=0x134d0000;   // signature, free to differ
- auto s=IMAGE_FIRST_SECTION(nt);for(int i=0;i<4;++i){memcpy(s[i].Name,B.sections[i].name,8);s[i].VirtualAddress=B.sections[i].address;s[i].Misc.VirtualSize=B.sections[i].size;}
- for(int i=0;i<extra;++i){memcpy(s[4+i].Name,".launch",7);s[4+i].VirtualAddress=0x13900000u+0x1000u*i;s[4+i].Misc.VirtualSize=0x200;}
+ auto s=IMAGE_FIRST_SECTION(nt);for(int i=0;i<5;++i){memcpy(s[i].Name,B.sections[i].name,8);s[i].VirtualAddress=B.sections[i].address;s[i].Misc.VirtualSize=B.sections[i].size;}
+ for(int i=0;i<extra;++i){memcpy(s[5+i].Name,".launch",7);s[5+i].VirtualAddress=0x13900000u+0x1000u*i;s[5+i].Misc.VirtualSize=0x200;}
  edit(nt,s);return image;}
 auto None=[](IMAGE_NT_HEADERS64*,IMAGE_SECTION_HEADER*){};
 bool Layout(const std::vector<uint8_t>& h,const uint16_t v[4]){return MatchBuild(h.data(),v,false)==0;}
@@ -33,7 +33,7 @@ int main(){
  check(!Layout(Headers(None),v63)&&!Layout(Headers(None),v25),"the same layout with another version is refused");
  check(!Layout(Headers([](auto,auto s){s[0].Misc.VirtualSize+=0x4b0;}),v62),"a code section of another size is refused (1.26.63.1 has .text +0x4b0)");
  check(!Layout(Headers([](auto,auto s){s[1].Name[5]='2';}),v62),"a build without its constant section is refused");
- check(!Layout(Headers([](auto,auto s){memcpy(s[4].Name,".text\0\0",8);},1),v62),"a build with two code sections is refused");
+ check(!Layout(Headers([](auto,auto s){memcpy(s[5].Name,".text\0\0",8);},1),v62),"a build with two code sections is refused");
  check(!Layout(Headers([](auto nt,auto){nt->OptionalHeader.AddressOfEntryPoint+=0x10;}),v62),"another entry point is refused");
  check(!Layout(Headers([](auto nt,auto){nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress=0x13900000;},1),v62),"imports moved to an added section are refused");
  check(!Layout(Headers([](auto nt,auto){nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size+=8;}),v62),"changed TLS callbacks are refused");
