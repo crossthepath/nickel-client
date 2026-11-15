@@ -23,7 +23,8 @@ and configs, an assistant that manages modules and scripts) can use modules and 
 | Menu | `menu.cpp`, `script_ui.hpp` | everything above |
 
 - The menu reaches the engine only through `script_engine_api.hpp`. The Scripting tab sees the scripts only through
-  `ScriptLibrary`: snapshots (`List`), commands (`Start`, `Stop`) and source files (`ReadSource`, `WriteSource`).
+  `ScriptLibrary`: snapshots (`List`), commands (`Start`, `Stop`, `Hold`) and source files (`ReadSource`, `Compile`, `WriteSource`, `RestoreBackup`,
+  `Remove`).
   Its design, its thread rules and its future callers (PUBLIC, Nickel AI) are described in `script-management.md`.
 - The engine reaches the module list, the preferences file, the key bindings, the keyboard, notifications and the log
   only through `ScriptHost`. `InitializeMenu` passes `MenuScriptHostInstance()` to `SetScriptHost` before any script
@@ -69,7 +70,7 @@ so the tab cannot start calling them again.
 ## What remains
 
 - **Shared helpers.** `Wide`, `Utf8` and `WriteLog` can move to a small shared header used by both the menu and the
-  engine. The engine already has its own `ScriptWide`, used by `WriteSource`. `WriteLog` is only the logger passed to
+  engine. The engine's file calls use `ScriptWide` from `script_files.hpp`. `WriteLog` is only the logger passed to
   `game::InstallScreenHook`, which could become a host call.
 - **Compiling the engine alone.** The engine is still compiled inside `menu.cpp`. Drawing is behind `ScriptCanvas`
   and the Scripting tab is behind `ScriptLibrary`. The engine can now become its own translation unit and be tested on

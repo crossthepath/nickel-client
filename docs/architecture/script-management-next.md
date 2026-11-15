@@ -1,7 +1,8 @@
 # ScriptHost part 4: what PUBLIC and Nickel AI need from ScriptLibrary
 
-Status: design only. It builds on `ScriptLibrary` as it is in pull request #28 (`script-management.md`). Nothing
-here is implemented yet.
+Status: parts 4a (`Compile`) and 4b (held scripts and the write contract) are implemented on branch
+`scripts/script-host-4`, on top of pull request #28 (`script-management.md`). Part 3 of section 10 (the engine's own
+translation unit and the VM test) is not done yet.
 
 Two future components will write scripts into `%APPDATA%\Nickel\scripts` without the menu:
 

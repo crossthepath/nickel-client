@@ -1,7 +1,8 @@
-// Scripting tab: lists the scripts in the folder with their state (Running, Stopped, Stopped after errors,
-// Failed to load), a Start / Stop button per row, name search and "Open folder"; the right side shows the
-// selected script's details (registered modules, memory, frame time, Reload / Stop, latest errors with
-// their line). Reuses the Configs screen components; included by menu.cpp after DrawConfigPanel.
+// Scripting tab: lists the scripts in the folder with their state (Running, Stopped, Not started for a held script,
+// Stopped after errors, Failed to load), a Start / Stop button per row, name search and "Open folder"; the right side
+// shows the selected script's details (registered modules, memory, frame time, Reload / Stop, "Restore previous
+// version" when the script has a backup, latest errors with their line). Reuses the Configs screen components;
+// included by menu.cpp after DrawConfigPanel.
 // The scripts are read from snapshots of ScriptsLibrary() (script_library.hpp) and changed through its commands; the
 // tab never reads the engine's script list or takes its lock. The selection is kept by the script's serial
 // (FindSelectedScript): it follows the script when the list is sorted again, and is cleared for good when that script
@@ -42,7 +43,7 @@ void DrawScripting(ImVec2 origin,float s,float opacity){
   if(UiButton(list,"script-toggle",running?"Stop":"Start",R(areaW-10*U-56*U,15*U),56*U,26*U,running?0:1,true,a,s)){ToggleScript(library,sc);handled=true;}
   Label(list,bold,14*U*s,R(14*U,9*U+19.124f*U*.5f-.7f*14*U),Fit(bold,14*U,sc.name,areaW-100*U).c_str(),Rgba(255,255,255,a));
   const ImU32 tone=ScriptStateTone(sc.state,a);
-  Label(list,regular,11.5f*U*s,R(14*U,9*U+19.124f*U+2*U+15.709f*U*.5f-.7f*11.5f*U),ScriptStateName(sc.state),tone);
+  Label(list,regular,11.5f*U*s,R(14*U,9*U+19.124f*U+2*U+15.709f*U*.5f-.7f*11.5f*U),ScriptStatusText(sc),tone);
   if(!handled&&Hit("##script-row",lo,ImVec2(areaW*s,56*U*s)))scriptingSelected=sc.serial;
   ImGui::PopID();}
  ImGui::SetCursorPosY(shown.size()*62*U*s);ImGui::Dummy(ImVec2(1,1));FadeEdges(s,opacity);ImGui::EndChild();
@@ -58,7 +59,7 @@ void DrawScriptPanel(ImVec2 origin,float s,float opacity){
  if(selectedAt<0){const float at=take(20,10);Label(d,regular,12.5f*U*s,P(x0,at+10*U-.7f*12.5f*U),"Select a script to see its details.",Rgba(148,148,160,a));EndWindow();ImGui::PopStyleVar(2);return;}
  const ScriptInfo& sc=known[selectedAt];
  {const float at=take(22,4);Label(d,bold,17*U*s,P(x0,at+11*U-.7f*17*U),Fit(bold,17*U,sc.name,width).c_str(),Rgba(255,255,255,a));}
- {const float at=take(16,10);const ImU32 tone=ScriptStateTone(sc.state,a);Label(d,regular,12*U*s,P(x0,at+8*U-.7f*12*U),ScriptStateName(sc.state),tone);}
+ {const float at=take(16,10);const ImU32 tone=ScriptStateTone(sc.state,a);Label(d,regular,12*U*s,P(x0,at+8*U-.7f*12*U),ScriptStatusText(sc),tone);}
  {const float at=take(1,10);d->AddLine(P(x0,at),P(x0+width,at),Rgba(255,255,255,.07f*a),U*s);}
  // three tiles: modules, memory, frame time
  {const float at=take(52,10);char memory[32],frame[32];snprintf(memory,sizeof(memory),"%.1f MB",sc.memory/1048576.0);snprintf(frame,sizeof(frame),"%.2f ms",sc.frameMs);const std::string count=std::to_string(sc.modules.size());
@@ -66,6 +67,11 @@ void DrawScriptPanel(ImVec2 origin,float s,float opacity){
   for(int i=0;i<3;++i){const float x=x0+i*(w+6*U);d->AddRectFilled(P(x,at),P(x+w,at+52*U),Rgba(0,0,0,.22f*a),0);Label(d,bold,9.5f*U*s,P(x+9*U,at+9*U),terms[i],Rgba(120,120,132,a));Label(d,bold,14*U*s,P(x+9*U,at+27*U),values[i].c_str(),Rgba(230,230,235,a));}}
  {const float at=take(32,10);const float half=(width-6*U)/2;if(UiButton(d,"script-reload","Reload",P(x0,at),half,32*U,1,true,a,s))library.Start(sc.name);
   if(UiButton(d,"script-stop","Stop",P(x0+half+6*U,at),half,32*U,3,sc.state==ScriptState::Running,a,s))library.Stop(sc.name);}
+ // The previous version (the file a library write or a removal replaced): restored held, so it waits for Start.
+ if(library.HasBackup(sc.name)){const float at=take(32,10);
+  if(UiButton(d,"script-restore","Restore previous version",P(x0,at),width,32*U,0,true,a,s)){ScriptSource current;const bool read=library.ReadSource(sc.name,current);
+   const bool restored=library.RestoreBackup(sc.name,read?current.sha256:std::string())==ScriptFileResult::Done;
+   notices.push_back({8,"Scripting",restored?"Restored the previous version of "+sc.name+"; press Start to run it":"The previous version could not be restored"});}}
  if(!sc.modules.empty()){const float at=take(12,6);Label(d,bold,10.5f*U*s,P(x0,at),"MODULES",Rgba(120,120,132,a));
   for(auto& m:sc.modules){const float row=take(16,4);const bool on=m.enabled;Label(d,regular,12.5f*U*s,P(x0,row),Fit(regular,12.5f*U,m.name,width-60*U).c_str(),Rgba(224,224,230,a));
    const char* tag=on?"On":"Off";Label(d,bold,11*U*s,P(x0+width-TextWidth(bold,11*U,tag),row+1*U),tag,on?Acc(a):Rgba(120,120,132,a));}y+=6*U;}

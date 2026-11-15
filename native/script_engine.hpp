@@ -29,11 +29,13 @@ struct Script{
  size_t memory=0;double frameMs=0,frameSum=0,frameStart=0;std::vector<ScriptTimer> timers;int nextTimer=1;bool loading=false;double callStart=0,limit=.05;bool expired=false;
  bool userStopped=false;std::map<std::string,int> required;std::vector<std::string> requiring;
  uint64_t serial=0;   // identity of this script entry (ScriptInfo::serial): a file that disappears and comes back gets a new one
+ bool held=false;     // in the held list (scripts\.nickel\held.txt, ScriptInfo::held): compiled at each change, never run until Start
 };
 ScriptHost* scriptHost=nullptr;   // the program running the engine (the menu in the game, a fake in tests)
 void SetScriptHost(ScriptHost* host){scriptHost=host;}
 ScriptHost& Host(){return *scriptHost;}
 std::recursive_mutex scriptGuard;std::vector<std::unique_ptr<Script>> scripts;double scriptScanAt=0;uint64_t scriptSerials=0;
+std::mutex scriptFiles;   // orders the library's file writers (script_files.hpp); never taken while holding scriptGuard
 std::wstring ScriptFolder(){wchar_t base[MAX_PATH]{};if(!GetEnvironmentVariableW(L"APPDATA",base,MAX_PATH))return L"";return std::wstring(base)+L"\\Nickel\\scripts";}
 double ScriptNow(){LARGE_INTEGER f{},c{};QueryPerformanceFrequency(&f);QueryPerformanceCounter(&c);return (double)c.QuadPart/(double)f.QuadPart;}
 Script* ScriptOf(lua_State* L){return (Script*)lua_callbacks(L)->userdata;}
@@ -367,8 +369,15 @@ void ScriptLoad(Script& s){
  if(!ok){const auto errors=s.errors;ScriptUnload(s);s.errors=errors;s.state=3;return;}
  s.state=s.userStopped?0:1;if(s.state!=1)ScriptHideModules(s);
  Host().Log("Script "+s.name+": loaded ("+std::to_string(s.mods.size())+" modules, "+std::to_string(s.commands.size())+" commands)");}
+// A held script: compiled without a VM, so List() shows its syntax errors; it stays stopped (Stopped, or FailedToLoad).
+void ScriptCompileOnly(Script& s){
+ std::lock_guard<std::recursive_mutex> lock(scriptGuard);ScriptUnload(s);s.errors.clear();s.errorTimes.clear();s.frameMs=0;s.state=0;
+ std::string error;ScriptCompile(ReadAll(s.file),error);if(!error.empty()){s.state=3;ScriptError(s,error);}}
 uint64_t FileStamp(const std::wstring& path){WIN32_FILE_ATTRIBUTE_DATA a{};if(!GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&a))return 0;return ((uint64_t)a.ftLastWriteTime.dwHighDateTime<<32|a.ftLastWriteTime.dwLowDateTime)^((uint64_t)a.nFileSizeLow<<1);}
+// The held list of the scripts folder; read and changed under scriptGuard only.
+ScriptHeldNames& ScriptHeld(){static ScriptHeldNames held(ScriptFolder());return held;}
 // Every second: new files, modified files (reloaded, which restarts a script stopped after errors), removed files.
+// Held scripts are compiled only, and unloaded if they still run (DecideScan in script_library.hpp).
 void ScanScripts(){
  const double now=ScriptNow();if(now<scriptScanAt)return;scriptScanAt=now+1;const std::wstring folder=ScriptFolder();if(folder.empty())return;
  static bool dirsMade=false;   // folders are created once; recreated if the scripts folder goes missing
@@ -384,8 +393,12 @@ void ScanScripts(){
  const bool libChanged=lib!=libStamp;libStamp=lib;
  for(auto& n:found){Script* s=nullptr;for(auto& e:scripts)if(!_wcsicmp(e->file.substr(e->file.find_last_of(L'\\')+1).c_str(),n.c_str()))s=e.get();
   const std::wstring path=folder+L"\\"+n;const uint64_t stamp=FileStamp(path);
-  if(!s){auto fresh=std::make_unique<Script>();fresh->file=path;fresh->name=Utf8(n.substr(0,n.size()-5));fresh->stamp=stamp;fresh->serial=++scriptSerials;scripts.push_back(std::move(fresh));added=true;ScriptLoad(*scripts.back());continue;}
-  if(stamp!=s->stamp||(libChanged&&s->state==1)){s->stamp=stamp;s->userStopped=false;ScriptLoad(*s);}}
+  const bool isNew=!s;
+  if(isNew){auto fresh=std::make_unique<Script>();fresh->file=path;fresh->name=Utf8(n.substr(0,n.size()-5));fresh->stamp=stamp;fresh->serial=++scriptSerials;s=fresh.get();scripts.push_back(std::move(fresh));added=true;}
+  s->held=ScriptHeld().Contains(s->name);const ScanStep step=DecideScan(isNew,stamp!=s->stamp,libChanged,s->state==1,s->held);s->stamp=stamp;
+  if(step.unload){ScriptUnload(*s);s->state=0;}
+  if(step.compileOnly)ScriptCompileOnly(*s);
+  if(step.load){s->userStopped=false;ScriptLoad(*s);}}
  if(added)std::sort(scripts.begin(),scripts.end(),[](const std::unique_ptr<Script>& a,const std::unique_ptr<Script>& b){return _stricmp(a->name.c_str(),b->name.c_str())<0;});   // order only changes when a script is added
 }
 void StopScript(Script& s){std::lock_guard<std::recursive_mutex> lock(scriptGuard);for(auto& m:s.mods)if(m.index>=0)SetModuleEnabled(Host(),m.index,false);ScriptUnload(s);s.state=0;s.userStopped=true;}
@@ -395,27 +408,30 @@ void StartScript(Script& s){s.userStopped=false;ScriptLoad(s);}
 // The scripts as the Scripting tab and other components see them: snapshots and commands, each under scriptGuard.
 // Start and Stop run the script's Lua and change modules: render thread only, never from inside a script callback.
 Script* ScriptNamed(const std::string& name){for(auto& sp:scripts)if(SameScriptName(sp->name,name))return sp.get();return nullptr;}
-std::wstring ScriptWide(const std::string& text){if(text.empty())return {};const int count=MultiByteToWideChar(CP_UTF8,0,text.data(),(int)text.size(),nullptr,0);std::wstring value(count,L'\0');MultiByteToWideChar(CP_UTF8,0,text.data(),(int)text.size(),value.data(),count);return value;}
+// The library's view of the scripts folder for script_files.hpp. ScriptKnownName: true when `name` is a script of the
+// list, and `name` becomes its name as the engine has it (the file's own case).
+ScriptFolderFiles ScriptFilesStore(){return ScriptFolderFiles{ScriptFolder(),scriptFiles,scriptGuard,ScriptHeld()};}
+bool ScriptKnownName(std::string& name){std::lock_guard<std::recursive_mutex> lock(scriptGuard);const Script* s=ScriptNamed(name);if(!s)return false;name=s->name;return true;}
 class EngineScriptLibrary final:public ScriptLibrary{
 public:
  std::vector<ScriptInfo> List() const override{std::lock_guard<std::recursive_mutex> lock(scriptGuard);std::vector<ScriptInfo> out;out.reserve(scripts.size());for(auto& sp:scripts)out.push_back(DescribeScript(*sp,Host()));return out;}
  std::wstring Folder() const override{return ScriptFolder();}
- std::vector<CompileError> Compile(const std::string& source) const override{return CompileScript(source);}   // luau_compile only: no VM, no lock
- bool ReadSource(const std::string& name,std::string& source) const override{
+ bool ReadSource(const std::string& name,ScriptSource& source) const override{
   std::wstring file;{std::lock_guard<std::recursive_mutex> lock(scriptGuard);const Script* s=ScriptNamed(name);if(!s)return false;file=s->file;}
-  FILE* f=nullptr;if(_wfopen_s(&f,file.c_str(),L"rb")||!f)return false;source.clear();char buf[8192];size_t n;while((n=fread(buf,1,sizeof(buf),f))>0)source.append(buf,n);fclose(f);return true;}
- bool Start(const std::string& name) override{std::lock_guard<std::recursive_mutex> lock(scriptGuard);Script* s=ScriptNamed(name);if(!s)return false;StartScript(*s);return true;}
+  return ReadScriptSource(file,source);}
+ std::vector<CompileError> Compile(const std::string& source) const override{return CompileScript(source);}   // luau_compile only: no VM, no lock
+ bool HasBackup(const std::string& name) const override{std::string known=name;return (ScriptKnownName(known)||ValidScriptName(known))&&ScriptHasBackup(ScriptFolder(),known);}
+ // Files (script_files.hpp): under scriptFiles, with scriptGuard only to change the held list; the folder scan does the rest.
+ ScriptFileResult WriteSource(const std::string& name,const std::string& source,const std::string& expectedSha256) override{
+  std::string target=name;const bool known=ScriptKnownName(target);return WriteScriptFile(ScriptFilesStore(),target,known,source,expectedSha256);}
+ ScriptFileResult Remove(const std::string& name,const std::string& expectedSha256) override{
+  std::string target=name;const bool known=ScriptKnownName(target);return RemoveScriptFile(ScriptFilesStore(),target,known,expectedSha256);}
+ ScriptFileResult RestoreBackup(const std::string& name,const std::string& expectedSha256) override{
+  std::string target=name;const bool known=ScriptKnownName(target);return RestoreScriptBackup(ScriptFilesStore(),target,known,expectedSha256);}
+ bool Hold(const std::string& name) override{std::lock_guard<std::recursive_mutex> lock(scriptGuard);Script* s=ScriptNamed(name);if(!s||!ScriptHeld().Add(s->name))return false;s->held=true;return true;}
+ // Start releases a held script first (even if the list cannot be written: the script runs now, as asked).
+ bool Start(const std::string& name) override{std::lock_guard<std::recursive_mutex> lock(scriptGuard);Script* s=ScriptNamed(name);if(!s)return false;ScriptHeld().Remove(s->name);s->held=false;StartScript(*s);return true;}
  bool Stop(const std::string& name) override{std::lock_guard<std::recursive_mutex> lock(scriptGuard);Script* s=ScriptNamed(name);if(!s)return false;StopScript(*s);return true;}
- // Written beside the target under a name the folder scan ignores and no other call uses (".<name>.<thread>.<n>.write"),
- // then moved over it; a leading UTF-8 byte order mark is dropped (Luau does not load a file that starts with one).
- bool WriteSource(const std::string& name,const std::string& source) override{
-  const std::wstring folder=ScriptFolder();if(folder.empty()||!ValidScriptName(name))return false;
-  CreateDirectoryW(folder.substr(0,folder.find_last_of(L'\\')).c_str(),nullptr);CreateDirectoryW(folder.c_str(),nullptr);
-  static std::atomic<unsigned> writes{0};const std::string text=WithoutUtf8Bom(source);
-  const std::wstring stem=ScriptWide(name),target=folder+L"\\"+stem+L".luau",temporary=folder+L"\\."+stem+L"."+std::to_wstring(GetCurrentThreadId())+L"."+std::to_wstring(++writes)+L".write";
-  FILE* f=nullptr;if(_wfopen_s(&f,temporary.c_str(),L"wb")||!f)return false;const bool written=fwrite(text.data(),1,text.size(),f)==text.size();const bool closed=fclose(f)==0;
-  if(written&&closed&&MoveFileExW(temporary.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))return true;
-  DeleteFileW(temporary.c_str());return false;}
 };
 ScriptLibrary& ScriptsLibrary(){static EngineScriptLibrary library;return library;}
 

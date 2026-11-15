@@ -2,8 +2,11 @@
 // Scripting tab, and later the installation of community scripts and the assistant, see of a script (state, modules
 // and whether they are on, errors), how scripts are named and found, the tab's search, the names a new script file
 // may have, and the command behind a row's Start / Stop button.
+// Also the pure rules of held scripts and library writes: the folder scan's table, the held list's format, compile
+// errors and revisions.
 // Not covered here: the engine's ScriptLibrary (EngineScriptLibrary in script_engine.hpp), which still compiles only
-// inside menu.cpp; see docs/architecture/script-management.md.
+// inside menu.cpp (its file half is tests/script_files_checks.cpp); see docs/architecture/script-management.md.
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
@@ -73,23 +76,26 @@ struct FakeScript {
     std::string name;
     uint64_t serial = 0;
     int state = 0;
+    bool held = false;
     std::vector<FakeModule> mods;
     std::deque<std::string> errors;
     size_t memory = 0;
     double frameMs = 0;
 };
 
-// Records the commands it receives.
+// Records the commands it receives: the fake that callers of the library (the Scripting tab, PUBLIC's installer, the
+// assistant's tools) test their logic against.
 class RecordingLibrary final : public ScriptLibrary {
 public:
     mutable std::vector<std::pair<std::string, std::string>> calls; // command, script name
     bool answer = true;
+    ScriptFileResult result = ScriptFileResult::Done;
 
     std::vector<ScriptInfo> List() const override { return {}; }
 
     std::wstring Folder() const override { return L"C:\\scripts"; }
 
-    bool ReadSource(const std::string& name, std::string&) const override {
+    bool ReadSource(const std::string& name, ScriptSource&) const override {
         calls.emplace_back("read", name);
         return answer;
     }
@@ -99,6 +105,31 @@ public:
         return {};
     }
 
+    bool HasBackup(const std::string& name) const override {
+        calls.emplace_back("has backup", name);
+        return answer;
+    }
+
+    ScriptFileResult WriteSource(const std::string& name, const std::string&, const std::string&) override {
+        calls.emplace_back("write", name);
+        return result;
+    }
+
+    ScriptFileResult Remove(const std::string& name, const std::string&) override {
+        calls.emplace_back("remove", name);
+        return result;
+    }
+
+    ScriptFileResult RestoreBackup(const std::string& name, const std::string&) override {
+        calls.emplace_back("restore", name);
+        return result;
+    }
+
+    bool Hold(const std::string& name) override {
+        calls.emplace_back("hold", name);
+        return answer;
+    }
+
     bool Start(const std::string& name) override {
         calls.emplace_back("start", name);
         return answer;
@@ -106,11 +137,6 @@ public:
 
     bool Stop(const std::string& name) override {
         calls.emplace_back("stop", name);
-        return answer;
-    }
-
-    bool WriteSource(const std::string& name, const std::string&) override {
-        calls.emplace_back("write", name);
         return answer;
     }
 };
@@ -149,6 +175,7 @@ void Snapshot() {
     script.name = "Aura Helper";
     script.serial = 42;
     script.state = 1;
+    script.held = true;
     script.mods = {{2, "On Module"}, {3, "Off Module"}, {-1, "Unloaded"}, {9, "Out Of Range"}};
     script.errors = {"first:1: a", "second:2: b"};
     script.memory = 3 * 1048576;
@@ -157,7 +184,7 @@ void Snapshot() {
     const ScriptInfo info = DescribeScript(script, registry);
     Check(info.name == "Aura Helper" && info.file == script.file && info.serial == 42,
           "name, serial and file are copied");
-    Check(info.state == ScriptState::Running, "the state is the engine's");
+    Check(info.state == ScriptState::Running && info.held, "the state and the held flag are the engine's");
     Check(info.memory == script.memory && info.frameMs == 0.25, "memory and frame time are copied");
     Check(info.modules.size() == 4 && info.modules[0].name == "On Module" && info.modules[0].index == 2
                   && info.modules[3].name == "Out Of Range",
@@ -318,6 +345,98 @@ void CompileErrors() {
     Check(error.line == 3 && error.message == " two spaces", "only the one space Luau writes is removed");
 }
 
+bool Is(ScanStep step, bool unload, bool load, bool compileOnly) {
+    return step.unload == unload && step.load == load && step.compileOnly == compileOnly;
+}
+
+// Every row of the table in docs/architecture/script-management-next.md, section 1.
+// DecideScan(isNew, stampChanged, libChanged, running, held)
+void Scan() {
+    // not held: today's behaviour
+    Check(Is(DecideScan(true, false, false, false, false), false, true, false), "not held, new file: load");
+    Check(Is(DecideScan(true, false, true, false, false), false, true, false), "not held, new file while lib changed: load");
+    Check(Is(DecideScan(false, true, false, false, false), false, true, false)
+                  && Is(DecideScan(false, true, false, true, false), false, true, false),
+          "not held, file changed: load (also when it runs, and after the user's Stop)");
+    Check(Is(DecideScan(false, false, true, true, false), false, true, false), "not held, lib changed while running: reload");
+    Check(Is(DecideScan(false, false, true, false, false), false, false, false),
+          "not held, lib changed while stopped: nothing");
+    Check(Is(DecideScan(false, false, false, true, false), false, false, false)
+                  && Is(DecideScan(false, false, false, false, false), false, false, false),
+          "not held, nothing changed: nothing");
+    // held
+    Check(Is(DecideScan(true, false, false, false, true), false, false, true), "held, new file: compile only");
+    Check(Is(DecideScan(false, true, false, false, true), false, false, true), "held, file changed: compile only");
+    Check(Is(DecideScan(false, true, false, true, true), true, false, true),
+          "held, file changed while running: unload, then compile only");
+    Check(Is(DecideScan(false, false, true, false, true), false, false, false), "held, lib changed: nothing");
+    Check(Is(DecideScan(false, false, false, false, true), false, false, false), "held, nothing changed: nothing");
+    Check(Is(DecideScan(false, false, false, true, true), true, false, false),
+          "held and running (Hold from another thread): unload");
+    Check(Is(DecideScan(false, false, true, true, true), true, false, false), "held and running while lib changed: unload");
+    bool neverLoads = true;
+    for (int bits = 0; bits < 16; ++bits) {
+        neverLoads &= !DecideScan(bits & 1, bits & 2, bits & 4, bits & 8, true).load;
+    }
+    Check(neverLoads, "a held script never loads");
+}
+
+void HeldList() {
+    const std::vector<std::string> names = {"Kill Aura", "\xc3\xa9t\xc3\xa9", "chat logger"};
+    Check(FormatHeldList(names) == "Kill Aura\n\xc3\xa9t\xc3\xa9\nchat logger\n", "one name per line, each ended by \\n");
+    Check(ParseHeldList(FormatHeldList(names)) == names, "a round trip keeps the names and their order");
+    Check(ParseHeldList("Kill Aura\r\nchat logger\r\n") == std::vector<std::string>({"Kill Aura", "chat logger"}),
+          "CRLF reads as LF");
+    Check(ParseHeldList("\n\na\n\r\n\nb") == std::vector<std::string>({"a", "b"}),
+          "blank lines are dropped; the last line needs no line end");
+    Check(ParseHeldList("Fly\nfly\nFLY\nother\n") == std::vector<std::string>({"Fly", "other"}),
+          "repeats differing only in case are dropped, the first is kept");
+    Check(ParseHeldList("ok\na/b\n.hidden\ncon\nbad\xc3\n" + std::string(65, 'x') + "\nlast\n")
+                  == std::vector<std::string>({"ok", "last"}),
+          "invalid names are dropped");
+    Check(ParseHeldList("\xc3\xa9t\xc3\xa9\n") == std::vector<std::string>({"\xc3\xa9t\xc3\xa9"}), "UTF-8 names are kept");
+    Check(ParseHeldList("").empty() && FormatHeldList({}).empty(), "an empty list is an empty file");
+}
+
+void Revisions() {
+    // FIPS 180-2, appendix B.1: SHA-256("abc")
+    const uint8_t abc[32] = {0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+                             0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
+    const std::string hex = Sha256Hex(abc);
+    Check(hex == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+          "a digest is 64 lowercase hex characters (the FIPS 180-2 \"abc\" digest)");
+    Check(ValidSha256Hex(hex), "a revision is valid");
+    std::string upper = hex;
+    for (char& c : upper) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    Check(!ValidSha256Hex(upper), "upper case is refused");
+    Check(!ValidSha256Hex(hex.substr(0, 63)) && !ValidSha256Hex(hex + "0") && !ValidSha256Hex(""),
+          "63 or 65 characters, or none, are refused");
+    Check(!ValidSha256Hex("sha256:" + hex.substr(7)) && !ValidSha256Hex(std::string(63, 'a') + "g"),
+          "a prefix or a non-hex character is refused");
+}
+
+void Status() {
+    ScriptInfo script = Named("installed", ScriptState::Stopped);
+    script.held = true;
+    Check(std::string(ScriptStatusText(script)) == "Not started", "a held script that compiles is Not started");
+    script.state = ScriptState::FailedToLoad;
+    Check(std::string(ScriptStatusText(script)) == "Failed to load", "a held script that does not compile failed to load");
+    script.held = false;
+    script.state = ScriptState::Stopped;
+    Check(std::string(ScriptStatusText(script)) == "Stopped", "a script that is not held keeps its state's text");
+}
+
+void FileCommands() {
+    RecordingLibrary library;
+    library.result = ScriptFileResult::Conflict;
+    Check(library.WriteSource("a", "print(1)", "") == ScriptFileResult::Conflict && library.calls.back().first == "write",
+          "the fake returns the result it is given, for a caller's conflict path");
+    Check(library.Hold("a") && library.calls.back().first == "hold" && library.calls.back().second == "a",
+          "Hold is recorded with its name");
+}
+
 } // namespace
 
 int main() {
@@ -330,6 +449,11 @@ int main() {
     FileNames();
     Commands();
     CompileErrors();
+    Scan();
+    HeldList();
+    Revisions();
+    Status();
+    FileCommands();
     std::printf(failed ? "%d check(s) FAILED\n" : "all checks passed\n", failed);
     return failed ? 1 : 0;
 }
