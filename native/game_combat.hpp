@@ -280,7 +280,7 @@ inline void CombatReceive(uintptr_t packet){static std::atomic<bool> fault{false
 inline void StickyAimTick();   // game_sticky_aim.hpp
 inline void BacktrackTick();   // game_backtrack.hpp
 inline void CriticalsJumpWork();
-inline void CombatGameUpdate(){StickyAimTick();CriticalsJumpWork();BacktrackTick();PvpBotGameUpdate();static std::atomic<bool> fault{false};if(fault)return;__try{RightClickerWork();ClickAssistWork();KillAuraWork();AimAssistWork();}__except(FaultLogFilter("Combat (Right Clicker, Click Assist, Kill Aura, Aim Assist)",GetExceptionInformation())){fault=true;}}
+inline void CombatGameUpdate(){StickyAimTick();CriticalsJumpWork();BacktrackTick();PvpBotGameUpdate();static std::atomic<bool> fault{false};if(fault)return;__try{RightClickerWork();ClickAssistWork();KillAuraWork();AimAssistWork();}__except(FaultTraceFilter("Combat (Right Clicker, Click Assist, Kill Aura, Aim Assist)",GetExceptionInformation())){fault=true;FaultTraceFlush();}}
 // ---- common target filter. Flags: 0x100 = skip targets carrying component 0xacb47b38; always requires a living
 // actor (ActorTypeComponent, bit 0x100); 0x1 = players only (PlayerComponent); 0x1000000 / 0x10000 = Anti Bot / Teams
 // (the filter shared with Visuals). Bit 32 of the last argument = maximum squared distance (unused by Trigger Bot).

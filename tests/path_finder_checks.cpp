@@ -73,4 +73,24 @@ int main(){
   check(!PfGoalProblem(v,{2,5,2}).empty(),"a goal in the air is refused");
   check(PfGoalProblem(v,{2,0,3}).empty(),"a goal on the ground is accepted");}
 
+ {  // 5. merging a finished search into the controller's path (PfFinishSearch): a complete path with no step left
+    //    means "arrived", so a finished continuation search must never leave the path empty or unjoined but complete
+  TestWorld world;
+  auto finish=[&](PfController& k,bool cont){k.world=world.w;k.search=std::make_unique<PfSearch>(Run(world,Block({6,0,0}),{3,0,0},true));
+   k.contSearch=cont;PfFinishSearch(k,PfSelf{},false);};
+  PfStep before;before.from={0,0,0};before.to={3,0,0};
+  {PfController k;k.hasPath=true;k.path={before};k.contSearch=true;finish(k,true);
+   check(k.path.size()>1&&k.path.front().from==PfP{0,0,0}&&k.path.back().to==PfP{6,0,0}&&k.pathComplete,
+         "a next segment that starts where the path ends is appended and completes the path");}
+  {PfController k;k.hasPath=true;k.path.clear();finish(k,true);   // the player already walked the partial path
+   check(!(k.pathComplete&&k.path.empty()),"a next segment found after the player walked the partial path does not report arrival");
+   check(!k.path.empty()&&k.path.front().from==PfP{3,0,0}&&k.path.back().to==PfP{6,0,0}&&k.pathComplete,
+         "that segment becomes the path, from where the partial path ended to the goal");}
+  {PfController k;k.hasPath=true;PfStep other;other.from={0,0,0};other.to={1,0,5};k.path={other};finish(k,true);
+   check(!k.pathComplete,"a next segment that no longer joins the path does not complete it");
+   check(k.path.size()==1&&k.path.front().to==PfP{1,0,5},"the current path is kept as it is");
+   check(k.contPending,"the next segment is searched again");}
+  {PfController k;k.hasPath=true;k.path={before};finish(k,false);   // a new search (not a continuation) replaces the path
+   check(!k.path.empty()&&k.path.front().from==PfP{3,0,0}&&k.pathComplete,"a new search replaces the path");}}
+
  std::printf("%s\n",failed?"path finder checks FAILED":"path finder checks passed");return failed?1:0;}

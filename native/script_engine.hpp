@@ -10,6 +10,8 @@
 // Threads: all Luau code runs under `scriptGuard`; update / render2d / render3d / key / timers run on the render thread,
 // tick / packetSend / packetReceive / chat / attack on the game thread (shared hooks).
 // The 2.1 API lives in script_api21.hpp (inventory, container, path, projectile, player.simulate, the 2.1 events).
+#include "script_limits.hpp"   // ScriptOverLimit (tested without the game)
+#include "script_keys.hpp"   // ScriptKeyDown (tested without the game)
 struct ScriptHandler{std::string event;int ref;};
 struct ScriptModule{int index=-1;std::string name;int enableRef=0,disableRef=0;std::vector<ScriptHandler> handlers;bool was=false;int activation=0;bool hud=false;float hudW=0,hudH=0;bool frame=false;float fx=0,fy=0,fs=1,fw=0,fh=0;
  bool rotating=false;float yaw=0,pitch=0;};
@@ -19,7 +21,7 @@ struct Script{
  std::wstring file;std::string name;uint64_t stamp=0;lua_State* L=nullptr;int threadRef=0;
  int state=0;   // 0 Stopped, 1 Running, 2 Stopped after errors, 3 Failed to load
  std::vector<ScriptModule> mods;std::vector<ScriptCommand> commands;std::deque<std::string> errors;std::deque<double> errorTimes;
- size_t memory=0;double frameMs=0,frameSum=0,frameStart=0;std::vector<ScriptTimer> timers;int nextTimer=1;bool loading=false;double callStart=0,limit=.05;
+ size_t memory=0;double frameMs=0,frameSum=0,frameStart=0;std::vector<ScriptTimer> timers;int nextTimer=1;bool loading=false;double callStart=0,limit=.05;bool expired=false;
  bool userStopped=false;std::map<std::string,int> required;std::vector<std::string> requiring;
 };
 std::recursive_mutex scriptGuard;std::vector<std::unique_ptr<Script>> scripts;int scriptSelected=-1;char scriptSearch[64]{};double scriptScanAt=0;
@@ -48,9 +50,10 @@ void ScriptError(Script& s,const std::string& message){
 }
 // Stack: function then arguments; returns true if the call finished without error (results left on the stack).
 bool ScriptCall(Script& s,lua_State* L,int args,int results){
- s.callStart=ScriptNow();const int status=lua_pcall(L,args,results,0);const double spent=ScriptNow()-s.callStart;if(!s.loading)s.frameSum+=spent;s.callStart=0;
+ const double began=ScriptNow();const ScriptCallState outer=ScriptCallBegin(s.callStart,s.expired,began);
+ const int status=lua_pcall(L,args,results,0);const double spent=ScriptNow()-began;if(!s.loading)s.frameSum+=spent;ScriptCallEnd(s.callStart,s.expired,outer);
  if(status!=LUA_OK){const char* text=lua_tostring(L,-1);ScriptError(s,text?text:"error");lua_pop(L,1);return false;}return true;}
-void ScriptInterrupt(lua_State* L,int gc){if(gc>=0)return;Script* s=ScriptOf(L);if(s&&s->callStart>0&&ScriptNow()-s->callStart>s->limit){s->callStart=ScriptNow()+1e9;luaL_error(L,s->loading?"script took longer than one second to load":"script call took longer than 50 ms");}}
+void ScriptInterrupt(lua_State* L,int gc){if(gc>=0)return;Script* s=ScriptOf(L);if(s&&ScriptOverLimit(s->callStart,s->limit,s->expired,ScriptNow())){luaL_error(L,s->loading?"script took longer than one second to load":"script call took longer than 50 ms");}}
 void* ScriptAlloc(void* ud,void* ptr,size_t osize,size_t nsize){Script* s=(Script*)ud;if(nsize==0){free(ptr);s->memory-=std::min(s->memory,osize);return nullptr;}
  if(nsize>osize&&s->memory+(nsize-osize)>64ull*1024*1024)return nullptr;void* p=realloc(ptr,nsize);if(p)s->memory=s->memory-std::min(s->memory,osize)+nsize;return p;}
 // Calls a referenced function with an optional argument already pushed.
@@ -181,7 +184,9 @@ int AddTimer(lua_State* L,bool repeat){Script* s=ScriptOf(L);const double ms=std
 int ClientAfter(lua_State* L){return AddTimer(L,false);}
 int ClientEvery(lua_State* L){return AddTimer(L,true);}
 int ClientCancel(lua_State* L){Script* s=ScriptOf(L);const int id=(int)luaL_checknumber(L,1);for(size_t i=0;i<s->timers.size();++i)if(s->timers[i].id==id){lua_unref(L,s->timers[i].ref);s->timers.erase(s->timers.begin()+i);lua_pushboolean(L,1);return 1;}lua_pushboolean(L,0);return 1;}
-int ClientIsKeyDown(lua_State* L){const int code=ScriptKeyCode(luaL_checkstring(L,1));lua_pushboolean(L,code&&(GetAsyncKeyState(code)&0x8000)!=0);return 1;}
+// A key as scripts see it (client.isKeyDown, Hold modules): only while Minecraft is the foreground window (script_keys.hpp).
+bool ScriptGameKeyDown(int code){return ScriptKeyDown(code,GetForegroundWindow(),gameWindowForKeys?GetAncestor(gameWindowForKeys,GA_ROOT):nullptr,GetAsyncKeyState);}
+int ClientIsKeyDown(lua_State* L){lua_pushboolean(L,ScriptGameKeyDown(ScriptKeyCode(luaL_checkstring(L,1))));return 1;}
 int ClientServer(lua_State* L){game::Server server{};lua_createtable(L,0,3);if(game::ReadServer(&server)){lua_pushboolean(L,server.singleplayer);lua_setfield(L,-2,"local");if(!server.singleplayer){lua_pushstring(L,server.address);lua_setfield(L,-2,"address");lua_pushnumber(L,server.port);lua_setfield(L,-2,"port");}}else{lua_pushboolean(L,1);lua_setfield(L,-2,"local");}return 1;}
 int ClientTransport(lua_State* L){lua_pushstring(L,game::TransportName(game::CurrentTransport()));return 1;}   // "RakNet", "NetherNet" or "None"
 int ClientPing(lua_State* L){int64_t ms=0;game::PingTrace trace{};if(game::ReadPing(&ms,&trace)==1)lua_pushnumber(L,(double)ms);else lua_pushnil(L);return 1;}
@@ -415,7 +420,7 @@ void ScriptsFrame(std::vector<std::string>& drawn){
  ScanScripts();std::lock_guard<std::recursive_mutex> lock(scriptGuard);const double now=ScriptNow();bool camera=false;
  for(auto& sp:scripts){Script& s=*sp;if(s.state!=1||!s.L)continue;s.frameStart=now;
   for(size_t i=0;i<s.mods.size()&&s.state==1;++i){ScriptModule& m=s.mods[i];if(m.index<0)continue;Module& mod=modules[m.index];
-   if(m.activation==1){auto k=keycodes.find(mod.id);const bool held=k!=keycodes.end()&&(GetAsyncKeyState(k->second)&0x8000)!=0&&!opened&&KeysAllowed();if(mod.enabled!=held)mod.enabled=held;}
+   if(m.activation==1){auto k=keycodes.find(mod.id);const bool held=k!=keycodes.end()&&ScriptGameKeyDown(k->second)&&!opened&&KeysAllowed();if(mod.enabled!=held)mod.enabled=held;}
    if(mod.enabled!=m.was){m.was=mod.enabled;const int ref=mod.enabled?m.enableRef:m.disableRef;if(ref)ScriptInvoke(s,ref);}
    if(mod.enabled)for(auto& h:m.handlers)if(h.event=="render3d"||h.event=="render2d")camera=true;}
   // Expired timers (a timer cancelled during the loop is not called).
