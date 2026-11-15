@@ -1,0 +1,134 @@
+{
+  "rules": [
+    {
+      "name": "the menu reaching into the Luau engine (use script_engine_api.hpp)",
+      "files": [
+        "native/menu.cpp",
+        "native/theme.hpp",
+        "native/hud_crosshair.hpp",
+        "native/hud_subtitles.hpp",
+        "native/schematic_ui.hpp",
+        "native/menu_waypoints.hpp"
+      ],
+      "identifiers": [
+        "scripts",
+        "scriptGuard",
+        "Script",
+        "ScriptModule",
+        "ScriptHandler",
+        "scriptSelected",
+        "scriptSearch",
+        "scriptWantsRotations",
+        "scriptWantsCamera",
+        "Dispatch",
+        "Fire",
+        "scriptChatGuard",
+        "scriptChatQueue",
+        "scriptWrites",
+        "scriptDraw"
+      ],
+      "baseline": {
+        "scripts": 0,
+        "scriptGuard": 0,
+        "Script": 0,
+        "ScriptModule": 0,
+        "ScriptHandler": 0,
+        "scriptSelected": 0,
+        "scriptSearch": 0,
+        "scriptWantsRotations": 0,
+        "scriptWantsCamera": 0,
+        "Dispatch": 0,
+        "Fire": 0,
+        "scriptChatGuard": 0,
+        "scriptChatQueue": 0,
+        "scriptWrites": 0,
+        "scriptDraw": 0
+      }
+    },
+    {
+      "name": "the Luau engine reaching into the menu (script_engine.hpp, script_api21.hpp)",
+      "files": [
+        "native/script_engine.hpp",
+        "native/script_api21.hpp"
+      ],
+      "identifiers": [
+        "modules",
+        "Save",
+        "configPath",
+        "keybinds",
+        "keycodes",
+        "notices",
+        "selected",
+        "opened",
+        "KeysAllowed",
+        "gameWindowForKeys",
+        "Label",
+        "TextWidth",
+        "HudList",
+        "Place",
+        "ParseColor",
+        "FormatColor",
+        "Wide",
+        "Utf8",
+        "WriteLog",
+        "regular",
+        "bold",
+        "semibold",
+        "ImGui",
+        "ImDrawList",
+        "ImVec2",
+        "ImVec4",
+        "ImU32"
+      ],
+      "baseline": {
+        "modules": 50,
+        "Save": 8,
+        "configPath": 4,
+        "keybinds": 2,
+        "keycodes": 4,
+        "notices": 2,
+        "selected": 7,
+        "opened": 1,
+        "KeysAllowed": 1,
+        "gameWindowForKeys": 2,
+        "Label": 2,
+        "TextWidth": 1,
+        "HudList": 1,
+        "Place": 1,
+        "ParseColor": 1,
+        "FormatColor": 2,
+        "Wide": 7,
+        "Utf8": 3,
+        "WriteLog": 5,
+        "regular": 1,
+        "bold": 1,
+        "semibold": 1,
+        "ImGui": 5,
+        "ImDrawList": 14,
+        "ImVec2": 19,
+        "ImVec4": 7,
+        "ImU32": 6
+      }
+    },
+    {
+      "name": "the Scripting tab reaching into the Luau engine (script_ui.hpp)",
+      "files": [
+        "native/script_ui.hpp"
+      ],
+      "identifiers": [
+        "scripts",
+        "scriptGuard",
+        "Script",
+        "scriptSelected",
+        "scriptSearch"
+      ],
+      "baseline": {
+        "scripts": 9,
+        "scriptGuard": 2,
+        "Script": 2,
+        "scriptSelected": 11,
+        "scriptSearch": 4
+      }
+    }
+  ]
+}

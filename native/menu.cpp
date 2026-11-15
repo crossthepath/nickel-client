@@ -19,6 +19,7 @@
 #include "luacode.h"
 #include "generated_catalog.hpp"
 #include "menu_catalog.hpp"
+#include "script_events.hpp"
 #include "game_read.hpp"
 #include "media.hpp"
 #include "game_events.hpp"
@@ -107,7 +108,7 @@ ImFont *regular{},*bold{},*semibold{},*icons{},*tiny{};
 // drag a corner to change the overall scale, double-click the title to reset.
 float menuW=1012,menuH=578,menuScale=1,menuX=-1,menuY=-1,dragW=0,dragH=0,dragScale=1,dragX=0,dragY=0;int dragMode=0;ImVec2 dragStart;std::map<std::string,float> animation;std::map<std::string,std::string> keybinds;std::map<std::string,int> keycodes;struct Notice{int kind;std::string title,body;};std::vector<Notice> notices;   // pending notifications (5 = module toggled by key, 7 = configs)
 bool mapOpen=false,worldCameraWanted=false;bool waypointsOpen=false;HWND gameWindowForKeys=nullptr;const char* particleOptions[15]={"All Particles","Critical Hit","Sharpness","Totem","Potion Effects","Smoke","Flames","Explosions","Water Splashes","Bubbles","Portals","Hearts","Enchanting Table","Block Breaking","Redstone"};   // full-screen MiniMap view (World Map Key)
-void ScriptsKey(unsigned vk);   // Luau scripts (script_engine.hpp)
+#include "script_engine_api.hpp"   // the Luau engine, as the menu and the hooks see it (defined in script_engine.hpp)
 Setting* listeningSetting=nullptr;Module* listeningModule=nullptr;const std::vector<std::string>& RegistryNames(bool blocks);   // key setting waiting for input (stored as "Name|code")
 // Manrope hhea ascent/descent = 2132/-600, unitsPerEm = 2000.
 // stb_truetype sizes against ascent-descent; the UI layout sizes against em.
@@ -1575,7 +1576,7 @@ void DrawHud(ImTextureID logo){
    if(update&&game::InstallFreeLookHooks(WriteLog)==1)game::combatGameUpdate=CombatGameUpdates;
    if(send&&game::InstallSendHook(WriteLog)==1){game::playerSendC=game::PlayerCSend;game::sendUtility=game::UtilitySend;}
    if(receive){game::playerReceiveC=game::PlayerCReceive;if(game::InstallEvents(WriteLog)==1&&game::InstallReceiveHooks(WriteLog)==1)game::receiveUtility=game::UtilityReceive;}}
-  if(wantRotations||scriptWantsRotations||(game::AutoClicker().enabled&&game::AutoClicker().jitter))AttachRotations();
+  if(wantRotations||ScriptsWantRotations()||(game::AutoClicker().enabled&&game::AutoClicker().jitter))AttachRotations();
   if(wantActions&&game::InstallScreenHook(WriteLog)==1){game::screenUtility=game::ActionGameUpdate;game::actionReceive=game::ActionReceive;}
   // No Packet: subscriber of the shared packet-send hook.
   {static Module* block=ModuleById("no_packet");auto& n=game::NoPacket();const bool on=block&&block->enabled;AcquireSRWLockExclusive(&n.lock);n.enabled=on;
@@ -1835,13 +1836,13 @@ void DrawHud(ImTextureID logo){
      s.stop=Flag(*st,"stop_without_input",false);if(auto a=Find(*st,"acceleration"))s.acceleration=(float)a->number;if(auto sp=Find(*st,"speed"))s.speed=(float)sp->number;if(auto kp=Find(*st,"knockback_pause"))s.pause=(int)kp->number;}}
    if(on&&game::InstallFreeCameraHooks(WriteLog)==1){game::sprintMovement=game::MovementSprintB;game::movementReceive=game::MovementReceive;wantReceive=true;}}
   // Luau scripts: game tick, outgoing commands and packets, incoming events (chat, packets, containers), attacks.
-  {bool any=false;{std::lock_guard<std::recursive_mutex> lock(scriptGuard);for(auto& sc:scripts)if(sc->state==1)any=true;}
-   if(any){game::InstallMapHooks(WriteLog);game::scriptTick=ScriptsTick;game::utilityTick=game::UtilityTick;
+  if(ScriptsAnyRunning()){using nickel::script::Bit;const ScriptEventMask want=ScriptsWantedEvents();
+   game::InstallMapHooks(WriteLog);game::scriptTick=ScriptsTick;game::utilityTick=game::UtilityTick;
     if(game::InstallSendHook(WriteLog)==1){game::scriptSend=ScriptsSend;game::sendUtility=game::UtilitySend;}
-    if(ScriptsWant("chat")||ScriptsWant("packetReceive")||ScriptsWant("containerOpen")||ScriptsWant("containerClose")||ScriptsWant("teleport")){wantReceive=true;game::scriptReceive=ScriptsReceive;}
-    if(ScriptsWant("jump")||ScriptsWant("move")){if(game::InstallFreeCameraHooks(WriteLog)==1){game::jumpPre=JumpPreAll;game::jumpPost=JumpPostAll;game::jumpCancel=ScriptsJumpCancel;game::sprintScript=ScriptsMoveGuarded;}}
-    if(scriptWantsRotations)wantRotations=true;
-    if(ScriptsWant("attack")&&game::InstallEvents(WriteLog)==1)game::scriptAttack=ScriptsAttack;}}
+    if(want&(Bit(ScriptEvent::Chat)|Bit(ScriptEvent::PacketReceive)|Bit(ScriptEvent::ContainerOpen)|Bit(ScriptEvent::ContainerClose)|Bit(ScriptEvent::Teleport))){wantReceive=true;game::scriptReceive=ScriptsReceive;}
+    if(want&(Bit(ScriptEvent::Jump)|Bit(ScriptEvent::Move))){if(game::InstallFreeCameraHooks(WriteLog)==1){game::jumpPre=JumpPreAll;game::jumpPost=JumpPostAll;game::jumpCancel=ScriptsJumpCancel;game::sprintScript=ScriptsMoveGuarded;}}
+    if(ScriptsWantRotations())wantRotations=true;
+    if((want&Bit(ScriptEvent::Attack))&&game::InstallEvents(WriteLog)==1)game::scriptAttack=ScriptsAttack;}
   if(game::Replenish().enabled)wantReceive=true;
   if(wantReceive&&game::InstallEvents(WriteLog)==1&&game::InstallReceiveHooks(WriteLog)==1)game::receiveUtility=game::UtilityReceive;
   const bool lit=bright&&bright->enabled;if(lit){game::InstallLightHooks(WriteLog);float intensity=100;for(auto& setting:bright->settings)if(setting.kind=="number")intensity=(float)setting.number;camera.brightness=intensity/100;
@@ -1991,7 +1992,7 @@ void DrawHud(ImTextureID logo){
   static Module* soundEsp=ModuleById("sound_esp");const bool useSounds=soundEsp&&soundEsp->enabled;InterlockedExchange(&game::Sounds().enabled,useSounds?1:0);if(useSounds)game::InstallSoundHook(WriteLog);
   static Module* beTracerModule=ModuleById("block_esp");const bool useBeTracers=beTracerModule&&beTracerModule->enabled&&Flag(*beTracerModule,"tracers",false);
   const bool any=(crumbs&&crumbs->enabled)||(borders&&borders->enabled)||(waypoints&&waypoints->enabled)||(damage&&damage->enabled);auto& view=game::View();static Module* subtitlesM=ModuleById("subtitles");const Setting* subMode=subtitlesM?Find(*subtitlesM,"mode"):nullptr;const bool useSubtitlesSky=subtitlesM&&subtitlesM->enabled&&!(subMode&&subMode->text=="HUD");   // Subtitles in Sky / Both mode: text is placed in the sky
-  InterlockedExchange(&view.wanted,any||useChests||useSus||useBeTracers||useItems||useJumps||useSounds||useAir||useBed||useRegen||useBase||useSchem||useHitbox||useBacktrackBox||useMlgBox||usePf||worldCameraWanted||scriptWantsCamera||useSubtitlesSky?1:0);
+  InterlockedExchange(&view.wanted,any||useChests||useSus||useBeTracers||useItems||useJumps||useSounds||useAir||useBed||useRegen||useBase||useSchem||useHitbox||useBacktrackBox||useMlgBox||usePf||worldCameraWanted||ScriptsWantCamera()||useSubtitlesSky?1:0);
   InterlockedExchange(&game::Chests().range,useChests?(long)num(*chestEsp,"range",128):128);InterlockedExchange(&game::Chests().enabled,useChests?1:0);if(useChests)game::InstallMapHooks(WriteLog);
   {static Module* paths=ModuleById("trajectories");const bool usePaths=paths&&paths->enabled;auto& shared=game::Trajectory();
    if(usePaths){ImVec4 c(.298f,.8f,1,1);{auto setting=Find(*paths,"color");if(setting&&setting->kind=="color"&&setting->text.size()==9)c=ParseColor(setting->text);}AcquireSRWLockExclusive(&shared.lock);shared.color[0]=c.x;shared.color[1]=c.y;shared.color[2]=c.z;shared.color[3]=c.w;shared.thickness=num(*paths,"thickness",1.5f);shared.impact=Flag(*paths,"impact",true);shared.others=Flag(*paths,"other_players",false);ReleaseSRWLockExclusive(&shared.lock);game::InstallWorldHook(WriteLog);}
