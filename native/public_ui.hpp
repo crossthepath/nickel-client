@@ -27,9 +27,21 @@ inline pub::Kind PublicKindOf(int t) {
     return t == kPublicConfigsTab ? pub::Kind::Config : pub::Kind::Script;
 }
 
-// Settings > Connection > Online community (PUBLIC).
+// Settings > Connection > Online community (PUBLIC). Its value is read from and written to root\public\settings.ini
+// (pub::ReadCommunitySetting), never the preferences ini: loading or importing a config cannot change it.
 MenuOption& PublicOption() {
-    return connectionOptions[2];
+    return publicCommunityOption;
+}
+
+// %APPDATA%\Nickel in the game (the folder of the preferences ini).
+std::wstring PublicRoot() {
+    return configPath.substr(0, configPath.find_last_of(L"\\/"));
+}
+
+// The Settings toggle, the page's Turn on button and Reset all are the only callers.
+void SetPublicCommunity(bool on) {
+    PublicOption().value = on;
+    pub::WriteCommunitySetting(PublicRoot(), on);
 }
 
 // Requests of the offline review: nothing leaves the process.
@@ -203,6 +215,7 @@ void PublicTick() {
     int reviewMode = 0;
     if (!reviewChecked) {
         reviewChecked = true;
+        PublicOption().value = pub::ReadCommunitySetting(PublicRoot());
         char value[8]{};
         if (OwnProbe() && GetEnvironmentVariableA("NICKEL_REVIEW_PUBLIC", value, sizeof(value))) {
             m.review = true;
@@ -216,7 +229,7 @@ void PublicTick() {
     }
     if (!m.page) {
         pub::PageOptions options;
-        options.root = configPath.substr(0, configPath.find_last_of(L"\\/"));
+        options.root = PublicRoot();
         options.library = &ScriptsLibrary();
         m.page = std::make_unique<pub::PublicPage>(std::move(options));
     }
@@ -352,6 +365,11 @@ std::vector<std::string> WrapText(ImFont* font, float size, const std::string& t
         line.clear();
         at = text.size();
     }
+    for (std::string& each : lines) {
+        if (TextWidth(font, size, each.c_str()) > width) {
+            each = Fit(font, size, each, width); // a word longer than the width
+        }
+    }
     if (!lines.empty()) {
         const bool cut = at < text.size() || !line.empty();
         std::string& last = lines.back();
@@ -441,11 +459,44 @@ const pub::Card* SelectedCard(pub::Kind kind, const pub::DetailResult** detailOu
 }
 
 void TurnPublicOn() {
-    PublicOption().value = true;
-    WritePrivateProfileStringW(L"menu", Wide(PublicOption().key).c_str(), L"1", configPath.c_str());
+    SetPublicCommunity(true);
 }
 
 // ---- the page (main panel)
+
+// The page's latest messages (revocations, installs, failures, star refusals) above the list or the source, newest
+// first: the HUD notifications may be off. Problems are red and stay until Dismiss. Returns the height used.
+float DrawPublicMessages(ImDrawList* d, ImVec2 origin, float s, float a, float left, float right, float y) {
+    PublicMenu& m = Public();
+    const std::vector<pub::PageMessage>& messages = m.page->Messages();
+    if (messages.empty()) {
+        return 0;
+    }
+    auto P = [&](float x, float yy) {
+        return ImVec2(origin.x + x * s, origin.y + yy * s);
+    };
+    float at = y;
+    for (size_t i = messages.size(); i > 0; --i) {
+        const pub::PageMessage& message = messages[i - 1];
+        const bool first = i == messages.size();
+        d->AddRectFilled(P(left, at),
+                         P(right, at + 24),
+                         message.problem ? Rgba(42, 21, 24, .9f * a) : Rgba(23, 23, 29, .9f * a),
+                         0);
+        Label(d,
+              regular,
+              12 * s,
+              P(left + 10, at + 5),
+              Fit(regular, 12, message.text, right - left - (first ? 96 : 20)).c_str(),
+              message.problem ? Rgba(248, 113, 113, a) : Rgba(214, 214, 222, a));
+        if (first && UiButton(d, "pub-dismiss", "Dismiss", P(right - 74, at + 2), 70, 20, 0, true, a, s)) {
+            m.page->DismissMessages();
+            return 0;
+        }
+        at += 26;
+    }
+    return at - y + 6;
+}
 
 void DrawPublicOff(ImVec2 origin, float s, float opacity, pub::Kind kind) {
     const float U = 242.f / 210.f;
@@ -602,11 +653,16 @@ void DrawPublicSource(ImVec2 origin, float s, float opacity, pub::Kind kind) {
     const pub::Local state = local != nullptr ? local->state : pub::Local::None;
     const pub::PendingInstall& pending = page.Pending();
     const bool busy = pending.step == pub::Step::Downloading && pending.card.id == card.id;
+    const bool waiting = page.Busy() && !busy; // another item is downloading
     const bool update =
             state == pub::Local::UpdateAvailable || state == pub::Local::Withdrawn || state == pub::Local::Modified;
     const bool installed = state != pub::Local::None && !update;
     const bool compatible = pub::CompatibleWith(card.latest.nickelMin, page.Running());
-    const char* action = busy ? "Installing..." : installed ? "Installed" : update ? "Update" : "Install";
+    const char* action = busy        ? "Installing..."
+                         : installed ? "Installed"
+                         : waiting   ? "Please wait"
+                         : update    ? "Update"
+                                     : "Install";
     if (UiButton(d,
                  "pub-source-install",
                  action,
@@ -614,7 +670,7 @@ void DrawPublicSource(ImVec2 origin, float s, float opacity, pub::Kind kind) {
                  110 * U,
                  32 * U,
                  1,
-                 ready && !busy && !installed && compatible,
+                 ready && !busy && !waiting && !installed && compatible,
                  opacity,
                  s)) {
         page.Install(card, update);
@@ -634,6 +690,7 @@ void DrawPublicSource(ImVec2 origin, float s, float opacity, pub::Kind kind) {
               Rgba(214, 214, 222, opacity));
     }
     float y = top + 42 * U;
+    y += DrawPublicMessages(d, origin, s, opacity, left, right, y);
     // what the script can do, or what the config changes, above the text
     if (kind == pub::Kind::Script) {
         float x = left;
@@ -846,6 +903,7 @@ void DrawPublic(ImVec2 origin, float s, float opacity) {
         ImGui::PopID();
     }
     float listTop = top + 42 * U;
+    listTop += DrawPublicMessages(d, origin, s, opacity, left, right, listTop);
     auto centred = [&](const std::string& text, float y, ImU32 color, ImFont* font = nullptr, float size = 13) {
         ImFont* f = font != nullptr ? font : regular;
         const std::string fitted = Fit(f, size, text, areaW - 20);
@@ -1170,6 +1228,10 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
         return UiButton(d, id, label, P(x0, at), width, 32 * U, style, on, a, s);
     };
     const bool updateAvailable = local == pub::Local::UpdateAvailable;
+    const bool otherBusy = page.Busy() && !mine; // Install / Update wait for the current download
+    if (otherBusy && (local == pub::Local::None || updateAvailable || local == pub::Local::Withdrawn)) {
+        note("Wait for the current install to finish.", Rgba(148, 148, 160, a));
+    }
     if (mine && pending.step == pub::Step::Downloading) {
         one("pub-installing", "Installing...", 1, false);
     } else if (mine && pending.step == pub::Step::NameConflict) {
@@ -1194,7 +1256,7 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
         }
     } else if (local == pub::Local::None) {
         const char* view = kind == pub::Kind::Script ? "View source" : "Preview settings";
-        const int pressed = two("pub-install", "Install", 1, compatible, "pub-view", view, 0, true);
+        const int pressed = two("pub-install", "Install", 1, compatible && !otherBusy, "pub-view", view, 0, true);
         if (pressed == 1) {
             if (kind == pub::Kind::Script) {
                 page.OpenSource(card); // a script's source is always shown before it is installed
@@ -1255,7 +1317,7 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
                 const int pressed = two("pub-update",
                                         local == pub::Local::Withdrawn ? "Current version" : "Update",
                                         1,
-                                        compatible,
+                                        compatible && !otherBusy,
                                         "pub-skip",
                                         "Skip version",
                                         0,
@@ -1275,8 +1337,8 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
                                     0,
                                     true);
             if (pressed == 1) {
-                LoadConfig(record.Name());
-                notices.push_back({8, "PUBLIC", "Loaded config " + record.Name() + "."});
+                LoadConfig(record.Name(), true);
+                page.Message("Loaded config " + record.Name() + ".");
             } else if (pressed == 2) {
                 page.OpenSource(card);
             }

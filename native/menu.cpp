@@ -171,7 +171,10 @@ std::wstring configPath;RECT previousClip{};int cursorBalance=0;
 // range 4.5, delay 75 ms, 1 placement per tick.
 struct MenuOption{const char* key;const char* title;const char* description;bool value;bool initial;};
 MenuOption interfaceOptions[]={{"background-blur","Background blur","Blurs the entire game behind the menu.",false,false},{"module-descriptions","Module descriptions","Shows descriptions on module cards and when you hover over a setting.",true,true},{"remember-menu-state","Remember menu state","Keeps your search, selected module and open settings when you close the menu.",false,false},{"auto-save-config","Auto save config","Saves setting changes to your current config automatically.",false,false},{"open-in-menus","Open in menus","Lets the menu and keybinds work while chat, pause or another game screen is open.",false,false},{"blur-theme","Blur theme","Blurs the theme background behind the menu so text and modules stand out.",false,false}};   // "Open in menus" lets client keys work while another game screen is open
-MenuOption connectionOptions[]={{"raknet-fallback","RakNet fallback","Joins servers added by address over RakNet when they give no NetherNet answer, instead of failing. Applies from the next join.",true,true},{"force-raknet","Force RakNet","Always joins servers added by address over RakNet, even when they also accept NetherNet. Applies from the next join.",false,false},{"public-community","Online community (PUBLIC)","Lists the scripts and configs players share on nickelclient.com. While off, Nickel sends nothing to the site.",false,false}};   // [2]: PublicOption() in public_ui.hpp
+MenuOption connectionOptions[]={{"raknet-fallback","RakNet fallback","Joins servers added by address over RakNet when they give no NetherNet answer, instead of failing. Applies from the next join.",true,true},{"force-raknet","Force RakNet","Always joins servers added by address over RakNet, even when they also accept NetherNet. Applies from the next join.",false,false}};
+// Settings > Connection, after connectionOptions. Not a [menu] toggle: it is kept in its own file, which configs do not
+// carry (pub::ReadCommunitySetting; PublicOption() and SetPublicCommunity() in public_ui.hpp).
+MenuOption publicCommunityOption={"public-community","Online community (PUBLIC)","Lists the scripts and configs players share on nickelclient.com. While off, Nickel sends nothing to the site.",false,false};
 MenuOption socialOptions[]={{"render-nametag-logo","Render nametag logo","Shows the Nickel logo next to Nickel players in the same world.",true,true},{"render-cosmetics","Render cosmetics","Shows the cosmetics other Nickel players are wearing.",true,true},{"first-person-cosmetics","First person cosmetics","Shows your own cosmetics while in first person.",false,false}};
 void JumpPreAll(uint64_t a7,uint64_t a8);void JumpPostAll(uint64_t a8);
 MenuOption schematicOptions[]={{"schematic-hide-placed","Hide placed blocks","Hides ghost blocks that already match the world.",true,true},{"schematic-block-outline","Block outline","Outlines every ghost block that still needs placing.",true,true},{"schematic-block-info","Block info","Shows the schematic block you're looking at and what it is.",true,true},{"schematic-auto-place","Auto place","Places schematic blocks from your hotbar while you hold right click.",false,false},{"schematic-ghost-place","Ghost place","Places without visibly switching your hotbar slot or swinging.",false,false}};
@@ -201,7 +204,7 @@ bool MenuKeyIs(unsigned long long wparam,long long lparam){const int code=menuKe
 std::vector<MenuOption*> MenuToggles(){std::vector<MenuOption*> all;for(auto& o:interfaceOptions)all.push_back(&o);for(auto& o:connectionOptions)all.push_back(&o);for(auto& o:schematicOptions)all.push_back(&o);return all;}
 void LoadMenuSettings();
 // Config keybinds (Configs screen): key code and name per config. LoadConfig reloads everything from the config file.
-std::map<std::string,int> configKeys;std::map<std::string,std::string> configKeyNames;extern std::vector<std::string> configListed;extern std::string configSelected;void LoadConfig(const std::string& name);void BindConfigKey(const std::string& name,unsigned vk,long long lparam);
+std::map<std::string,int> configKeys;std::map<std::string,std::string> configKeyNames;extern std::vector<std::string> configListed;extern std::string configSelected;void LoadConfig(const std::string& name,bool keepPlayerMenu=false);void BindConfigKey(const std::string& name,unsigned vk,long long lparam);
 double resetArmed=-1;extern bool hudEditing;extern std::string hudSelected;
 
 std::wstring Wide(const std::string& text){if(text.empty())return {};int count=MultiByteToWideChar(CP_UTF8,0,text.data(),(int)text.size(),nullptr,0);std::wstring value(count,L'\0');MultiByteToWideChar(CP_UTF8,0,text.data(),(int)text.size(),value.data(),count);return value;}
@@ -1124,7 +1127,7 @@ void DrawHud(ImTextureID logo){
  // 0.2 s exit, 3 s duration, at most four. Background #121119 at 66 %, 10 % white border, 16 % white top line;
  // #2a2833 disc of 40 with the initial, title #f5f4fa, body #bfbbcb.
  // Only the offline kinds exist: module toggled by its key ("Enabled" / "Disabled") and configs.
- {static Module* notifications=ModuleById("notifications");struct Card{std::string title,body;float age=0,left=3,leaving=-1,y=-1;};static std::vector<Card> cards;
+ {static Module* notifications=ModuleById("notifications");struct Card{std::string title,body,fitted;float age=0,left=3,leaving=-1,y=-1;};static std::vector<Card> cards;
   if(!notifications||!notifications->enabled){cards.clear();notices.clear();}
   else{for(auto& notice:notices){if(notice.kind==5&&!Flag(*notifications,"module_toggles",true))continue;int live=0;for(auto& card:cards)if(card.leaving<0)++live;if(live>=4)for(auto& card:cards)if(card.leaving<0){card.leaving=0;break;}Card card;card.title=notice.title;card.body=notice.body;cards.push_back(card);}notices.clear();
    const float dt=std::clamp(io.DeltaTime,0.f,.1f);float target=16;
@@ -1133,7 +1136,8 @@ void DrawHud(ImTextureID logo){
     auto tint=[&](int red,int green,int blue,float opacity){return IM_COL32(red,green,blue,(int)(255*std::clamp(opacity*alpha,0.f,1.f)));};
     d->AddRectFilled(ImVec2(x,y),ImVec2(x+344,y+h),tint(18,17,25,.66f),14);d->AddRect(ImVec2(x,y),ImVec2(x+344,y+h),tint(255,255,255,.1f),14,0,1);d->AddLine(ImVec2(x+14,y+.5f),ImVec2(x+330,y+.5f),tint(255,255,255,.16f),1);
     d->AddCircleFilled(ImVec2(x+32,y+32),20,tint(42,40,51,1));const char initial[2]={card.title.empty()?'?':(char)std::toupper((unsigned char)card.title[0]),0};const float iw=hudWidth(bold,17,initial);hudText(bold,17,ImVec2(x+32-iw/2,y+32-10),initial,tint(191,187,203,1));
-    hudText(bold,14,ImVec2(x+64,y+14),card.title.c_str(),tint(245,244,250,1));hudText(regular,13,ImVec2(x+64,y+34),card.body.c_str(),tint(191,187,203,1));}
+    hudText(bold,14,ImVec2(x+64,y+14),card.title.c_str(),tint(245,244,250,1));if(card.fitted.empty()){card.fitted=card.body;if(hudWidth(regular,13,card.fitted.c_str())>266){while(!card.fitted.empty()&&hudWidth(regular,13,(card.fitted+"...").c_str())>266){while(!card.fitted.empty()&&((unsigned char)card.fitted.back()&0xC0)==0x80)card.fitted.pop_back();if(!card.fitted.empty())card.fitted.pop_back();}card.fitted+="...";}}   // the body fits the card (344 - 64 - 14)
+    hudText(regular,13,ImVec2(x+64,y+34),card.fitted.c_str(),tint(191,187,203,1));}
    cards.erase(std::remove_if(cards.begin(),cards.end(),[](const Card& card){return card.leaving>=.2f;}),cards.end());}}
  // ---- Debug Overlay: font 14 x Scale, line 16, padding 2, black background at Background Opacity, text #e0e0e0,
  // black shadow 160. Left column: header, performance, position / world / player / network; right column (right-
@@ -2583,7 +2587,11 @@ std::wstring ConfigKeyFile(){return ConfigFolder()+L"\\keys.dat";}
 void LoadConfigKeys(const std::vector<std::string>& names){configKeys.clear();configKeyNames.clear();for(auto& name:names){const int code=GetPrivateProfileIntW(L"keys",Wide(name).c_str(),0,ConfigKeyFile().c_str());wchar_t text[65]{};GetPrivateProfileStringW(L"names",Wide(name).c_str(),L"",text,65,ConfigKeyFile().c_str());if(code>0&&text[0]){configKeys[name]=code;configKeyNames[name]=Utf8(text);}}}
 void SetConfigKey(const std::string& name,int code,const std::string& keyName){if(code>0){configKeys[name]=code;configKeyNames[name]=keyName;}else{configKeys.erase(name);configKeyNames.erase(name);}
  WritePrivateProfileStringW(L"keys",Wide(name).c_str(),code>0?std::to_wstring(code).c_str():nullptr,ConfigKeyFile().c_str());WritePrivateProfileStringW(L"names",Wide(name).c_str(),code>0?Wide(keyName).c_str():nullptr,ConfigKeyFile().c_str());}
-void LoadConfig(const std::string& name){FlushSaves();if(!CopyFileW(ConfigFile(name).c_str(),configPath.c_str(),FALSE))return;ReadPreferences();LoadMenuSettings();
+// The player's own [menu] and [fonts] stay when the config has none (PUBLIC configs: the site strips them, so every
+// menu key and Settings toggle would fall back to its default), and always with keepPlayerMenu (the PUBLIC page).
+void LoadConfig(const std::string& name,bool keepPlayerMenu){FlushSaves();
+ std::vector<const wchar_t*> keep;for(const wchar_t* section:{L"menu",L"fonts"})if(keepPlayerMenu||::nickel::pub::ReadIniSection(ConfigFile(name),section).empty())keep.push_back(section);
+ if(!::nickel::pub::CopyConfigKeepingSections(ConfigFile(name),configPath,keep))return;ReadPreferences();LoadMenuSettings();
  for(auto& place:hudPlaces){place.second.loaded=false;place.second.pending=false;}hudDragging.clear();++hudIniVersion;   // HUD positions of the loaded config
 selected=-1;listening=-1;SetCurrentConfig(name);settingsDirty=false;configEdited=false;Say("Loaded config '"+name+"'");if(notices.size()<16)notices.push_back({7,"Configs","Loaded config '"+name+"'"});}
 // per-config keybind, captured inside its row
@@ -2793,7 +2801,7 @@ void DrawMenuSettings(ImVec2 origin,float s,float opacity){
   Label(d,semibold,15*s,at(x0+(width-TextWidth(semibold,15,label))/2,26*U-10.5f),label,style==3?Rgba(246,160,171,fade):style==1?Rgba(255,255,255,fade):Rgba(230,230,235,fade));
   return Hit(("##"+id).c_str(),lo,ImVec2(width*s,28*U*s))&&enabled;};
  auto toggle=[&](MenuOption& option){const float a=row(option.key,option.title,option.description);Toggle(d,at(areaW-12*U-34,26*U-9),s,Animate(std::string("menu")+option.key,option.value?1.f:0.f,io.DeltaTime),a);
-  if(Hit(option.key,at(areaW-12*U-34,26*U-9),ImVec2(34*s,18*s))){option.value=!option.value;WritePrivateProfileStringW(L"menu",Wide(option.key).c_str(),option.value?L"1":L"0",configPath.c_str());}};
+  if(Hit(option.key,at(areaW-12*U-34,26*U-9),ImVec2(34*s,18*s))){if(&option==&PublicOption())SetPublicCommunity(!option.value);else{option.value=!option.value;WritePrivateProfileStringW(L"menu",Wide(option.key).c_str(),option.value?L"1":L"0",configPath.c_str());}}};
  // stepper: 150 u block, 28 u "-" and "+" buttons, 16.392 u value in the middle; returns -1, 0 or +1
  auto stepper=[&](const std::string& id,const char* value,bool canLower,bool canRaise,float a){const float right=areaW-12*U;
   Label(d,regular,12*U*s,at(right-75*U-TextWidth(regular,12*U,value)/2,26*U-.7f*12*U),value,Rgba(214,210,226,a));
@@ -2801,7 +2809,7 @@ void DrawMenuSettings(ImVec2 origin,float s,float opacity){
   const bool lower=button(id+"-minus","",right-122*U,28*U,0,canLower,a);d->AddLine(at(right-150*U+9.5f*U,26*U),at(right-150*U+18.5f*U,26*U),Rgba(230,230,235,a*(canLower?1.f:.4f)),1.6f*s);
   if(lower)return -1;return button(id+"-plus","+",right,28*U,0,canRaise,a)?1:0;};
  header("INTERFACE","\xee\x80\x89");for(auto& option:interfaceOptions)toggle(option);
- header("CONNECTION","\xee\x80\x89");for(auto& option:connectionOptions)toggle(option);
+ header("CONNECTION","\xee\x80\x89");for(auto& option:connectionOptions)toggle(option);toggle(PublicOption());
  // Theme: one swatch per theme (glow -> background gradient), selection ringed in white; saved in [interface] theme
  {const float a2=row("theme","Theme",(std::string(Th().name)+"  \xc2\xb7  menu colors and animated background").c_str());const float size=20*U,gap=8*U,right=areaW-12*U;
   for(int t=themeCount-1;t>=0;--t){const float x=right-(themeCount-t)*size-(themeCount-1-t)*gap;const ImVec2 lo=at(x,16*U),hi=at(x+size,36*U);
@@ -2846,14 +2854,14 @@ const bool waiting=listening==-100-i;const char* value=waiting?"Press a key...":
  header("ABOUT","\xee\x80\xa1");
  {const float a=row("reset-all","Reset all settings","Resets every setting on this page to its default.");const bool armed=resetArmed>=0&&ImGui::GetTime()-resetArmed<3;
   bool changed=schematicRange!=4.5f||schematicDelay!=75||schematicPerTick!=1||itemProfiles.size()!=1||itemProfiles[0].name!="sword"||!itemProfiles[0].weapon||!itemProfiles[0].items.empty()||itemProfiles[0].customSpeed||itemProfiles[0].speed!=8||!itemProfiles[0].blocks.empty();
-  for(auto* option:MenuToggles())changed|=option->value!=option->initial;for(auto& key:menuKeys)changed|=key.code!=key.initialCode;
+  for(auto* option:MenuToggles())changed|=option->value!=option->initial;changed|=PublicOption().value;for(auto& key:menuKeys)changed|=key.code!=key.initialCode;
   if(button("reset-all",armed?"Click again to reset":"Reset all",areaW-12*U,(armed?150:92)*U,3,changed||armed,a)){
    if(!armed)resetArmed=ImGui::GetTime();
    else{for(const wchar_t* name:{L"schematic-place-range",L"schematic-place-delay",L"schematic-placements-per-tick",L"item-profiles"})WritePrivateProfileStringW(L"menu",name,nullptr,configPath.c_str());
     for(size_t k=0;k<itemProfiles.size()+4;++k)WritePrivateProfileStringW(L"menu",(L"item-profile-"+std::to_wstring(k)).c_str(),nullptr,configPath.c_str());
     for(auto* option:MenuToggles())WritePrivateProfileStringW(L"menu",Wide(option->key).c_str(),nullptr,configPath.c_str());
     for(auto& key:menuKeys){WritePrivateProfileStringW(L"menu",Wide(key.key).c_str(),nullptr,configPath.c_str());WritePrivateProfileStringW(L"menu",Wide(std::string(key.key)+"-code").c_str(),nullptr,configPath.c_str());}
-    LoadMenuSettings();profileOpen=-1;resetArmed=-1;}}}
+    LoadMenuSettings();SetPublicCommunity(false);profileOpen=-1;resetArmed=-1;}}}
  ImGui::SetCursorPosY(y*s);ImGui::Dummy(ImVec2(1,1));FadeEdges(s,opacity);ImGui::EndChild();
 }
 }

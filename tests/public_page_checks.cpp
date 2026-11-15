@@ -314,6 +314,11 @@ void WordChecks() {
                   && FormatAgo(now - 3 * 3600000LL, now) == "3 hours ago" && FormatAgo(0, now) == "unknown",
           "relative times");
     Check(FormatDay(1794765600000LL) == "15 Nov 2026", "review day");
+    const int64_t day = 24 * 3600000LL;
+    Check(FormatAgo(now - 21 * day, now) == "3 weeks ago" && FormatAgo(now - 35 * day, now) == "1 month ago"
+                  && FormatAgo(now - 56 * day, now) == "1 month ago" && FormatAgo(now - 75 * day, now) == "2 months ago"
+                  && FormatAgo(now - 100 * day, now) == "3 months ago",
+          "weeks, then months without going back (75 days: 2 months)");
     VersionRef version;
     version.number = 7;
     Check(VersionText(version) == "version 7", "a version without a label");
@@ -451,6 +456,112 @@ void VersionChecks() {
           "kRunningNickel equals the launcher's <Version>");
     int parts[3] = {};
     Check(ParseNickelVersion(kRunningNickel, parts), "kRunningNickel reads as a Nickel version");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Files the configs do not carry: the PUBLIC setting and the player's [menu] / [fonts]
+
+void WriteText(const std::wstring& path, const std::string& text) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << text;
+}
+
+std::wstring IniText(const std::wstring& path, const wchar_t* section, const wchar_t* key) {
+    wchar_t value[256] = {};
+    GetPrivateProfileStringW(section, key, L"<none>", value, 256, path.c_str());
+    return value;
+}
+
+std::string SourceFile(const char* relative) {
+    std::ifstream file(std::string(NICKEL_SOURCE_DIR) + "/" + relative, std::ios::binary);
+    std::stringstream text;
+    text << file.rdbuf();
+    return text.str();
+}
+
+void ConfigFileChecks() {
+    const std::wstring root = TemporaryRoot();
+    const std::wstring prefs = root + L"\\module-preferences.ini";
+    const std::wstring config = root + L"\\configs\\Hypixel PvP.ini";
+    const std::string player = "[menu]\r\nmenu-key=Insert\r\nmenu-key-code=45\r\nraknet-fallback=0\r\n"
+                               "current-config=mine\r\n[fonts]\r\nsizes=regular:15\r\n"
+                               "[kill_aura]\r\nenabled=0\r\nrange=3\r\n";
+
+    // A PUBLIC config has no [menu] or [fonts]: the player's stay, the modules and the HUD come from the config.
+    WriteText(prefs, player);
+    WriteText(config, "[kill_aura]\r\nenabled=1\r\n[hud]\r\nclock=1\r\n");
+    Check(CopyConfigKeepingSections(config, prefs, {L"menu", L"fonts"}), "a PUBLIC config loads");
+    Check(IniText(prefs, L"menu", L"menu-key") == L"Insert" && IniText(prefs, L"menu", L"menu-key-code") == L"45"
+                  && IniText(prefs, L"menu", L"raknet-fallback") == L"0",
+          "loading a config without [menu] keeps the menu keys and Settings toggles");
+    Check(IniText(prefs, L"fonts", L"sizes") == L"regular:15", "and the player's [fonts]");
+    Check(IniText(prefs, L"kill_aura", L"enabled") == L"1" && IniText(prefs, L"kill_aura", L"range") == L"<none>"
+                  && IniText(prefs, L"hud", L"clock") == L"1",
+          "the module and HUD sections come from the config");
+
+    // A [menu] in the config does not replace the player's (the panel always keeps it).
+    WriteText(prefs, player);
+    WriteText(config, "[menu]\r\nmenu-key=F1\r\npublic-community=1\r\n[kill_aura]\r\nenabled=1\r\n");
+    CopyConfigKeepingSections(config, prefs, {L"menu", L"fonts"});
+    Check(IniText(prefs, L"menu", L"menu-key") == L"Insert"
+                  && IniText(prefs, L"menu", L"public-community") == L"<none>",
+          "a config's [menu] is dropped for the player's");
+
+    // The player has no [fonts]: none is taken from the config either.
+    WriteText(prefs, "[menu]\r\nmenu-key=Insert\r\n");
+    WriteText(config, "[fonts]\r\nsizes=bold:99\r\n[fly]\r\nenabled=1\r\n");
+    CopyConfigKeepingSections(config, prefs, {L"menu", L"fonts"});
+    Check(IniText(prefs, L"fonts", L"sizes") == L"<none>" && IniText(prefs, L"fly", L"enabled") == L"1",
+          "a kept section the player lacks is removed");
+
+    // A long [menu] (item profiles) survives whole.
+    std::string longMenu = "[menu]\r\n";
+    for (int i = 0; i < 40; ++i) {
+        longMenu +=
+                "item-profile-" + std::to_string(i) + "=" + std::string(300, static_cast<char>('a' + i % 26)) + "\r\n";
+    }
+    WriteText(prefs, longMenu);
+    WriteText(config, "[fly]\r\nenabled=1\r\n");
+    CopyConfigKeepingSections(config, prefs, {L"menu"});
+    Check(IniText(prefs, L"menu", L"item-profile-39").size() == 255, "a [menu] larger than the first buffer is kept");
+
+    // A failed copy changes nothing.
+    WriteText(prefs, player);
+    Check(!CopyConfigKeepingSections(root + L"\\configs\\missing.ini", prefs, {L"menu"})
+                  && IniText(prefs, L"kill_aura", L"enabled") == L"0",
+          "a missing config leaves the preferences alone");
+
+    // The PUBLIC setting is not in the preferences ini: no config load turns it on or off.
+    Check(!ReadCommunitySetting(root), "PUBLIC is off without its file");
+    Check(WriteCommunitySetting(root, false), "the setting is written");
+    WriteText(prefs, player);
+    WriteText(config, "[menu]\r\npublic-community=1\r\n[public]\r\ncommunity=1\r\n");
+    CopyFileW(config.c_str(), prefs.c_str(), FALSE); // a local config load or import (a whole copy)
+    Check(!ReadCommunitySetting(root), "a config with public-community=1 does not turn PUBLIC on");
+    CopyConfigKeepingSections(config, prefs, {L"menu", L"fonts"});
+    Check(!ReadCommunitySetting(root), "nor a PUBLIC config load");
+    WriteCommunitySetting(root, true);
+    WriteText(config, "[menu]\r\npublic-community=0\r\n[public]\r\ncommunity=0\r\n");
+    CopyFileW(config.c_str(), prefs.c_str(), FALSE);
+    Check(ReadCommunitySetting(root), "a config with public-community=0 does not turn PUBLIC off");
+    Check(CommunitySettingPath(root) == root + L"\\public\\settings.ini", "the setting's own file");
+
+    // The menu wires it that way: not a [menu] toggle, and every config load keeps a missing [menu].
+    const std::string menu = SourceFile("native/menu.cpp");
+    const size_t options = menu.find("MenuOption connectionOptions[]=");
+    const size_t optionsEnd = options == std::string::npos ? options : menu.find('\n', options);
+    Check(options != std::string::npos
+                  && menu.substr(options, optionsEnd - options).find("public-community") == std::string::npos,
+          "public-community is not one of the [menu] toggles");
+    const size_t load = menu.find("void LoadConfig(const std::string& name,bool keepPlayerMenu){");
+    Check(load != std::string::npos
+                  && menu.find("CopyConfigKeepingSections", load) < menu.find("ReadPreferences()", load),
+          "LoadConfig copies through CopyConfigKeepingSections");
+    const std::string ui = SourceFile("native/public_ui.hpp");
+    Check(ui.find("LoadConfig(record.Name(), true)") != std::string::npos
+                  && ui.find("WritePrivateProfileStringW(L\"menu\"") == std::string::npos,
+          "the PUBLIC page loads configs keeping [menu] and writes nothing to [menu]");
+    DeleteTree(root);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -753,6 +864,128 @@ void PageChecks() {
     DeleteTree(root);
 }
 
+// The page's own messages, the periodic checks, the countdown on sorts and searches, and one install at a time.
+void MessageAndTimerChecks() {
+    const std::wstring root = TemporaryRoot();
+    {
+        FolderLibrary library(root + L"\\scripts");
+        PageOptions options;
+        options.root = root;
+        options.library = &library;
+        PublicPage page(options);
+        RecordingRequests requests;
+        Snapshot snap;
+        int64_t now = 1794765600000LL;
+        page.SetRequests(&requests);
+        page.Tick(snap, true, true, now);
+        Check(requests.Count("revocations") == 1, "revocations once PUBLIC is on");
+
+        // Revocations again every 3 hours.
+        page.Tick(snap, true, true, now + 3 * 3600000LL);
+        Check(requests.Count("revocations") == 1, "not again at exactly 3 h");
+        page.Tick(snap, true, true, now += 3 * 3600000LL + 1);
+        Check(requests.Count("revocations") == 2, "again after 3 h");
+        page.Tick(snap, true, true, now += 16);
+        Check(requests.Count("revocations") == 2, "once per period");
+
+        // Install a config, then the update lookup: when the page opens, then at most every 30 minutes.
+        const std::string ini = "[kill_aura]\r\nenabled=1\r\n";
+        const Card config = MakeCard("9x8w7v6t5s4r", Kind::Config, "Hypixel PvP", 1, ini);
+        Check(page.Install(config) && page.Busy(), "a download is on its way");
+        const Card other = MakeCard("2b3c4d5e6f7g", Kind::Config, "Other", 1, "[fly]\r\nenabled=1\r\n");
+        const int files = requests.Count("file");
+        Check(!page.Install(other) && requests.Count("file") == files && page.Pending().card.id == config.id,
+              "a second install waits for the first (the buttons say so)");
+        snap.file = FileAnswer(config, ini);
+        page.Tick(snap, true, true, now += 16);
+        Check(!page.Busy() && page.LocalOf(Kind::Config, config.id) != nullptr, "installed");
+        page.TakeNotices();
+        Check(!page.Messages().empty() && page.Messages().back().text.find("Installed Hypixel PvP") == 0
+                      && !page.Messages().back().problem,
+              "the install is told on the page too");
+        page.Tick(snap, true, true, now += 8001);
+        Check(page.Messages().empty(), "a good message goes after 8 s");
+
+        page.Shown(Kind::Config);
+        Check(requests.Count("lookup") == 1 && requests.Last("lookup")->ids.size() == 1, "lookup when the page opens");
+        const int64_t looked = now;
+        page.Tick(snap, true, true, looked + 30 * 60000LL);
+        page.Shown(Kind::Config);
+        Check(requests.Count("lookup") == 1, "no lookup again at 30 min");
+        page.Tick(snap, true, true, now = looked + 30 * 60000LL + 1);
+        page.Shown(Kind::Config);
+        Check(requests.Count("lookup") == 2, "lookup again after 30 min");
+        page.Shown(Kind::Config);
+        Check(requests.Count("lookup") == 2, "once per period");
+
+        // A refused star stays on the page until dismissed, even once the HUD took its notice.
+        auto refused = std::make_shared<StarResult>();
+        refused->id = config.id;
+        refused->starred = true;
+        refused->outcome.status = Status::Conflict;
+        snap.star = refused;
+        page.Tick(snap, true, true, now += 16);
+        Check(HasNotice(page.TakeNotices(), "You can't star your own creation."), "star refusal: HUD notice");
+        page.Tick(snap, true, true, now += 60000);
+        Check(page.Messages().size() == 1 && page.Messages()[0].problem
+                      && page.Messages()[0].text == "You can't star your own creation.",
+              "star refusal: kept on the page");
+        page.DismissMessages();
+        Check(page.Messages().empty(), "Dismiss clears the messages");
+
+        // A revocation is a problem message too.
+        auto revocations = std::make_shared<RevocationsResult>();
+        Revocation revoked;
+        revoked.sha256 = Sha(ini);
+        revoked.reason = "Breaks servers";
+        revocations->files.push_back(revoked);
+        snap.revocations = revocations;
+        page.Tick(snap, true, true, now += 16);
+        page.TakeNotices();
+        Check(page.Messages().size() == 1 && page.Messages()[0].problem
+                      && page.Messages()[0].text.find("Hypixel PvP was revoked by the Nickel team: Breaks servers")
+                                 == 0,
+              "revocation: kept on the page");
+        for (int i = 0; i < 5; ++i) {
+            page.Message("message " + std::to_string(i));
+        }
+        Check(page.Messages().size() == 3 && page.Messages().back().text == "message 4", "at most 3 messages");
+        page.DismissMessages();
+
+        // A 429: sorts, searches and Clear search wait for the countdown, then the latest is sent once.
+        page.Shown(Kind::Script);
+        const int lists = requests.Count("list");
+        auto limited = std::make_shared<ListResult>();
+        limited->query.kind = Kind::Script;
+        limited->outcome.status = Status::RateLimited;
+        limited->outcome.retryAfter = 20;
+        snap.lists[0] = limited;
+        page.Tick(snap, true, true, now += 16);
+        page.SetSort(Kind::Script, Sort::Recent);
+        page.Type(Kind::Script, "auto");
+        page.Submit(Kind::Script);
+        page.Tick(snap, true, true, now += 800);
+        page.ClearSearch(Kind::Script);
+        Check(requests.Count("list") == lists, "no list while the countdown runs");
+        page.Tick(snap, true, true, now += 10000);
+        Check(requests.Count("list") == lists, "still none before it ends");
+        page.Tick(snap, true, true, now += 10000);
+        Check(requests.Count("list") == lists + 1 && requests.Last("list")->query.sort == Sort::Recent
+                      && requests.Last("list")->query.text.empty(),
+              "the latest sort and search once it ends");
+        page.Tick(snap, true, true, now += 16);
+        Check(requests.Count("list") == lists + 1, "sent once");
+
+        // Off and on again: revocations are asked again.
+        page.SetRequests(nullptr);
+        page.Tick(snap, false, true, now += 16);
+        page.SetRequests(&requests);
+        page.Tick(snap, true, true, now += 16);
+        Check(requests.Count("revocations") == 3, "revocations again when PUBLIC comes back");
+    }
+    DeleteTree(root);
+}
+
 } // namespace
 
 int main() {
@@ -760,7 +993,9 @@ int main() {
     ListStateChecks();
     ParserChecks();
     VersionChecks();
+    ConfigFileChecks();
     PageChecks();
+    MessageAndTimerChecks();
     if (failed == 0) {
         std::printf("public_page_checks: all checks passed\n");
         return 0;

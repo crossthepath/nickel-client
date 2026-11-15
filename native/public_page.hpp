@@ -10,6 +10,8 @@
 // - Scripts installed or updated here are held by the installer (ScriptLibrary::WriteSource): only Start runs them.
 // - The search box is sent 700 ms after the last key, from 2 characters (an empty box at once); Enter sends it now.
 // No ImGui, no menu globals (tools/boundaries.json).
+#include <windows.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -136,10 +138,10 @@ inline std::string FormatAgo(int64_t thenMs, int64_t nowMs) {
     if (minutes < 20160) {
         return "last week";
     }
-    if (minutes < 86400) {
+    if (minutes < 43200) {
         return std::to_string(minutes / 10080) + " weeks ago";
     }
-    return minutes < 86400 + 43200 ? "1 month ago" : std::to_string(minutes / 43200) + " months ago";
+    return minutes < 2 * 43200 ? "1 month ago" : std::to_string(minutes / 43200) + " months ago";
 }
 
 // "12 Nov 2026".
@@ -484,6 +486,63 @@ inline std::vector<std::string> SourceLines(std::string_view text, size_t maxLin
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Files the configs do not carry
+
+// The "Online community (PUBLIC)" setting lives in its own file, root\public\settings.ini, not in the preferences
+// ini: configs are copies of that ini (Save, Import, Load), so a config loaded or shared could otherwise turn PUBLIC
+// on or off. Only the Settings toggle and the page's Turn on button change it.
+inline std::wstring CommunitySettingPath(const std::wstring& root) {
+    return root + L"\\public\\settings.ini";
+}
+
+inline bool ReadCommunitySetting(const std::wstring& root) {
+    return GetPrivateProfileIntW(L"public", L"community", 0, CommunitySettingPath(root).c_str()) == 1;
+}
+
+inline bool WriteCommunitySetting(const std::wstring& root, bool on) {
+    detail::MakeFolder(root);
+    detail::MakeFolder(root + L"\\public");
+    return WritePrivateProfileStringW(L"public", L"community", on ? L"1" : L"0", CommunitySettingPath(root).c_str())
+           != FALSE;
+}
+
+// One section of an ini as GetPrivateProfileSectionW gives it ("key=value\0...\0\0"); empty when it has none.
+inline std::wstring ReadIniSection(const std::wstring& path, const wchar_t* section) {
+    std::wstring buffer(4096, L'\0');
+    while (true) {
+        const DWORD got =
+                GetPrivateProfileSectionW(section, &buffer[0], static_cast<DWORD>(buffer.size()), path.c_str());
+        if (got + 2 < buffer.size() || buffer.size() >= (1u << 22)) {
+            buffer.resize(got == 0 ? 0 : got + 1);
+            return buffer;
+        }
+        buffer.assign(buffer.size() * 2, L'\0');
+    }
+}
+
+// Loads the config `from` over the preferences ini `to` and keeps the player's own sections `keep` (PUBLIC configs:
+// [menu] and [fonts], which the site strips, so their keys must not fall back to the defaults). A section the player
+// does not have is removed from the result. False when the copy failed (then `to` is unchanged).
+inline bool
+CopyConfigKeepingSections(const std::wstring& from, const std::wstring& to, const std::vector<const wchar_t*>& keep) {
+    std::vector<std::wstring> kept;
+    for (const wchar_t* section : keep) {
+        kept.push_back(ReadIniSection(to, section));
+    }
+    if (!CopyFileW(from.c_str(), to.c_str(), FALSE)) {
+        return false;
+    }
+    for (size_t i = 0; i < keep.size(); ++i) {
+        WritePrivateProfileStringW(keep[i], nullptr, nullptr, to.c_str());
+        if (!kept[i].empty()) {
+            WritePrivateProfileSectionW(keep[i], kept[i].c_str(), to.c_str());
+        }
+    }
+    WritePrivateProfileStringW(nullptr, nullptr, nullptr, to.c_str()); // flush the cached ini
+    return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // The page
 
 struct PageOptions {
@@ -504,6 +563,15 @@ struct KindView {
     bool sourceOpen = false;                    // the main panel shows the selected item's source / settings
     std::shared_ptr<const ListResult> seenList; // kept alive: a new answer is a new object
     int64_t retryUntil = 0;
+    bool relistDue = false; // a sort or search change waits for the 429 / 503 countdown, then is sent
+};
+
+// A message shown on the page itself (the HUD notifications may be off): problems stay until dismissed, the others
+// for 8 seconds.
+struct PageMessage {
+    std::string text;
+    int64_t at = 0;
+    bool problem = false;
 };
 
 enum class Step : uint8_t {
@@ -539,6 +607,9 @@ public:
 
     const PendingInstall& Pending() const { return pending_; }
 
+    // A download for an install or update is on its way: Install refuses another one until it is answered.
+    bool Busy() const { return pending_.step == Step::Downloading; }
+
     const std::string& Running() const { return options_.running; }
 
     // Once per frame on the render thread, menu open or not. `signedIn`: a token is available for stars.
@@ -548,6 +619,7 @@ public:
             if (wasEnabled_) {
                 for (KindView& view : views_) {
                     view.listed = false;
+                    view.relistDue = false;
                 }
                 revocationsAt_ = 0;
                 libraryAsked_ = false;
@@ -557,6 +629,10 @@ public:
             return;
         }
         wasEnabled_ = true;
+        messages_.erase(std::remove_if(messages_.begin(),
+                                       messages_.end(),
+                                       [&](const PageMessage& m) { return !m.problem && nowMs - m.at > 8000; }),
+                        messages_.end());
         if (revocationsAt_ == 0 || nowMs - revocationsAt_ > 3 * 3600 * 1000LL) {
             revocationsAt_ = nowMs;
             requests_->Revocations();
@@ -577,6 +653,9 @@ public:
                     const int seconds = list->outcome.retryAfter > 0 ? list->outcome.retryAfter : 30;
                     view.retryUntil = nowMs + seconds * 1000LL;
                 }
+            }
+            if (view.relistDue && view.retryUntil <= nowMs) {
+                Relist(static_cast<Kind>(k));
             }
             if (view.listed && view.typed != view.applied && nowMs - view.typedAt >= 700) {
                 const size_t chars = detail::CodePoints(view.typed);
@@ -609,8 +688,9 @@ public:
                             reason.pop_back();
                         }
                         Notice(revoked.name + " was revoked by the Nickel team"
-                               + (reason.empty() ? std::string() : ": " + reason)
-                               + (revoked.kind == Kind::Script ? ". It was stopped and held." : "."));
+                                       + (reason.empty() ? std::string() : ": " + reason)
+                                       + (revoked.kind == Kind::Script ? ". It was stopped and held." : "."),
+                               true);
                     }
                 }
                 RefreshStates();
@@ -623,16 +703,17 @@ public:
                 switch (star->outcome.status) {
                     case Status::SignedOut:
                     case Status::Unauthorized:
-                        Notice("Sign in again through the Nickel launcher to star.");
+                        Notice("Sign in again through the Nickel launcher to star.", true);
                         break;
                     case Status::Conflict:
-                        Notice("You can't star your own creation.");
+                        Notice("You can't star your own creation.", true);
                         break;
                     case Status::RateLimited:
-                        Notice("Too many requests. Try starring again in a moment.");
+                        Notice("Too many requests. Try starring again in a moment.", true);
                         break;
                     default:
-                        Notice(std::string("The star could not be saved (") + StatusName(star->outcome.status) + ").");
+                        Notice(std::string("The star could not be saved (") + StatusName(star->outcome.status) + ").",
+                               true);
                         break;
                 }
             }
@@ -825,7 +906,8 @@ public:
             RefreshStates();
         } else if (outcome.status != InstallStatus::Modified) {
             Notice(std::string("Could not uninstall ") + record.Name() + " (" + InstallStatusName(outcome.status)
-                   + ").");
+                           + ").",
+                   true);
         }
         return outcome.status;
     }
@@ -833,7 +915,7 @@ public:
     // The player's Start button for an installed script (render thread).
     bool Start(const std::string& name) {
         const bool started = options_.library != nullptr && options_.library->Start(name);
-        Notice(started ? "Started " + name + "." : "Could not start " + name + ".");
+        Notice(started ? "Started " + name + "." : "Could not start " + name + ".", !started);
         return started;
     }
 
@@ -893,6 +975,23 @@ public:
         return out;
     }
 
+    // The messages the page shows itself, oldest first (at most 3; kept after TakeNotices).
+    const std::vector<PageMessage>& Messages() const { return messages_; }
+
+    void DismissMessages() { messages_.clear(); }
+
+    // A message for the page only (the menu already told the HUD, as LoadConfig does).
+    void Message(std::string text, bool problem = false) {
+        PageMessage message;
+        message.text = std::move(text);
+        message.at = now_;
+        message.problem = problem;
+        messages_.push_back(std::move(message));
+        if (messages_.size() > 3) {
+            messages_.erase(messages_.begin());
+        }
+    }
+
     ListState StateOf(Kind kind, const Snapshot& snap, bool enabled) const {
         return ListStateOf(kind, snap.List(kind), enabled && requests_ != nullptr, views_[Slot(kind)].retryUntil, now_);
     }
@@ -902,9 +1001,15 @@ public:
 private:
     static size_t Slot(Kind kind) { return static_cast<size_t>(kind); }
 
+    // The first page again; while a 429 or 503 countdown runs it is kept for Tick to send when it ends.
     void Relist(Kind kind) {
         KindView& view = View(kind);
         view.listed = true;
+        if (view.retryUntil > now_) {
+            view.relistDue = true;
+            return;
+        }
+        view.relistDue = false;
         if (requests_ != nullptr) {
             requests_->List(QueryOf(kind));
         }
@@ -924,7 +1029,7 @@ private:
                     text += " It has " + std::to_string(outcome.compileErrors.size()) + " compile error"
                             + (outcome.compileErrors.size() == 1 ? "." : "s.");
                 }
-                Notice(text);
+                Notice(text, !outcome.compileErrors.empty());
                 pending_ = PendingInstall();
                 RefreshStates();
                 return;
@@ -971,7 +1076,8 @@ private:
         }
     }
 
-    void Notice(std::string text) {
+    void Notice(std::string text, bool problem = false) {
+        Message(text, problem);
         if (notices_.size() < 16) {
             notices_.push_back(std::move(text));
         }
@@ -991,6 +1097,7 @@ private:
     std::shared_ptr<const FileResult> lastFile_;
     std::shared_ptr<const FileResult> lastSource_;
     std::vector<std::string> notices_;
+    std::vector<PageMessage> messages_;
     int64_t now_ = 0;
     int64_t revocationsAt_ = 0;
     int64_t lookupAt_ = 0;
