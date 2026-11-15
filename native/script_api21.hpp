@@ -183,7 +183,7 @@ int PathIsActive(lua_State* L){lua_pushboolean(L,game::PfIsActive());return 1;}
 int PathStatus(lua_State* L){std::string state,process,detail;int remaining=0;game::PfStatus(&state,&process,&detail,&remaining);lua_createtable(L,0,4);lua_pushstring(L,state.c_str());lua_setfield(L,-2,"state");
  lua_pushstring(L,process.c_str());lua_setfield(L,-2,"process");lua_pushstring(L,detail.c_str());lua_setfield(L,-2,"detail");lua_pushnumber(L,remaining);lua_setfield(L,-2,"remaining");return 1;}
 bool scriptPathWas=false;
-void ScriptsPathWatch(){if(!ScriptsWant("pathEnd")){scriptPathWas=false;return;}const bool now=game::PfIsActive();if(scriptPathWas&&!now)Fire("pathEnd");scriptPathWas=now;}
+void ScriptsPathWatch(){if(!ScriptsWant(ScriptEvent::PathEnd)){scriptPathWas=false;return;}const bool now=game::PfIsActive();if(scriptPathWas&&!now)Fire(ScriptEvent::PathEnd);scriptPathWas=now;}
 // ---- projectile
 int ScriptProjectileKind(lua_State* L,int idx){size_t len=0;const char* name=luaL_checklstring(L,idx,&len);int kind{};if(!game::TrajectoryKind(name,&kind)){const char* bare=!strncmp(name,"minecraft:",10)?name+10:name;luaL_error(L,"\"%s\" is not a projectile item",bare);}return kind;}
 int ProjectileTrace(lua_State* L){const int kind=ScriptProjectileKind(L,1);const float yaw=(float)luaL_checknumber(L,2),pitch=(float)luaL_checknumber(L,3);game::Context c{};if(!game::Local(&c))return 0;
@@ -209,24 +209,24 @@ int PlayerSimulate(lua_State* L){game::Context c{};if(!game::Local(&c)||!game::A
  return 1;}
 // ---- events jump / move / hurt / death / respawn / teleport
 std::atomic<bool> scriptJumpCancel{false};std::atomic<float> scriptJumpBoost{0.f};
-void ScriptsJumpPre(uint64_t arg7,uint64_t arg8){(void)arg7;(void)arg8;if(!ScriptsWant("jump"))return;scriptJumpCancel=false;scriptJumpBoost=0.f;float boost=0;
- const bool cancelled=Dispatch("jump",[](lua_State* L){NewEvent(L);lua_pushnumber(L,0);lua_setfield(L,-2,"boost");return 1;},[&](lua_State* L,int ev){lua_rawgetfield(L,ev,"boost");if(lua_isnumber(L,-1))boost=(float)lua_tonumber(L,-1);lua_pop(L,1);});
+void ScriptsJumpPre(uint64_t arg7,uint64_t arg8){(void)arg7;(void)arg8;if(!ScriptsWant(ScriptEvent::Jump))return;scriptJumpCancel=false;scriptJumpBoost=0.f;float boost=0;
+ const bool cancelled=Dispatch(ScriptEvent::Jump,[](lua_State* L){NewEvent(L);lua_pushnumber(L,0);lua_setfield(L,-2,"boost");return 1;},[&](lua_State* L,int ev){lua_rawgetfield(L,ev,"boost");if(lua_isnumber(L,-1))boost=(float)lua_tonumber(L,-1);lua_pop(L,1);});
  scriptJumpCancel=cancelled;scriptJumpBoost=std::isfinite(boost)?boost:0.f;}
 float scriptLastHealth=-1;
-void ScriptsHealthWatch(){if(!ScriptsWant("hurt")&&!ScriptsWant("death")&&!ScriptsWant("respawn")){scriptLastHealth=-1;return;}game::Context c{};float h{};if(!game::Local(&c)||!game::PlayerHealth(c,&h))return;const float prev=scriptLastHealth;scriptLastHealth=h;if(prev<0)return;
- if(h>0&&h<prev)Dispatch("hurt",[&](lua_State* L){NewEvent(L);lua_pushnumber(L,prev-h);lua_setfield(L,-2,"amount");lua_pushnumber(L,h);lua_setfield(L,-2,"health");return 1;},[](lua_State*,int){});
- if(prev>0&&h<=0)Fire("death");if(prev<=0&&h>0)Fire("respawn");}
+void ScriptsHealthWatch(){if(!ScriptsWant(ScriptEvent::Hurt)&&!ScriptsWant(ScriptEvent::Death)&&!ScriptsWant(ScriptEvent::Respawn)){scriptLastHealth=-1;return;}game::Context c{};float h{};if(!game::Local(&c)||!game::PlayerHealth(c,&h))return;const float prev=scriptLastHealth;scriptLastHealth=h;if(prev<0)return;
+ if(h>0&&h<prev)Dispatch(ScriptEvent::Hurt,[&](lua_State* L){NewEvent(L);lua_pushnumber(L,prev-h);lua_setfield(L,-2,"amount");lua_pushnumber(L,h);lua_setfield(L,-2,"health");return 1;},[](lua_State*,int){});
+ if(prev>0&&h<=0)Fire(ScriptEvent::Death);if(prev<=0&&h>0)Fire(ScriptEvent::Respawn);}
 std::atomic<int64_t> scriptPearlAt{0};
-void ScriptsTeleport(uintptr_t packet){if(!ScriptsWant("teleport"))return;uint8_t mode{};uint64_t who{},mine{};game::Context c{};if(!game::Read(packet+0x50,&mode)||mode!=2||!game::Local(&c)||!game::RuntimeId(c.actor,&mine)||!game::Read(packet+0x30,&who)||who!=mine)return;
+void ScriptsTeleport(uintptr_t packet){if(!ScriptsWant(ScriptEvent::Teleport))return;uint8_t mode{};uint64_t who{},mine{};game::Context c{};if(!game::Read(packet+0x50,&mode)||mode!=2||!game::Local(&c)||!game::RuntimeId(c.actor,&mine)||!game::Read(packet+0x30,&who)||who!=mine)return;
  float p[3];if(!game::Floats(packet+0x38,p,3))return;const int64_t at=scriptPearlAt.exchange(0);const bool pearl=at&&game::ActionMs(at)<=5000.0;
- Dispatch("teleport",[&](lua_State* L){NewEvent(L);PushVector(L,p);lua_setfield(L,-2,"position");lua_pushboolean(L,pearl);lua_setfield(L,-2,"pearl");return 1;},[](lua_State*,int){});}
+ Dispatch(ScriptEvent::Teleport,[&](lua_State* L){NewEvent(L);PushVector(L,p);lua_setfield(L,-2,"position");lua_pushboolean(L,pearl);lua_setfield(L,-2,"pearl");return 1;},[](lua_State*,int){});}
 void ScriptsPearlSend(uintptr_t packet){if(game::PacketId(packet)!=0x1e)return;game::Context c{};if(!game::Local(&c))return;if(game::ActionNameHas(game::ActionHeld(c,c.actor),"ender_pearl"))scriptPearlAt=game::ActionNs();}
 // SprintIntent (#19): input state at *(ev+0x40): +0x24 strafe, +0x28 forward, byte +0x60 (bit 4 jump, bit 0 sneak,
 // bit 1 sprint).
 void ScriptsMove(uint64_t input,uint64_t state,uint64_t moveVec){if(input){game::Context c{};uint64_t mine{};if(game::Local(&c)&&game::Read(c.actor+0x240,&mine)&&mine==state){scriptInputStrafe=*(float*)(input+0x24);scriptInputForward=*(float*)(input+0x28);scriptInputFlags=*(uint8_t*)(input+0x60);}}   // player.simulate default input
- if(!ScriptsWant("move")||!input)return;{game::Context c{};uint64_t mine{};if(!game::Local(&c)||!game::Read(c.actor+0x240,&mine)||mine!=state)return;}float strafe=*(float*)(input+0x24),forward=*(float*)(input+0x28);uint8_t flags=*(uint8_t*)(input+0x60);
+ if(!ScriptsWant(ScriptEvent::Move)||!input)return;{game::Context c{};uint64_t mine{};if(!game::Local(&c)||!game::Read(c.actor+0x240,&mine)||mine!=state)return;}float strafe=*(float*)(input+0x24),forward=*(float*)(input+0x28);uint8_t flags=*(uint8_t*)(input+0x60);
  bool jump=flags&0x10,sneak=flags&1,sprint=flags&2;float s2=strafe,f2=forward;bool j2=jump,k2=sneak,r2=sprint;
- Dispatch("move",[&](lua_State* L){NewEvent(L);lua_pushnumber(L,forward);lua_setfield(L,-2,"forward");lua_pushnumber(L,strafe);lua_setfield(L,-2,"strafe");lua_pushboolean(L,jump);lua_setfield(L,-2,"jump");
+ Dispatch(ScriptEvent::Move,[&](lua_State* L){NewEvent(L);lua_pushnumber(L,forward);lua_setfield(L,-2,"forward");lua_pushnumber(L,strafe);lua_setfield(L,-2,"strafe");lua_pushboolean(L,jump);lua_setfield(L,-2,"jump");
    lua_pushboolean(L,sneak);lua_setfield(L,-2,"sneak");lua_pushboolean(L,sprint);lua_setfield(L,-2,"sprint");return 1;},
   [&](lua_State* L,int ev){auto num=[&](const char* k,float& out){lua_rawgetfield(L,ev,k);if(lua_isnumber(L,-1)){const float v=(float)lua_tonumber(L,-1);if(std::isfinite(v))out=std::clamp(v,-1.f,1.f);}lua_pop(L,1);};
    auto flag=[&](const char* k,bool& out){lua_rawgetfield(L,ev,k);if(lua_isboolean(L,-1))out=lua_toboolean(L,-1)!=0;lua_pop(L,1);};num("forward",f2);num("strafe",s2);flag("jump",j2);flag("sneak",k2);flag("sprint",r2);});

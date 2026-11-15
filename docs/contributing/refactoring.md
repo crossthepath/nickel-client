@@ -23,6 +23,14 @@ component in two files. Pull requests that make a component independent (its own
 rather than shared) change code on purpose; they are **fix**-type changes with their own tests, and come after the
 move that isolated the code.
 
+## Boundaries between components
+
+`tools/check_boundaries.py` (CTest `boundary_checks`) counts, outside comments and strings, the names one component
+uses from another, as listed in `tools/boundaries.json`: for example `menu.cpp` reaching into the Luau engine's script
+list, or the engine reading the menu's globals. A count may never go up; when a pull request lowers one, it records the
+new baseline with `python tools/check_boundaries.py --update`, so the improvement is visible in the diff and cannot be
+undone silently. A pull request that makes a component more independent says which counts it lowered.
+
 ## The checks
 
 ### 1. Tokens: `tools/same_tokens.py`

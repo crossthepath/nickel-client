@@ -22,6 +22,8 @@ tools/*
 !tools/compare_build.py
 !tools/compare_objects.py
 !tools/compare_images.py
+!tools/check_boundaries.py
+!tools/boundaries.json
 !tools/release-signer/
 tools/release-signer/bin/
 tools/release-signer/obj/
