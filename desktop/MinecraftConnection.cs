@@ -8,10 +8,9 @@ namespace Nickel.Desktop;
 public sealed class MinecraftConnection : IDisposable
 {
  public const string Version="1.26.62.01";
- // Any installation of the supported version is accepted (Microsoft Store / Xbox app, LeviLauncher, other launchers):
- // the check reads the game's file version, not its size or hash. The overlay checks the version again, and each hook
- // checks the code it patches before installing.
- public const int VersionMajor=1,VersionMinor=26,VersionBuild=62;
+ // Any installation of a validated build is accepted (Microsoft Store / Xbox app, LeviLauncher, other launchers): the
+ // image must be Minecraft.Windows.exe, carry a validated version and hold that build's code, constants and data
+ // (GameBuilds). The overlay checks the version and the section layout again before it hooks anything.
  private readonly SafeProcessHandle handle;
  public int Pid{get;}
  public string ImagePath{get;}
@@ -42,9 +41,7 @@ public sealed class MinecraftConnection : IDisposable
     // Same file, not same text: a Microsoft Store / Xbox app installation reports its main module under
     // C:\Program Files\WindowsApps\... and its image under C:\XboxGames\..., two names of one file.
     if(!SameFile(path,actual.ToString()))throw new InvalidOperationException("Minecraft changed during connection. Try again.");
-    var info=FileVersionInfo.GetVersionInfo(actual.ToString());
-    if(info.FileMajorPart!=VersionMajor||info.FileMinorPart!=VersionMinor||info.FileBuildPart!=VersionBuild)
-     throw new InvalidOperationException($"Nickel supports Minecraft {VersionMajor}.{VersionMinor}.{VersionBuild}; this game is {info.FileMajorPart}.{info.FileMinorPart}.{info.FileBuildPart}.{info.FilePrivatePart}.");
+    if(GameBuilds.Check(actual.ToString(),GameBuilds.Validated) is string refusal)throw new InvalidOperationException(refusal);
     cancellation.ThrowIfCancellationRequested();
     if(!GetExitCodeProcess(opened,out var code)||code!=259)throw new InvalidOperationException("Minecraft closed during connection.");
     return new MinecraftConnection(opened,pid,path);

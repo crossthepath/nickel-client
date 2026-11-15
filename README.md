@@ -106,7 +106,8 @@ Nickel.exe (WPF launcher)
                    └─ Luau ────────── user scripts
 ```
 
-The launcher checks that the game is Minecraft 1.26.62 (any installation: Microsoft Store, Xbox app or another
+The launcher checks that the game is a build of Minecraft 1.26.62 that Nickel was validated against (its code,
+constants and data are compared, so any installation of that build works: Microsoft Store, Xbox app or another
 launcher) and that no other client is loaded, then loads the overlay. The overlay uses the function addresses of
 that version and checks their code before hooking anything.
 
