@@ -3,11 +3,12 @@
 // selected script's details (registered modules, memory, frame time, Reload / Stop, latest errors with
 // their line). Reuses the Configs screen components; included by menu.cpp after DrawConfigPanel.
 // The scripts are read from snapshots of ScriptsLibrary() (script_library.hpp) and changed through its commands; the
-// tab never reads the engine's script list or takes its lock. The selection is kept by script name, so it survives
-// the list being re-sorted when a script is added, and is cleared when the selected script disappears.
-char scriptingSearch[64]{};std::string scriptingSelected;
+// tab never reads the engine's script list or takes its lock. The selection is kept by the script's serial
+// (FindSelectedScript): it follows the script when the list is sorted again, and is cleared for good when that script
+// disappears, even if a file of the same name comes back.
+char scriptingSearch[64]{};uint64_t scriptingSelected=0;
 // Index of the selected script in `list`, or -1 (and the selection is cleared when that script is gone).
-int ScriptingSelection(const std::vector<ScriptInfo>& list){const int at=FindScript(list,scriptingSelected);if(at<0)scriptingSelected.clear();return at;}
+int ScriptingSelection(const std::vector<ScriptInfo>& list){return FindSelectedScript(list,scriptingSelected);}
 // Tone of a state label: green running, grey stopped, red after errors or a failed load.
 ImU32 ScriptStateTone(ScriptState state,float a){return state==ScriptState::Running?Rgba(159,232,191,a):state==ScriptState::Stopped?Rgba(148,148,160,a):Rgba(246,160,171,a);}
 void DrawScripting(ImVec2 origin,float s,float opacity){
@@ -42,7 +43,7 @@ void DrawScripting(ImVec2 origin,float s,float opacity){
   Label(list,bold,14*U*s,R(14*U,9*U+19.124f*U*.5f-.7f*14*U),Fit(bold,14*U,sc.name,areaW-100*U).c_str(),Rgba(255,255,255,a));
   const ImU32 tone=ScriptStateTone(sc.state,a);
   Label(list,regular,11.5f*U*s,R(14*U,9*U+19.124f*U+2*U+15.709f*U*.5f-.7f*11.5f*U),ScriptStateName(sc.state),tone);
-  if(!handled&&Hit("##script-row",lo,ImVec2(areaW*s,56*U*s)))scriptingSelected=sc.name;
+  if(!handled&&Hit("##script-row",lo,ImVec2(areaW*s,56*U*s)))scriptingSelected=sc.serial;
   ImGui::PopID();}
  ImGui::SetCursorPosY(shown.size()*62*U*s);ImGui::Dummy(ImVec2(1,1));FadeEdges(s,opacity);ImGui::EndChild();
 }
@@ -52,7 +53,7 @@ void DrawScriptPanel(ImVec2 origin,float s,float opacity){
  ImGui::Begin("##NickelScriptPanel",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoBackground|(opened.load()?0:ImGuiWindowFlags_NoInputs));
  auto* d=ImGui::GetWindowDrawList();d->AddRectFilled(origin,P(297,menuH),Rgba(13,13,15,.9f*opacity),0);d->AddRect(origin,P(297,menuH),Rgba(60,60,72,.5f*opacity),0);WindowFont(s*15.f*FontEmFactor);
  ScriptLibrary& library=ScriptsLibrary();const std::vector<ScriptInfo> known=library.List();const int selectedAt=ScriptingSelection(known);
- static std::string shownFor;static float since=0;if(shownFor!=scriptingSelected||opacity<.05f){shownFor=scriptingSelected;since=0;}since+=io.DeltaTime;const float rest=1-std::clamp(since/.2f,0.f,1.f),e=1-rest*rest*rest,a=opacity*e;
+ static uint64_t shownFor=0;static float since=0;if(shownFor!=scriptingSelected||opacity<.05f){shownFor=scriptingSelected;since=0;}since+=io.DeltaTime;const float rest=1-std::clamp(since/.2f,0.f,1.f),e=1-rest*rest*rest,a=opacity*e;
  float y=16+(1-e)*6*U;auto take=[&](float height,float gap){const float at=y;y+=(height+gap)*U;return at;};
  if(selectedAt<0){const float at=take(20,10);Label(d,regular,12.5f*U*s,P(x0,at+10*U-.7f*12.5f*U),"Select a script to see its details.",Rgba(148,148,160,a));EndWindow();ImGui::PopStyleVar(2);return;}
  const ScriptInfo& sc=known[selectedAt];

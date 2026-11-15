@@ -4,6 +4,7 @@
 // may have, and the command behind a row's Start / Stop button.
 // Not covered here: the engine's ScriptLibrary (EngineScriptLibrary in script_engine.hpp), which still compiles only
 // inside menu.cpp; see docs/architecture/script-management.md.
+#include <cstdint>
 #include <cstdio>
 #include <deque>
 #include <string>
@@ -70,6 +71,7 @@ struct FakeModule {
 struct FakeScript {
     std::wstring file;
     std::string name;
+    uint64_t serial = 0;
     int state = 0;
     std::vector<FakeModule> mods;
     std::deque<std::string> errors;
@@ -108,10 +110,11 @@ public:
     }
 };
 
-ScriptInfo Named(const char* name, ScriptState state = ScriptState::Stopped) {
+ScriptInfo Named(const char* name, ScriptState state = ScriptState::Stopped, uint64_t serial = 0) {
     ScriptInfo info;
     info.name = name;
     info.state = state;
+    info.serial = serial;
     return info;
 }
 
@@ -139,6 +142,7 @@ void Snapshot() {
     FakeScript script;
     script.file = L"C:\\scripts\\Aura Helper.luau";
     script.name = "Aura Helper";
+    script.serial = 42;
     script.state = 1;
     script.mods = {{2, "On Module"}, {3, "Off Module"}, {-1, "Unloaded"}, {9, "Out Of Range"}};
     script.errors = {"first:1: a", "second:2: b"};
@@ -146,7 +150,8 @@ void Snapshot() {
     script.frameMs = 0.25;
 
     const ScriptInfo info = DescribeScript(script, registry);
-    Check(info.name == "Aura Helper" && info.file == script.file, "name and file are copied");
+    Check(info.name == "Aura Helper" && info.file == script.file && info.serial == 42,
+          "name, serial and file are copied");
     Check(info.state == ScriptState::Running, "the state is the engine's");
     Check(info.memory == script.memory && info.frameMs == 0.25, "memory and frame time are copied");
     Check(info.modules.size() == 4 && info.modules[0].name == "On Module" && info.modules[0].index == 2
@@ -174,13 +179,59 @@ void Names() {
     std::vector<ScriptInfo> list = {Named("alpha"), Named("Beta"), Named("gamma")};
     Check(FindScript(list, "beta") == 1 && FindScript(list, "GAMMA") == 2, "a script is found by name, any case");
     Check(FindScript(list, "delta") == -1 && FindScript(list, "") == -1, "a missing or empty name is not found");
+}
 
-    // The tab keeps its selection by name: when a script is added the list is sorted again and indices shift.
-    const std::string selected = "Beta";
-    list.insert(list.begin(), Named("aardvark"));
-    Check(FindScript(list, selected) == 2, "the selected script is found again after the list is re-sorted");
+// The Scripting tab's selection (ScriptingSelection in script_ui.hpp is FindSelectedScript on the tab's serial).
+void Selection() {
+    std::vector<ScriptInfo> list = {Named("alpha", ScriptState::Stopped, 1), Named("fly", ScriptState::Running, 2)};
+    uint64_t selected = 0;
+    Check(FindSelectedScript(list, selected) == -1 && selected == 0, "nothing selected at first");
+
+    selected = 2;
+    Check(FindSelectedScript(list, selected) == 1 && selected == 2, "the selected script is found");
+    list.insert(list.begin(), Named("aardvark", ScriptState::Stopped, 3));
+    Check(FindSelectedScript(list, selected) == 2 && selected == 2,
+          "the selection follows the script when a script is added and the list is sorted again");
+
     list.erase(list.begin() + 2);
-    Check(FindScript(list, selected) == -1, "a selected script that disappeared is not found (the tab clears it)");
+    Check(FindSelectedScript(list, selected) == -1 && selected == 0, "the selection is cleared when the script is gone");
+    list.push_back(Named("fly", ScriptState::Running, 4));
+    Check(FindSelectedScript(list, selected) == -1 && selected == 0,
+          "a file of the same name that comes back is a new script and is not selected again");
+
+    selected = 4;
+    list.back() = Named("Fly", ScriptState::Running, 5); // a case-only rename: the engine removes and adds the script
+    Check(FindSelectedScript(list, selected) == -1 && selected == 0, "a renamed script is not selected any more");
+
+    selected = 4; // gone while the tab was not drawn: cleared the next time the tab looks
+    Check(FindSelectedScript(list, selected) == -1 && selected == 0, "a stale selection is cleared when it is read");
+}
+
+void Utf8() {
+    const char* const good[] = {"", "plain", "\xc2\x80", "\xdf\xbf", "\xe0\xa0\x80", "\xed\x9f\xbf", "\xee\x80\x80",
+                                "\xef\xbf\xbf", "\xf0\x90\x80\x80", "\xf4\x8f\xbf\xbf", "\xc3\xa9t\xc3\xa9"};
+    bool ok = true;
+    for (const char* text : good) {
+        ok &= WellFormedUtf8(text);
+    }
+    Check(ok, "well-formed UTF-8 is accepted, U+0080 to U+10FFFF at every length boundary");
+
+    const char* const bad[] = {"\x80", "a\xbf", "\xc0\x80", "\xc1\xbf", "\xc2", "\xc2\x41", "\xe0\x9f\xbf",
+                               "\xed\xa0\x80", "\xed\xbf\xbf", "\xe1\x80", "\xe1\x80\x41", "\xf0\x8f\xbf\xbf",
+                               "\xf4\x90\x80\x80", "\xf5\x80\x80\x80", "\xff", "\xf0\x90\x80"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        if (WellFormedUtf8(bad[i])) {
+            std::printf("     accepted malformed UTF-8 #%d\n", static_cast<int>(i));
+            ok = false;
+        }
+    }
+    Check(ok, "stray continuation bytes, overlong forms, surrogates, values above U+10FFFF and cut sequences refused");
+
+    Check(WithoutUtf8Bom("\xef\xbb\xbfprint(1)") == "print(1)", "a leading byte order mark is removed");
+    Check(WithoutUtf8Bom("print(1)") == "print(1)" && WithoutUtf8Bom("").empty()
+                  && WithoutUtf8Bom("\xef\xbb") == "\xef\xbb",
+          "a source without a byte order mark is unchanged");
+    Check(WithoutUtf8Bom("x\xef\xbb\xbf") == "x\xef\xbb\xbf", "a byte order mark that is not first is kept");
 }
 
 void Search() {
@@ -212,6 +263,16 @@ void FileNames() {
         }
     }
     Check(ok, "separators, reserved characters, leading dot or space, trailing dot or space, .d, device names refused");
+
+    ok = true;
+    const char* const superscript[] = {"COM\xc2\xb9", "com\xc2\xb2", "LPT\xc2\xb3", "lpt\xc2\xb9.x"};
+    for (const char* name : superscript) {
+        ok &= !ValidScriptName(name);
+    }
+    Check(ok && ValidScriptName("COM\xc2\xb2" "x") && ValidScriptName("LPT\xc2\xb4"),
+          "COM and LPT with a superscript 1, 2 or 3 are device names too");
+    Check(!ValidScriptName("bad\xc3") && !ValidScriptName("\xed\xa0\x80x") && !ValidScriptName("a\x80" "b"),
+          "a malformed UTF-8 name is refused (it would not round-trip through the file name)");
 }
 
 void Commands() {
@@ -238,6 +299,8 @@ int main() {
     States();
     Snapshot();
     Names();
+    Selection();
+    Utf8();
     Search();
     FileNames();
     Commands();

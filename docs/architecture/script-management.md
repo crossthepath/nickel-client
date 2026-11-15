@@ -14,6 +14,7 @@ after the engine reloads or removes a script, and reading it takes no lock.
 | Field | Meaning |
 | --- | --- |
 | `name` | File name without `.luau`, in UTF-8. It identifies the script; names are compared without case (`SameScriptName`). |
+| `serial` | Identity of this entry. A file that disappears and comes back, or is renamed, gets a new serial. |
 | `file` | Full path of the `.luau` file. |
 | `state` | `ScriptState`: `Stopped`, `Running`, `StoppedAfterErrors`, `FailedToLoad` (the engine's 0 to 3). |
 | `modules` | The modules the script declared, each with its name, its `ModuleRegistry` index and whether it is enabled. |
@@ -30,22 +31,42 @@ rule on a test double.
 | `Start(name)` | Loads the file again and runs it: the Start and Reload buttons. A script that was stopped, stopped after errors or failed to load runs again. Its modules keep their saved state and key. |
 | `Stop(name)` | Turns the script's modules off and unloads it. It stays stopped until it is started again or its file is saved. |
 | `ReadSource(name, source)` | Reads the file as it is on disk. |
-| `WriteSource(name, source)` | Creates or replaces `<folder>\<name>.luau`. The source is first written to `.<name>.write`, which the folder scan ignores, then moved over the target, so the engine never loads a half-written file. The engine picks the new file up at its next folder scan, within about a second, exactly as when the user saves a file. Names are checked with `ValidScriptName`. |
+| `WriteSource(name, source)` | Creates or replaces `<folder>\<name>.luau`. The source is first written to a temporary file of its own (`.<name>.<thread>.<count>.write`), which the folder scan ignores and no other call uses, then moved over the target, so the engine never loads a half-written file. A leading UTF-8 byte order mark is dropped, because Luau does not load a file that starts with one. The engine picks the new file up at its next folder scan, within about a second, exactly as when the user saves a file. Names are checked with `ValidScriptName`: 1 to 64 bytes of well-formed UTF-8, no reserved character, no Windows device name (including `COM` and `LPT` followed by a superscript 1, 2 or 3). A malformed name would turn into U+FFFD in the file name, so the script could not be found by its name. |
 | `Folder()` | The scripts folder: `%APPDATA%\Nickel\scripts`. |
 
-Any thread may make these calls, because the engine takes `scriptGuard` inside each one. Lua is never called while a
-snapshot is being read. The engine's implementation is `EngineScriptLibrary` in `script_engine.hpp`, and
-`ScriptsLibrary()` in `script_engine_api.hpp` hands it out.
+Threads:
 
-Helpers shared by every caller: `FindScript` (find a script by name), `MatchingScripts` (the tab's search, which
-ignores case) and `ToggleScript` (the row button: stop a running script, start any other).
+- `List`, `Folder`, `ReadSource` and `WriteSource` may be called from any thread. The engine takes `scriptGuard` where
+  it reads its script list, and runs no Lua for these calls.
+- `Start` and `Stop` run the script's Lua (its main chunk, and its modules' enable and disable handlers), and they
+  change the menu's modules. Call them on the render thread only, and never from inside a script callback. A
+  component that works on another thread, such as an assistant waiting for a model, writes the file with
+  `WriteSource` and lets the folder scan reload it, or hands `Start` and `Stop` over to the render thread.
+
+The engine's implementation is `EngineScriptLibrary` in `script_engine.hpp`, and `ScriptsLibrary()` in
+`script_engine_api.hpp` hands it out.
+
+Helpers shared by every caller:
+
+- `FindScript` finds a script by name.
+- `FindSelectedScript` finds the tab's selection by serial.
+- `MatchingScripts` is the tab's search, which ignores case.
+- `ToggleScript` is the row button: it stops a running script and starts any other.
+- `WellFormedUtf8`, `ValidScriptName` and `WithoutUtf8Bom` check and clean what `WriteSource` receives.
 
 ## The Scripting tab
 
-The tab now owns its own state: the search text (`scriptingSearch`) and the selected script's name
-(`scriptingSelected`). Both used to be engine globals, and `ScanScripts` used to fix up the selected index every
-time the list was sorted again. Now the tab keeps the selection by name and clears it when that script is gone, which
-gives the same behaviour. Each of the two drawing functions takes one snapshot per frame. A command issued during a
+The tab now owns its own state: the search text (`scriptingSearch`) and the selected script's serial
+(`scriptingSelected`). Both used to be engine globals. `ScanScripts` used to keep the selection by identity (a
+pointer to the engine's `Script`): it followed the script when the list was sorted again, and was cleared when that
+script disappeared, whichever tab was shown. The serial gives the same behaviour:
+
+- A script that disappears never has its serial again, so the selection does not come back to a new file of the
+  same name.
+- A case-only rename also gives a new serial: the engine removes the old entry and adds a new one.
+
+The one difference is when the selection is cleared: the next time the tab draws, instead of at the scan. Nothing
+reads the selection in between. Each of the two drawing functions takes one snapshot per frame. A command issued during a
 frame shows up in the next frame's snapshot. That means a single frame where a button still shows the old state; in
 the old code the row was redrawn from live data within the same frame.
 
