@@ -2,8 +2,9 @@
 // What the rest of the overlay may use of the Luau engine (script_engine.hpp, script_api21.hpp).
 //
 // menu.cpp includes this header inside its anonymous namespace, before any use; the definitions follow in
-// script_engine.hpp. The menu, the HUD and the game hooks call only these functions: they never read the engine's
-// script list, its lock or its flags directly (tools/check_boundaries.py fails the build if they start to).
+// script_engine.hpp. The menu and the game hooks it wires call only these functions. tools/check_boundaries.py
+// (CTest boundary_checks) counts the engine names they use directly (its script list, its locks, its flags and
+// queues) in menu.cpp and the menu headers it includes, and fails when that count goes up.
 // The Scripting tab (script_ui.hpp) still reads the engine's state directly; it moves behind this interface later.
 
 using ScriptEvent = nickel::script::Event;

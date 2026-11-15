@@ -1,9 +1,14 @@
 {
   "rules": [
     {
-      "name": "menu.cpp reaching into the Luau engine (use script_engine_api.hpp)",
+      "name": "the menu reaching into the Luau engine (use script_engine_api.hpp)",
       "files": [
-        "native/menu.cpp"
+        "native/menu.cpp",
+        "native/theme.hpp",
+        "native/hud_crosshair.hpp",
+        "native/hud_subtitles.hpp",
+        "native/schematic_ui.hpp",
+        "native/menu_waypoints.hpp"
       ],
       "identifiers": [
         "scripts",
@@ -16,7 +21,11 @@
         "scriptWantsRotations",
         "scriptWantsCamera",
         "Dispatch",
-        "Fire"
+        "Fire",
+        "scriptChatGuard",
+        "scriptChatQueue",
+        "scriptWrites",
+        "scriptDraw"
       ],
       "baseline": {
         "scripts": 0,
@@ -29,7 +38,11 @@
         "scriptWantsRotations": 0,
         "scriptWantsCamera": 0,
         "Dispatch": 0,
-        "Fire": 0
+        "Fire": 0,
+        "scriptChatGuard": 0,
+        "scriptChatQueue": 0,
+        "scriptWrites": 0,
+        "scriptDraw": 0
       }
     },
     {

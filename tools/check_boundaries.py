@@ -1,7 +1,10 @@
 """Counts the names one component uses from another, so that coupling can only go down.
 
 python tools/check_boundaries.py            check every rule of tools/boundaries.json (CTest: boundary_checks)
-python tools/check_boundaries.py --update   write the current counts into tools/boundaries.json
+python tools/check_boundaries.py --update   record lower counts in tools/boundaries.json
+python tools/check_boundaries.py --update --accept-increase
+                                            also record higher counts (only for a dependency the pull request
+                                            explains, for example a new identifier added to a rule)
 
 Each rule names files and identifiers that those files should not use (for example the Luau engine reading the menu's
 globals). The count of each identifier, outside comments and string literals, must equal the baseline stored in the
@@ -9,6 +12,8 @@ rule:
 - higher: a new dependency crept in; the check fails. Use the component's interface instead.
 - lower: a dependency was removed; the check also fails until the baseline is lowered with --update, so that the
   improvement is recorded and cannot be undone silently by a later change.
+--update never raises a baseline unless --accept-increase is also given, so the command that records an improvement
+cannot also hide a new dependency.
 Counts are of names, not of uses that resolve to the other component: a local variable with the same name counts too.
 Python 3 standard library only.
 """
@@ -52,8 +57,10 @@ def count(rule):
 
 def main(argv):
     update = "--update" in argv[1:]
+    accept_increase = "--accept-increase" in argv[1:]
     data = json.loads(RULES.read_text(encoding="utf-8"))
     failed = False
+    raised = False
     for rule in data["rules"]:
         current = count(rule)
         baseline = rule.get("baseline", {})
@@ -64,12 +71,16 @@ def main(argv):
             if value > before:
                 print(f"  {name}: {value}, baseline {before} -- new uses; go through the interface instead")
                 failed = True
+                raised = True
             elif value < before:
                 print(f"  {name}: {value}, baseline {before} -- lower: record it with --update")
                 failed = True
-        rule["baseline"] = current
+        rule["baseline"] = current if accept_increase else {k: min(v, baseline.get(k, v)) for k, v in current.items()}
     if update:
-        RULES.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        if raised and not accept_increase:
+            print("not written: a count went up (see above); --update only records lower counts")
+            return 1
+        RULES.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
         print(f"baselines written to {RULES.relative_to(ROOT).as_posix()}")
         return 0
     print("boundary checks FAILED" if failed else "boundary checks passed")
