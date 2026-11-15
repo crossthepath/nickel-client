@@ -308,7 +308,77 @@ public:
     // result then says why)
 
     // The first page of a kind's list; replaces that kind's list (the older answer, if late, is dropped).
-    bool List(const ListQuery& query) {
+    bool List(const ListQuery& query) { return StartList(query, 0); }
+
+    // The next page of a kind's list, appended to it. False when there is no next page or a page is on its way.
+    // A newer List() cancels it. An expired cursor (400) starts the list again from its first page, asked without
+    // If-None-Match so that a fresh cursor comes back, unless a newer List() replaced the list meanwhile.
+    bool More(Kind kind) {
+        const size_t slot = static_cast<size_t>(kind);
+        std::shared_ptr<const ListResult> current;
+        uint64_t generation = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            current = snapshot_.lists[slot];
+            if (!current || current->loading || current->loadingMore || current->nextCursor.empty()
+                    || current->fromCache) {
+                return false;
+            }
+            generation = listGeneration_[slot];
+            auto placeholder = std::make_shared<ListResult>(*current);
+            placeholder->loadingMore = true;
+            snapshot_.lists[slot] = placeholder;
+            Bump();
+        }
+        std::string path;
+        ListPath(current->query, current->nextCursor, &path);
+        auto token = worker_.Post([this, slot, generation, current, path](net::CancelToken& cancel) {
+            ListResult fetched;
+            FetchPage(cancel, path, &fetched, false);
+            if (fetched.outcome.status == Status::BadRequest) {
+                std::string first;
+                if (ListPath(current->query, std::string(), &first)) {
+                    Forget(config_.baseUrl + first);
+                }
+                StartList(current->query, generation);
+                return;
+            }
+            auto result = std::make_shared<ListResult>(*current);
+            result->loadingMore = false;
+            result->outcome = fetched.outcome;
+            if (fetched.outcome.Ok()) {
+                for (Card& card : fetched.items) {
+                    bool repeated = false;
+                    for (const Card& seen : result->items) {
+                        repeated = repeated || seen.id == card.id;
+                    }
+                    if (!repeated) {
+                        result->items.push_back(std::move(card));
+                    }
+                }
+                result->nextCursor = fetched.nextCursor;
+                result->dropped += fetched.dropped;
+                result->fetchedAt = fetched.fetchedAt;
+            }
+            PublishList(slot, generation, std::move(result));
+        });
+        if (!token) {
+            auto result = std::make_shared<ListResult>(*current);
+            result->outcome.status = Status::Cancelled;
+            PublishList(slot, generation, std::move(result));
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (listGeneration_[slot] == generation) {
+            listToken_[slot] = token;  // a newer List() cancels this page
+        }
+        return true;
+    }
+
+private:
+    // List(); with onlyIfGeneration != 0, nothing happens unless the kind's list is still at that generation (a late
+    // More restarting its list must not replace a newer one).
+    bool StartList(const ListQuery& query, uint64_t onlyIfGeneration) {
         ListQuery clean = query;
         clean.text = detail::CleanSearch(query.text, kMaxQueryChars);
         clean.limit = clean.limit < 1 ? 1 : (clean.limit > static_cast<int>(kMaxPageItems) ? 50 : clean.limit);
@@ -322,6 +392,9 @@ public:
         std::shared_ptr<net::CancelToken> previous;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (onlyIfGeneration != 0 && listGeneration_[slot] != onlyIfGeneration) {
+                return false;
+            }
             generation = ++listGeneration_[slot];
             placeholder->generation = generation;
             previous = listToken_[slot];
@@ -355,62 +428,7 @@ public:
         return true;
     }
 
-    // The next page of a kind's list, appended to it. False when there is no next page or a page is on its way.
-    // An expired cursor (400) starts the list again from its first page.
-    bool More(Kind kind) {
-        const size_t slot = static_cast<size_t>(kind);
-        std::shared_ptr<const ListResult> current;
-        uint64_t generation = 0;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            current = snapshot_.lists[slot];
-            if (!current || current->loading || current->loadingMore || current->nextCursor.empty()
-                    || current->fromCache) {
-                return false;
-            }
-            generation = listGeneration_[slot];
-            auto placeholder = std::make_shared<ListResult>(*current);
-            placeholder->loadingMore = true;
-            snapshot_.lists[slot] = placeholder;
-            Bump();
-        }
-        std::string path;
-        ListPath(current->query, current->nextCursor, &path);
-        auto token = worker_.Post([this, slot, generation, current, path](net::CancelToken& cancel) {
-            ListResult fetched;
-            FetchPage(cancel, path, &fetched, false);
-            if (fetched.outcome.status == Status::BadRequest) {
-                List(current->query);
-                return;
-            }
-            auto result = std::make_shared<ListResult>(*current);
-            result->loadingMore = false;
-            result->outcome = fetched.outcome;
-            if (fetched.outcome.Ok()) {
-                for (Card& card : fetched.items) {
-                    bool repeated = false;
-                    for (const Card& seen : result->items) {
-                        repeated = repeated || seen.id == card.id;
-                    }
-                    if (!repeated) {
-                        result->items.push_back(std::move(card));
-                    }
-                }
-                result->nextCursor = fetched.nextCursor;
-                result->dropped += fetched.dropped;
-                result->fetchedAt = fetched.fetchedAt;
-            }
-            PublishList(slot, generation, std::move(result));
-        });
-        if (!token) {
-            auto result = std::make_shared<ListResult>(*current);
-            result->outcome.status = Status::Cancelled;
-            PublishList(slot, generation, std::move(result));
-            return false;
-        }
-        return true;
-    }
-
+public:
     // ItemDetail of one item (also unlisted ones). 410: Status::Gone with the tombstone in outcome.problem.
     bool Detail(const std::string& id) {
         auto placeholder = std::make_shared<DetailResult>();
@@ -1038,6 +1056,17 @@ private:
             tokens_->TokenRejected(token);
         }
         return fetched;
+    }
+
+    // Drops the kept answer of `url`, so its next request goes without If-None-Match.
+    void Forget(const std::string& url) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (size_t i = 0; i < cache_.size(); ++i) {
+            if (cache_[i].url == url) {
+                cache_.erase(cache_.begin() + static_cast<std::ptrdiff_t>(i));
+                return;
+            }
+        }
     }
 
     void Remember(const std::string& url, const std::string& etag, const std::string& body,

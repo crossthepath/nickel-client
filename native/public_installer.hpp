@@ -278,7 +278,10 @@ inline std::string CleanStem(std::string_view name, std::string_view id) {
 }
 
 // The first stem among "<stem>", "<stem> (2)", ... "<stem> (99)" with no file "<folder>\<stem><extension>".
-inline std::string FreeStem(const std::wstring& folder, const std::string& stem, const wchar_t* extension) {
+// The first of "stem", "stem (2)", ... that is a valid name, has no file in `folder` and is not `taken` (a name another
+// PUBLIC record owns, even when its file is gone).
+inline std::string FreeStem(const std::wstring& folder, const std::string& stem, const wchar_t* extension,
+        const std::function<bool(const std::string&)>& taken) {
     for (int n = 1; n < 100; ++n) {
         const std::string suffix = n == 1 ? std::string() : " (" + std::to_string(n) + ")";
         std::string base = stem;
@@ -292,7 +295,8 @@ inline std::string FreeStem(const std::wstring& folder, const std::string& stem,
             }
         }
         const std::string candidate = base + suffix;
-        if (overlay::ValidScriptName(candidate) && !FileExists(folder + L"\\" + ToWide(candidate) + extension)) {
+        if (overlay::ValidScriptName(candidate) && !FileExists(folder + L"\\" + ToWide(candidate) + extension)
+                && !(taken && taken(candidate))) {
             return candidate;
         }
     }
@@ -449,7 +453,15 @@ public:
         const wchar_t* extension = package.kind == Kind::Script ? L".luau" : L".ini";
         std::string name = detail::CleanStem(package.name, package.id);
         if (onConflict == OnConflict::KeepBoth) {
-            name = detail::FreeStem(folder, name, extension);
+            const std::vector<InstallRecord>& owned = records_[Slot(package.kind)];
+            name = detail::FreeStem(folder, name, extension, [&owned](const std::string& candidate) {
+                for (const InstallRecord& other : owned) {
+                    if (overlay::SameScriptName(other.Name(), candidate)) {
+                        return true;
+                    }
+                }
+                return false;
+            });
             if (name.empty()) {
                 outcome.status = InstallStatus::InvalidName;
                 return outcome;
@@ -463,9 +475,13 @@ public:
                 return outcome;
             }
         }
-        outcome.status = package.kind == Kind::Script ? WriteScript(name, package.bytes, onConflict == OnConflict::Replace)
-                                                      : WriteConfig(name, package, onConflict == OnConflict::Replace,
-                                                              std::string());
+        // What the write replaced, so that a failed save puts it back: a script the engine kept as its backup, or
+        // the path a replaced config was moved to.
+        bool replacedScript = false;
+        std::wstring configBackup;
+        outcome.status = package.kind == Kind::Script
+                ? WriteScript(name, package.bytes, onConflict == OnConflict::Replace, &replacedScript)
+                : WriteConfig(name, package, onConflict == OnConflict::Replace, std::string(), &configBackup);
         if (outcome.status != InstallStatus::Done) {
             return outcome;
         }
@@ -473,7 +489,7 @@ public:
         std::vector<InstallRecord> records = records_[Slot(package.kind)];
         records.push_back(record);
         if (!SaveLocked(package.kind, records)) {
-            UndoWrite(package.kind, name, record.sha256);
+            UndoWrite(package.kind, name, record.sha256, replacedScript, configBackup);
             outcome.status = InstallStatus::Failed;
             return outcome;
         }
@@ -709,8 +725,10 @@ private:
         }
     }
 
-    // A new script file; with `replace`, an existing file of that name is replaced (the engine backs it up).
-    InstallStatus WriteScript(const std::string& name, const std::string& bytes, bool replace) {
+    // A new script file; with `replace`, an existing file of that name is replaced (the engine backs it up, and
+    // *replaced says so).
+    InstallStatus WriteScript(const std::string& name, const std::string& bytes, bool replace, bool* replaced) {
+        *replaced = false;
         if (options_.scripts == nullptr) {
             return InstallStatus::Failed;
         }
@@ -725,13 +743,19 @@ private:
                 expected = detail::HashHex(current);
             }
         }
-        return FromScriptResult(options_.scripts->WriteSource(name, bytes, expected));
+        const InstallStatus status = FromScriptResult(options_.scripts->WriteSource(name, bytes, expected));
+        *replaced = status == InstallStatus::Done && !expected.empty();
+        return status;
     }
 
     // Writes a config file: to configs\.public\tmp, then moved into place. expectedSha: the hash the existing file
-    // must have ("" when it must not exist, unless `replace`). A replaced file goes to configs\.public\backup first.
+    // must have ("" when it must not exist, unless `replace`). A replaced file goes to configs\.public\backup first;
+    // *backupOut (when given) is that path after a successful write, else empty.
     InstallStatus WriteConfig(const std::string& name, const Package& package, bool replace,
-            const std::string& expectedSha) {
+            const std::string& expectedSha, std::wstring* backupOut = nullptr) {
+        if (backupOut != nullptr) {
+            backupOut->clear();
+        }
         const std::wstring folder = ConfigsFolder();
         detail::MakeFolder(options_.root);
         detail::MakeFolder(folder);
@@ -774,6 +798,9 @@ private:
             return error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS ? InstallStatus::NameConflict
                                                                                : InstallStatus::Failed;
         }
+        if (backupOut != nullptr) {
+            *backupOut = backup;
+        }
         return InstallStatus::Done;
     }
 
@@ -797,12 +824,22 @@ private:
                 && MoveFileExW(FilePath(Kind::Config, name).c_str(), backup.c_str(), MOVEFILE_WRITE_THROUGH) != 0;
     }
 
-    // Takes back a write whose record could not be saved.
-    void UndoWrite(Kind kind, const std::string& name, const std::string& sha) {
+    // Takes back an install whose record could not be saved. A replaced file is put back: the engine's backup of a
+    // script (RestoreBackup swaps it with the PUBLIC file, which becomes the backup; the restored script stays held
+    // until Start), or the moved config. Only a fresh install is removed.
+    void UndoWrite(Kind kind, const std::string& name, const std::string& sha, bool replacedScript,
+            const std::wstring& configBackup) {
         if (kind == Kind::Script) {
             if (options_.scripts != nullptr) {
-                options_.scripts->Remove(name, sha);
+                if (replacedScript) {
+                    options_.scripts->RestoreBackup(name, sha);
+                } else {
+                    options_.scripts->Remove(name, sha);
+                }
             }
+        } else if (!configBackup.empty()) {
+            MoveFileExW(configBackup.c_str(), FilePath(Kind::Config, name).c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
         } else {
             DeleteFileW(FilePath(Kind::Config, name).c_str());
         }

@@ -43,6 +43,8 @@ const char* const kGoneId = "abcdefghjkmn";
 const char* const kTamperedId = "23456789abcd";
 const char* const kNoDigestId = "pqrstvwxyz01";
 const char* const kConfigId = "9x8w7v6t5s4r";
+const char* const kDigestOnlyId = "badd1gest234";  // right sha256 and ETag, Content-Digest of other bytes
+const char* const kEtagOnlyId = "badetag23456";    // right sha256 and Content-Digest, strong ETag of another hash
 const std::string kScriptBytes = "print('hello')\n";
 const std::string kConfigBytes = std::string("[menu]\r\nname=Caf\xe9\r\n[kill_aura]\r\nenabled=1\r\n");
 
@@ -232,6 +234,18 @@ public:
         return std::string();
     }
 
+    // The headers of the last request whose path starts with `prefix` and does not contain `excluded`.
+    std::string LastHeadersWithout(const std::string& prefix, const std::string& excluded) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (size_t i = seen_.size(); i > 0; --i) {
+            if (seen_[i - 1].compare(0, prefix.size(), prefix) == 0
+                    && seen_[i - 1].find(excluded) == std::string::npos) {
+                return seenHeaders_[i - 1];
+            }
+        }
+        return std::string();
+    }
+
     std::string LastPath(const std::string& prefix) {
         std::lock_guard<std::mutex> lock(mutex_);
         for (size_t i = seen_.size(); i > 0; --i) {
@@ -375,6 +389,9 @@ private:
             if (path.find("q=slow") != std::string::npos) {
                 Pause(800);
             }
+            if (path.find("expired") != std::string::npos && path.find("cursor=c2") != std::string::npos) {
+                return ProblemReply("400 Bad Request", 400, "bad_request");  // the cursor expired
+            }
             if (path.find("q=broken") != std::string::npos) {
                 return Json("200 OK", "{\"items\": [" + CardJson(kScriptId, "script", "One", 1, Sha("a")));
             }
@@ -425,6 +442,18 @@ private:
         }
         if (path == std::string("/items/") + kNoDigestId + "/versions/1/file") {
             return FileReply(kScriptBytes, kScriptBytes, false);
+        }
+        if (path == std::string("/items/") + kDigestOnlyId + "/versions/1/file") {
+            return Reply("200 OK",
+                    "Content-Type: text/plain; charset=utf-8\r\nETag: \"" + Sha(kScriptBytes) + "\"\r\nContent-Digest: "
+                            + net::ContentDigestFor("print('other')\n") + "\r\n",
+                    kScriptBytes);
+        }
+        if (path == std::string("/items/") + kEtagOnlyId + "/versions/1/file") {
+            return Reply("200 OK",
+                    "Content-Type: text/plain; charset=utf-8\r\nETag: \"" + Sha("print('other')\n")
+                            + "\"\r\nContent-Digest: " + net::ContentDigestFor(kScriptBytes) + "\r\n",
+                    kScriptBytes);
         }
         if (path == "/items/lookup" && request.method == "POST") {
             json::Value body;
@@ -645,6 +674,56 @@ void ListChecks(TestServer& server) {
     Check(!client.List(categoriesOnScripts), "categories only for configs");
 }
 
+// An expired cursor (400) restarts the list from a fresh first page; a late 400 never replaces a newer list.
+void CursorChecks(TestServer& server) {
+    PublicClient client(LoopbackConfig(server));
+    const std::string items = "GET /api/community/v1/items?";
+    ListQuery query;
+    query.kind = Kind::Script;
+    query.text = "expired";
+    Check(client.List(query), "a list whose cursor will expire");
+    Check(WaitFor(client, [](const Snapshot& s) { return ListDone(s, Kind::Script); }), "its first page");
+    Check(client.List(query), "the same list again, kept with its ETag");
+    Check(WaitFor(client, [](const Snapshot& s) { return ListDone(s, Kind::Script); }) && client.Snap()
+                    .List(Kind::Script)->outcome.notModified,
+            "the first page is answered 304");
+    const int cursorHits = server.Hits(items);
+    Check(client.More(Kind::Script), "the next page with an expired cursor");
+    Check(WaitFor(client,
+                  [](const Snapshot& s) {
+                      return ListDone(s, Kind::Script) && s.List(Kind::Script)->generation > 2;
+                  }),
+            "the list starts again");
+    Snapshot snapshot = client.Snap();
+    const ListResult* list = snapshot.List(Kind::Script);
+    Check(server.Hits(items) == cursorHits + 2 && server.LastPath(items).find("cursor=c2") == std::string::npos,
+            "a 400 on the cursor page asks for the first page again");
+    Check(server.LastHeadersWithout(items, "cursor=").find("If-None-Match") == std::string::npos,
+            "the restarted first page is asked without If-None-Match");
+    Check(list->outcome.Ok() && !list->outcome.notModified && list->nextCursor == "c2" && list->query.text == "expired",
+            "a fresh first page with a fresh cursor, so page 2 can be asked again");
+
+    // A newer List() while that More is in flight: the late 400 must not bring the old query back.
+    ListQuery slow = query;
+    slow.text = "slowexpired";
+    Check(client.List(slow), "a slow list whose cursor will expire");
+    Check(WaitFor(client, [](const Snapshot& s) { return ListDone(s, Kind::Script); }), "the slow first page");
+    Check(client.More(Kind::Script), "its next page, slow and expired");
+    ListQuery newer = query;
+    newer.text = "newer";
+    Check(client.List(newer), "the player searches again meanwhile");
+    Check(WaitFor(client,
+                  [](const Snapshot& s) {
+                      return ListDone(s, Kind::Script) && s.List(Kind::Script)->query.text == "newer";
+                  }),
+            "the newer list arrives");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    snapshot = client.Snap();
+    Check(snapshot.List(Kind::Script)->query.text == "newer" && snapshot.List(Kind::Script)->outcome.Ok()
+                    && ListDone(snapshot, Kind::Script),
+            "a late expired cursor never replaces the newer search");
+}
+
 void DetailAndFileChecks(TestServer& server) {
     PublicClient client(LoopbackConfig(server));
     Check(client.Detail(kScriptId), "a detail is posted");
@@ -701,6 +780,15 @@ void DetailAndFileChecks(TestServer& server) {
     Check(client.File(kNoDigestId, 1, Sha(kScriptBytes)), "a file without Content-Digest");
     Check(WaitFor(client, [](const Snapshot& s) { return s.file && !s.file->loading; }), "the undigested answer");
     Check(client.Snap().file->outcome.status == Status::DigestMismatch, "Content-Digest is required");
+
+    Check(client.File(kDigestOnlyId, 1, Sha(kScriptBytes)), "a file whose Content-Digest names other bytes");
+    Check(WaitFor(client, [](const Snapshot& s) { return s.file && !s.file->loading; }), "the digest-only answer");
+    Check(client.Snap().file->outcome.status == Status::DigestMismatch && client.Snap().file->bytes.empty(),
+            "bytes matching sha256 and ETag are still discarded when Content-Digest does not match");
+    Check(client.File(kEtagOnlyId, 1, Sha(kScriptBytes)), "a file whose strong ETag names another hash");
+    Check(WaitFor(client, [](const Snapshot& s) { return s.file && !s.file->loading; }), "the ETag-only answer");
+    Check(client.Snap().file->outcome.status == Status::DigestMismatch && client.Snap().file->bytes.empty(),
+            "bytes matching sha256 and Content-Digest are still discarded when a strong ETag names another hash");
 
     Check(!client.File(kScriptId, 3, "not-a-hash"), "a download needs the expected hash");
 }
@@ -1165,6 +1253,74 @@ void InstallerConfigChecks(const std::wstring& root) {
             "uninstalling a config moves it to the backup folder");
 }
 
+// An install whose sidecar cannot be saved is taken back without losing the player's files; Keep both skips names
+// owned by other PUBLIC records.
+void InstallerRollbackChecks(const std::wstring& root) {
+    FolderLibrary library(root + L"\\scripts");
+    InstallerOptions options;
+    options.root = root;
+    options.scripts = &library;
+    options.now = [] { return int64_t(1794765600000LL); };
+    Installer installer(options);
+    const std::wstring scripts = root + L"\\scripts";
+    const std::wstring configs = root + L"\\configs";
+    const auto holdOpen = [](const std::wstring& path) {
+        // Readers allowed, no FILE_SHARE_DELETE: moving the new sidecar over it fails.
+        return CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                nullptr);
+    };
+
+    Check(installer.Install(ScriptPackage(kScriptId, "Auto GG", 3, kScriptBytes)).status == InstallStatus::Done,
+            "a first install writes the script sidecar");
+    WriteText(scripts + L"\\Mine.luau", "print('mine')\n");
+    HANDLE sidecar = holdOpen(installer.SidecarPath(Kind::Script));
+    Check(sidecar != INVALID_HANDLE_VALUE, "the script sidecar is held open");
+    InstallOutcome outcome =
+            installer.Install(ScriptPackage("abcdefghjkmn", "Mine", 1, "print('public')\n"), OnConflict::Replace);
+    Check(outcome.status == InstallStatus::Failed && ReadText(scripts + L"\\Mine.luau") == "print('mine')\n"
+                    && !installer.Find(Kind::Script, "abcdefghjkmn", nullptr),
+            "a failed save after Replace puts the player's script back");
+    Check(ReadText(overlay::ScriptBackupPath(scripts, "Mine")) == "print('public')\n",
+            "the backup then holds the PUBLIC file, not the player's script");
+    outcome = installer.Install(ScriptPackage("pqrstvwxyz01", "Fresh", 1, "print('fresh')\n"));
+    Check(outcome.status == InstallStatus::Failed && !nickel::pub::detail::FileExists(scripts + L"\\Fresh.luau"),
+            "a failed save after a fresh install removes the new script");
+    if (sidecar != INVALID_HANDLE_VALUE) {
+        CloseHandle(sidecar);
+    }
+    Check(installer.Records(Kind::Script).size() == 1, "failed installs leave no record");
+
+    Package config;
+    config.kind = Kind::Config;
+    config.id = kConfigId;
+    config.versionNumber = 1;
+    config.label = "1.0.0";
+    config.name = "Bedwars Pack";
+    config.sha256 = Sha(kConfigBytes);
+    config.bytes = kConfigBytes;
+    Check(installer.Install(config).status == InstallStatus::Done, "a first config writes the config sidecar");
+    WriteText(configs + L"\\Mine.ini", "[menu]\r\n");
+    Package other = config;
+    other.id = "abcdefghjkmn";
+    other.name = "Mine";
+    sidecar = holdOpen(installer.SidecarPath(Kind::Config));
+    Check(sidecar != INVALID_HANDLE_VALUE, "the config sidecar is held open");
+    Check(installer.Install(other, OnConflict::Replace).status == InstallStatus::Failed
+                    && ReadText(configs + L"\\Mine.ini") == "[menu]\r\n"
+                    && CountFiles(configs + L"\\.public\\backup\\Mine-*.ini") == 0,
+            "a failed save after Replace moves the player's config back in place");
+    if (sidecar != INVALID_HANDLE_VALUE) {
+        CloseHandle(sidecar);
+    }
+
+    // The file of a PUBLIC record is gone, but its record still owns the name.
+    DeleteFileW((scripts + L"\\Auto GG.luau").c_str());
+    outcome = installer.Install(ScriptPackage("23456789abcd", "Auto GG", 1, "print('second')\n"), OnConflict::KeepBoth);
+    Check(outcome.status == InstallStatus::Done && outcome.name == "Auto GG (2)"
+                    && ReadText(scripts + L"\\Auto GG (2).luau") == "print('second')\n",
+            "Keep both skips a name another PUBLIC record owns");
+}
+
 void SidecarChecks() {
     const std::string text = "{\"format\":1,\"items\":["
             "{\"id\":\"7k2m9x4qa1dz\",\"version_number\":2,\"sha256\":\"" + Sha("a") + "\",\"file\":\"A.luau\","
@@ -1213,6 +1369,7 @@ int main() {
         return 1;
     }
     ListChecks(server);
+    CursorChecks(server);
     DetailAndFileChecks(server);
     LookupAndRevocationChecks(server);
     StarChecks(server);
@@ -1223,6 +1380,9 @@ int main() {
     InstallerScriptChecks(root);
     InstallerConfigChecks(root);
     DeleteTree(root);
+    const std::wstring rollbackRoot = TemporaryRoot();
+    InstallerRollbackChecks(rollbackRoot);
+    DeleteTree(rollbackRoot);
 
     if (failed == 0) {
         std::printf("public_client_checks: all passed\n");
