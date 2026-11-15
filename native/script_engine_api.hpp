@@ -5,7 +5,7 @@
 // script_engine.hpp. The menu and the game hooks it wires call only these functions. tools/check_boundaries.py
 // (CTest boundary_checks) counts the engine names they use directly (its script list, its locks, its flags and
 // queues) in menu.cpp and the menu headers it includes, and fails when that count goes up.
-// The Scripting tab (script_ui.hpp) still reads the engine's state directly; it moves behind this interface later.
+// The Scripting tab (script_ui.hpp) sees the scripts only through ScriptsLibrary() (script_library.hpp).
 
 using ScriptEvent = nickel::script::Event;
 using ScriptEventMask = nickel::script::EventMask;
@@ -57,3 +57,9 @@ void ScriptsJumpPre(uint64_t arg7, uint64_t arg8);
 void ScriptsJumpPost(uint64_t arg8);
 bool ScriptsJumpCancel();
 void ScriptsMoveGuarded(uint64_t input, uint64_t state, uint64_t movement);
+
+// ---- scripts, for the Scripting tab and other components (any thread)
+
+// Snapshots of the scripts and the commands on them (list, start, stop, read and write their source); see
+// script_library.hpp and docs/architecture/script-management.md.
+ScriptLibrary& ScriptsLibrary();

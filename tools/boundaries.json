@@ -126,14 +126,28 @@
         "scriptGuard",
         "Script",
         "scriptSelected",
-        "scriptSearch"
+        "scriptSearch",
+        "ScriptFolder",
+        "StartScript",
+        "StopScript",
+        "ScanScripts",
+        "ScriptLoad",
+        "ScriptUnload",
+        "ScriptNamed"
       ],
       "baseline": {
-        "scripts": 9,
-        "scriptGuard": 2,
-        "Script": 2,
-        "scriptSelected": 11,
-        "scriptSearch": 4
+        "scripts": 0,
+        "scriptGuard": 0,
+        "Script": 0,
+        "scriptSelected": 0,
+        "scriptSearch": 0,
+        "ScriptFolder": 0,
+        "StartScript": 0,
+        "StopScript": 0,
+        "ScanScripts": 0,
+        "ScriptLoad": 0,
+        "ScriptUnload": 0,
+        "ScriptNamed": 0
       }
     }
   ]
