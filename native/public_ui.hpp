@@ -1423,7 +1423,7 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
     // Star (a favourite of this install, listed in the Starred tab) and Report (anonymous, read by the moderators)
     {
         const bool starred = page.IsStarred(kind, card.id);
-        const bool waiting = m.snap.star && m.snap.star->id == card.id && m.snap.star->loading;
+        const bool waiting = page.StarSending(); // one star at a time, on any card
         const bool reporting = m.reportFor == card.id;
         const int pressed = two("pub-star",
                                 starred ? "Starred" : "Star",
@@ -1790,6 +1790,9 @@ bool DrawPublishForm(ImVec2 origin, float s, float opacity, bool script) {
                 text += ".";
             }
             line(text, Rgba(159, 232, 191, opacity));
+            if (!draft->warning.empty()) {
+                line(draft->warning, Rgba(255, 179, 92, opacity), semibold, 12.5f);
+            }
             for (const pub::ScanNote& note : draft->check.warnings) {
                 line((note.line > 0 ? "Line " + std::to_string(note.line) + ": " : std::string()) + note.message,
                      Rgba(255, 179, 92, opacity),

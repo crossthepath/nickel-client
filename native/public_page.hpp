@@ -527,9 +527,37 @@ inline bool ReadCommunitySetting(const std::wstring& root) {
     return GetPrivateProfileIntW(L"public", L"community", 0, CommunitySettingPath(root).c_str()) == 1;
 }
 
+// WritePrivateProfileStringW keeps a file in the ANSI code page unless it starts with a UTF-16LE BOM, which would
+// turn an author name such as "Masha" in Cyrillic into "????". The file is made UTF-16LE before the first write; an
+// ANSI file of an earlier build is converted once (its text read in the ANSI code page, as Windows wrote it).
+inline bool MakeUnicodeIni(const std::wstring& path) {
+    std::string bytes;
+    const bool exists = GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (exists && !detail::ReadAll(path, &bytes, 64 * 1024)) {
+        return false;
+    }
+    if (bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFF
+        && static_cast<unsigned char>(bytes[1]) == 0xFE) {
+        return true;
+    }
+    std::wstring text;
+    if (!bytes.empty()) {
+        const int count = MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
+        if (count <= 0) {
+            return false;
+        }
+        text.resize(static_cast<size_t>(count));
+        MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(bytes.size()), text.data(), count);
+    }
+    std::string utf16 = "\xFF\xFE";
+    utf16.append(reinterpret_cast<const char*>(text.data()), text.size() * sizeof(wchar_t));
+    return detail::ReplaceFile(path, utf16);
+}
+
 inline bool WriteCommunitySetting(const std::wstring& root, bool on) {
     detail::MakeFolder(root);
     detail::MakeFolder(root + L"\\public");
+    MakeUnicodeIni(CommunitySettingPath(root));
     return WritePrivateProfileStringW(L"public", L"community", on ? L"1" : L"0", CommunitySettingPath(root).c_str())
            != FALSE;
 }
@@ -549,6 +577,9 @@ inline std::string ReadAuthorName(const std::wstring& root) {
 inline bool WriteAuthorName(const std::wstring& root, const std::string& name) {
     detail::MakeFolder(root);
     detail::MakeFolder(root + L"\\public");
+    if (!MakeUnicodeIni(CommunitySettingPath(root))) {
+        return false; // never store a name the ANSI code page would garble
+    }
     return WritePrivateProfileStringW(
                    L"public", L"author_name", detail::ToWide(name).c_str(), CommunitySettingPath(root).c_str())
            != FALSE;
@@ -704,6 +735,7 @@ struct PublishDraft {
     CheckSummary check; // when the check answered
     bool checked = false;
     std::string message; // Failed or Done
+    std::string warning; // an earlier publish of this file this session got no clear answer: it may be public already
     std::vector<ScanNote> errors;
     std::shared_ptr<const CheckResult> staleCheck;
     std::shared_ptr<const PublishResult> stalePublish;
@@ -744,6 +776,7 @@ public:
                 lookupAt_ = 0;
                 starredAsked_.clear();
             }
+            starSending_ = false; // the answer of a star sent before PUBLIC was turned off is not awaited
             wasEnabled_ = false;
             return;
         }
@@ -813,6 +846,9 @@ public:
             seenStar_ = snap.star;
             const StarResult* star = seenStar_.get();
             const bool asked = star != nullptr && star->id == lastStar_.id && star->starred == lastStar_.on;
+            if (asked && !star->loading) {
+                starSending_ = false;
+            }
             if (star != nullptr && !star->loading && star->outcome.Ok() && asked) {
                 fingerprintKnown_ = false; // the key may have been created by this star
                 fingerprintAt_ = 0;
@@ -1089,10 +1125,22 @@ public:
         if (requests_ == nullptr || !ValidId(id)) {
             return false;
         }
+        if (starSending_) {
+            return false; // one star at a time: the slot keeps only the newest answer, so an older refusal is never seen
+        }
+        const bool was = starred_.Has(kind, id);
         starred_.Set(kind, id, on);
         lastStar_ = LastStar{kind, id, on};
-        return requests_->Star(id, on);
+        if (!requests_->Star(id, on)) {
+            starred_.Set(kind, id, was);
+            return false;
+        }
+        starSending_ = true;
+        return true;
     }
+
+    // A star or unstar is on its way: Star refuses another one until it is answered.
+    bool StarSending() const { return starSending_; }
 
     bool IsStarred(Kind kind, const std::string& id) const { return starred_.Has(kind, id); }
 
@@ -1231,6 +1279,10 @@ public:
         if (requests_ == nullptr) {
             return fail("Turn PUBLIC on to publish.");
         }
+        // published.json must be able to remember the item, or it could never be updated (and publishing is final)
+        if (!overlay::ValidScriptName(localName)) {
+            return fail("This name cannot be used on PUBLIC. Rename it first.");
+        }
         std::string bytes;
         if (kind == Kind::Script) {
             overlay::ScriptSource source;
@@ -1259,7 +1311,10 @@ public:
         if (const PublishedRecord* owned = OwnedItem(kind, localName)) {
             draft_.update = true;
             draft_.itemId = owned->id;
+        } else if (published_.Records().size() >= kMaxPublished) {
+            return fail("This install cannot remember more published items, so it could not update this one.");
         }
+        draft_.warning = UncertainWarning(kind, localName, draft_.update);
         draft_.step = PublishStep::Checking;
         draft_.staleCheck = lastCheck_;
         requests_->Check(kind, draft_.fileName, draft_.bytes, localName);
@@ -1452,6 +1507,51 @@ private:
         requests_->LookupStarred(std::move(ids));
     }
 
+    // Publishes of this session whose answer was lost (timeout, offline, 5xx, unreadable answer).
+    struct Uncertain {
+        Kind kind = Kind::Script;
+        std::string name;
+    };
+
+    bool IsUncertain(Kind kind, const std::string& name) const {
+        for (const Uncertain& u : uncertain_) {
+            if (u.kind == kind && overlay::SameScriptName(u.name, name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void RememberUncertain(Kind kind, const std::string& name) {
+        if (!IsUncertain(kind, name) && uncertain_.size() < 64) {
+            uncertain_.push_back(Uncertain{kind, name});
+        }
+    }
+
+    void ForgetUncertain(Kind kind, const std::string& name) {
+        uncertain_.erase(std::remove_if(uncertain_.begin(),
+                                        uncertain_.end(),
+                                        [&](const Uncertain& u) {
+                                            return u.kind == kind && overlay::SameScriptName(u.name, name);
+                                        }),
+                         uncertain_.end());
+    }
+
+    // "" unless an earlier publish of (kind, name) this session got no clear answer.
+    std::string UncertainWarning(Kind kind, const std::string& name, bool update) const {
+        if (!IsUncertain(kind, name)) {
+            return std::string();
+        }
+        const std::string where = kind == Kind::Script ? "PUBLIC -> Scripts" : "PUBLIC -> Configs";
+        return update ? "No clear answer came back for the update of " + name
+                                + ", so it may already be published. Look at the item's versions in " + where
+                                + " before you send it again."
+                      : "No clear answer came back for " + name
+                                + ", so it may already be public. Look for it in " + where
+                                + " (Recent) before you publish again: a second publish makes a second item that "
+                                  "can never be removed.";
+    }
+
     PublishRequest RequestOfDraft() const {
         PublishRequest request;
         request.kind = draft_.kind;
@@ -1534,6 +1634,14 @@ private:
                     draft_.message = draft_.update ? "Only the install that published this item can update it."
                                                    : WriteRefusal(result->outcome, "publish");
                     break;
+                case Status::Offline:
+                case Status::Timeout:
+                case Status::Malformed:
+                case Status::ServerError:
+                    // the request may have reached the server: it may have published it and the answer was lost
+                    RememberUncertain(draft_.kind, draft_.localName);
+                    draft_.message = UncertainWarning(draft_.kind, draft_.localName, draft_.update);
+                    break;
                 default:
                     draft_.message = WriteRefusal(result->outcome, "publish");
                     break;
@@ -1541,6 +1649,7 @@ private:
             Notice(draft_.message, true);
             return;
         }
+        ForgetUncertain(draft_.kind, draft_.localName);
         fingerprintKnown_ = false; // the first write created the key
         fingerprintAt_ = 0;
         PublishedRecord record;
@@ -1671,6 +1780,8 @@ private:
     LastStar lastStar_;
     std::vector<std::string> starredAsked_;
     std::string reportPending_;
+    bool starSending_ = false;
+    std::vector<Uncertain> uncertain_;
     PublishDraft draft_;
     std::string fingerprint_;
     bool fingerprintKnown_ = false;

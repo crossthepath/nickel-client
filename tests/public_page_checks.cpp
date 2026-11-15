@@ -1006,7 +1006,65 @@ std::string FileText(const std::wstring& path) {
 // ---------------------------------------------------------------------------------------------------------------
 // The Starred tab
 
+// Stars `id` and hands the page the server's answer.
+void StarAnswered(PublicPage& page,
+                  RecordingRequests& requests,
+                  Snapshot& snap,
+                  int64_t& now,
+                  Kind kind,
+                  const std::string& id,
+                  bool on,
+                  Status status = Status::Ok) {
+    Check(page.Star(kind, id, on) && requests.Last("star")->id == id, "the star is sent");
+    auto answer = std::make_shared<StarResult>();
+    answer->id = id;
+    answer->starred = on;
+    answer->outcome.status = status;
+    snap.star = answer;
+    page.Tick(snap, true, now += 16);
+}
+
 void StarredTabChecks() {
+    const std::wstring root = TemporaryRoot();
+    {
+        // One star at a time: the client keeps only the newest star answer, so a refusal of an older one would be
+        // lost and never undone.
+        FolderLibrary library(root + L"\\scripts");
+        PageOptions options;
+        options.root = root;
+        options.library = &library;
+        PublicPage page(options);
+        RecordingRequests requests;
+        Snapshot snap;
+        int64_t now = 1794765600000LL;
+        page.SetRequests(&requests);
+        page.Tick(snap, true, now);
+        const std::string own = "wnytem123456";
+        const std::string other = "thertem12345";
+        Check(page.Star(Kind::Script, own, true) && page.StarSending(), "a star is on its way");
+        Check(!page.Star(Kind::Script, other, true) && !page.IsStarred(Kind::Script, other)
+                      && requests.Count("star") == 1,
+              "another star waits for the answer");
+        auto refused = std::make_shared<StarResult>();
+        refused->id = own;
+        refused->starred = true;
+        refused->outcome.status = Status::Conflict;
+        snap.star = refused;
+        page.Tick(snap, true, now += 16);
+        Check(!page.StarSending() && !page.IsStarred(Kind::Script, own), "the refused star is undone");
+        page.TakeNotices();
+        StarAnswered(page, requests, snap, now, Kind::Script, other, true);
+        Check(page.IsStarred(Kind::Script, other) && !page.StarSending(), "then the next star goes");
+        Check(page.Star(Kind::Script, own, true) && page.StarSending(), "in flight again");
+        page.Tick(snap, false, now += 16);
+        Check(!page.StarSending(), "turning PUBLIC off stops waiting for it");
+        StarAnswered(page, requests, snap, now, Kind::Script, other, false);
+        Check(!page.IsStarred(Kind::Script, other), "unstarred");
+    }
+    DeleteTree(root);
+}
+
+void StarredTabListChecks() {
     const std::wstring root = TemporaryRoot();
     {
         FolderLibrary library(root + L"\\scripts");
@@ -1029,10 +1087,10 @@ void StarredTabChecks() {
         const Card a = MakeCard("7k2m9x4qa1dz", Kind::Script, "Auto GG", 3, "print(1)\n");
         const Card b = MakeCard("pqrstvwxyz01", Kind::Script, "Chat Filter", 1, "print(2)\n");
         const Card c = MakeCard("9x8w7v6t5s4r", Kind::Config, "Hypixel PvP", 1, "[fly]\r\nenabled=1\r\n");
-        page.Star(Kind::Script, a.id, true);
-        page.Star(Kind::Script, b.id, true);
-        page.Star(Kind::Config, c.id, true);
-        page.Star(Kind::Script, "abcdefghjkmn", true);
+        StarAnswered(page, requests, snap, now, Kind::Script, a.id, true);
+        StarAnswered(page, requests, snap, now, Kind::Script, b.id, true);
+        StarAnswered(page, requests, snap, now, Kind::Config, c.id, true);
+        StarAnswered(page, requests, snap, now, Kind::Script, "abcdefghjkmn", true);
         page.Shown(Kind::Script);
         const Recorded* asked = requests.Last("starred");
         Check(asked != nullptr && asked->ids.size() == 4, "the Starred tab looks up every starred id");
@@ -1238,6 +1296,68 @@ void PublishPageChecks() {
         Check(!page.BeginPublish(Kind::Config, "missing") && page.Draft().step == PublishStep::Failed,
               "a missing config is not published");
         page.ClosePublish();
+
+        // Names published.json could not remember are refused before any request: the item could never be updated.
+        const int checksBefore = requests.Count("check");
+        Check(!page.BeginPublish(Kind::Script, std::string(65, 'a'))
+                      && page.Draft().message.find("cannot be used on PUBLIC") != std::string::npos,
+              "a script name over 64 bytes is refused");
+        page.ClosePublish();
+        WriteText(root + L"\\configs\\ my cfg.ini", "[menu]\r\n");
+        Check(!page.BeginPublish(Kind::Config, " my cfg") && page.Draft().step == PublishStep::Failed,
+              "a config name with a leading space is refused");
+        page.ClosePublish();
+        Check(requests.Count("check") == checksBefore, "no check is asked for a name that cannot be remembered");
+
+        // A lost answer: the item may be public already, so the player is told to look before publishing again.
+        WriteText(root + L"\\scripts\\Lost.luau", "print('lost')\n");
+        Check(page.BeginPublish(Kind::Script, "Lost") && page.Draft().warning.empty(), "Publish Lost");
+        snap.check = CheckAnswer(*requests.Last("check"), true);
+        page.Tick(snap, true, now += 16);
+        Check(page.SubmitPublish(fields).empty(), "Lost is sent");
+        auto lost = PublishAnswer(*requests.Last("publish"), false, "", 0);
+        lost->outcome.status = Status::Timeout;
+        snap.publish = lost;
+        page.Tick(snap, true, now += 16);
+        Check(page.Draft().step == PublishStep::Failed
+                      && page.Draft().message.find("may already be public") != std::string::npos
+                      && page.Draft().message.find("PUBLIC -> Scripts") != std::string::npos,
+              "a timeout says the item may already be public");
+        page.TakeNotices();
+        Check(page.BeginPublish(Kind::Script, "Lost")
+                      && page.Draft().warning.find("may already be public") != std::string::npos,
+              "checking it again keeps the warning on the form");
+        snap.check = CheckAnswer(*requests.Last("check"), true);
+        page.Tick(snap, true, now += 16);
+        Check(page.SubmitPublish(fields).empty(), "the player can still publish it");
+        snap.publish = PublishAnswer(*requests.Last("publish"), false, "w4qk7m2n9x3a", 1);
+        page.Tick(snap, true, now += 16);
+        Check(page.Draft().step == PublishStep::Done && page.OwnedItem(Kind::Script, "Lost") != nullptr,
+              "published and remembered");
+        page.ClosePublish();
+        page.TakeNotices();
+        Check(page.BeginPublish(Kind::Script, "Lost") && page.Draft().update && page.Draft().warning.empty(),
+              "a clear answer clears the warning");
+        page.ClosePublish();
+
+        // The author name keeps any script (public\settings.ini is UTF-16).
+        const std::string unicode = "\xd0\x9c\xd0\xb0\xd1\x88\xd0\xb0 \xe5\x90\x8d\xe5\x89\x8d";
+        Check(WriteAuthorName(root, unicode) && ReadAuthorName(root) == unicode, "a non-ANSI author name round trips");
+    }
+    {
+        // An ANSI settings.ini of an earlier build is converted once, keeping its values.
+        const std::wstring old = TemporaryRoot();
+        CreateDirectoryW((old + L"\\public").c_str(), nullptr);
+        WriteText(old + L"\\public\\settings.ini", "[public]\r\ncommunity=1\r\nauthor_name=Mash\r\n");
+        const std::string unicode = "\xe5\x90\x8d\xe5\x89\x8d";
+        Check(ReadCommunitySetting(old) && ReadAuthorName(old) == "Mash", "the old file is read");
+        Check(WriteAuthorName(old, unicode) && ReadAuthorName(old) == unicode && ReadCommunitySetting(old),
+              "after the conversion the name round trips and PUBLIC stays on");
+        const std::string bytes = FileText(old + L"\\public\\settings.ini");
+        Check(bytes.size() > 2 && bytes[0] == '\xFF' && bytes[1] == '\xFE', "the file is UTF-16LE with a BOM");
+        Check(WriteCommunitySetting(old, false) && !ReadCommunitySetting(old) && ReadAuthorName(old) == unicode,
+              "the Settings toggle writes the same file");
+        DeleteTree(old);
     }
     {
         // Another install on the same folder (another key): the item is not its own, so no Publish update.
@@ -1329,6 +1449,7 @@ int main() {
     PageChecks();
     MessageAndTimerChecks();
     StarredTabChecks();
+    StarredTabListChecks();
     PublishPageChecks();
     ReportAndFinalChecks();
     if (failed == 0) {
