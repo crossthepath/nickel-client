@@ -10,7 +10,7 @@ public partial class App : Application
   {
    // Support check of a game file without running it: does it hold a validated build? Writes data/check-game.json.
    object outcome;var code=1;
-   try{var refusal=GameBuilds.Check(e.Args[1],GameBuilds.Validated);code=refusal==null?0:3;outcome=new{status=refusal==null?"validated":"refused",file=e.Args[1],message=refusal};}
+   try{var refusal=GameBuilds.Check(e.Args[1],GameBuilds.Validated,out _);code=refusal==null?0:3;outcome=new{status=refusal==null?"validated":"refused",file=e.Args[1],message=refusal};}
    catch(Exception error){outcome=new{status="error",file=e.Args[1],message=error.Message};}
    try{var at=System.IO.Path.Combine(AppContext.BaseDirectory,"data","check-game.json");System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(at)!);System.IO.File.WriteAllText(at,System.Text.Json.JsonSerializer.Serialize(outcome));}
    catch{code=1;}

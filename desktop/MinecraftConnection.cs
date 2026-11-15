@@ -41,7 +41,13 @@ public sealed class MinecraftConnection : IDisposable
     // Same file, not same text: a Microsoft Store / Xbox app installation reports its main module under
     // C:\Program Files\WindowsApps\... and its image under C:\XboxGames\..., two names of one file.
     if(!SameFile(path,actual.ToString()))throw new InvalidOperationException("Minecraft changed during connection. Try again.");
-    if(GameBuilds.Check(actual.ToString(),GameBuilds.Validated) is string refusal)throw new InvalidOperationException(refusal);
+    if(GameBuilds.Check(actual.ToString(),GameBuilds.Validated,out var build) is string refusal)throw new InvalidOperationException(refusal);
+    // The code that runs, not only the file: refused when it differs from the build (file replaced after the game
+    // started, code patched at start-up). Skipped once Nickel is loaded: its own hooks change that code, and the
+    // overlay checked it before installing them.
+    var loaded=false;foreach(ProcessModule m in process.Modules)if(string.Equals(m.ModuleName,"Nickel.Overlay.dll",StringComparison.OrdinalIgnoreCase))loaded=true;
+    if(!loaded&&!GameBuilds.MemoryCodeMatches(opened,(ulong)module.BaseAddress.ToInt64(),build!))
+     throw new InvalidOperationException("Minecraft's loaded code is not the validated build (the game file was replaced, or another program changed the game's code); Nickel will not load into it.");
     cancellation.ThrowIfCancellationRequested();
     if(!GetExitCodeProcess(opened,out var code)||code!=259)throw new InvalidOperationException("Minecraft closed during connection.");
     return new MinecraftConnection(opened,pid,path);
@@ -86,7 +92,7 @@ public sealed class MinecraftConnection : IDisposable
    if(!SameFile(first,first.ToUpperInvariant()))return "the same path in another case is refused";
    if(SameFile(first,other))return "two files with the same content are taken for one";
    if(SameFile(first,Path.Combine(dir,"missing.bin")))return "a missing file is taken for an existing one";
-   if(CreateHardLink(link,first,0)&&!SameFile(first,link))return "two names of one file (hard link) are refused";
+   if(!CreateHardLink(link,first,0))return "the hard link for the check could not be made";if(!SameFile(first,link))return "two names of one file (hard link) are refused";
    return null;
   }
   finally{try{Directory.Delete(dir,true);}catch(IOException){}catch(UnauthorizedAccessException){}}

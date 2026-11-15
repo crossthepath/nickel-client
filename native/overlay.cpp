@@ -443,7 +443,8 @@ bool InstallInputHooks(std::vector<void*>& seen,bool lastAttempt){
 }
 DWORD WINAPI Worker(void*){
  HMODULE pinned{};GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,(LPCWSTR)&Worker,&pinned);
- wchar_t path[32768]{};GetModuleFileNameW(ownModule,path,32768);directory=path;directory=directory.substr(0,directory.find_last_of(L"\\/"));logFile.open(std::filesystem::path(directory+L"\\overlay.log"),std::ios::app);Log("Overlay component started; no gameplay adapters enabled");DecodeLogo();
+ wchar_t path[32768]{};GetModuleFileNameW(ownModule,path,32768);directory=path;directory=directory.substr(0,directory.find_last_of(L"\\/"));logFile.open(std::filesystem::path(directory+L"\\overlay.log"),std::ios::app);Log("Overlay component started; no gameplay adapters enabled");{uintptr_t gameBase{};uint32_t gameSize{};const bool validated=game::Supported(&gameBase,&gameSize);   // before any game hook: checks the loaded code too
+ Log(validated?(std::string("Game build: ")+game::kGameBuilds[game::currentBuild].name+", code verified").c_str():"Game build: not a validated Minecraft build, game features stay off");}DecodeLogo();
  game::faultLog=Log;   // fault boundaries report from the first hook on, before the menu sets its own log
  auto eventName=L"Local\\NickelOverlay.Rendered."+std::to_wstring(GetCurrentProcessId());readyEvent=CreateEventW(nullptr,TRUE,FALSE,eventName.c_str());
  WNDCLASSEXW wc{sizeof(wc)};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=ownModule;wc.lpszClassName=L"NickelOverlayProbe";RegisterClassExW(&wc);auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPEDWINDOW,0,0,16,16,nullptr,nullptr,ownModule,nullptr);
