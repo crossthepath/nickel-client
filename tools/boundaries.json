@@ -163,6 +163,50 @@
         "scriptFiles": 0,
         "ScriptFilesStore": 0
       }
+    },
+    {
+      "name": "the PUBLIC core reaching into the menu or the Luau engine (public_model.hpp, public_client.hpp, public_installer.hpp: ScriptLibrary only, handed in by the owner)",
+      "files": [
+        "native/public_model.hpp",
+        "native/public_client.hpp",
+        "native/public_installer.hpp"
+      ],
+      "identifiers": [
+        "ImGui",
+        "ImDrawList",
+        "ImVec2",
+        "ImVec4",
+        "ImU32",
+        "icons",
+        "scriptGuard",
+        "ScriptsLibrary",
+        "ScriptFolder",
+        "StartScript",
+        "StopScript",
+        "ScanScripts",
+        "configPath",
+        "keybinds",
+        "notices",
+        "WriteLog"
+      ],
+      "baseline": {
+        "ImGui": 0,
+        "ImDrawList": 0,
+        "ImVec2": 0,
+        "ImVec4": 0,
+        "ImU32": 0,
+        "icons": 0,
+        "scriptGuard": 0,
+        "ScriptsLibrary": 0,
+        "ScriptFolder": 0,
+        "StartScript": 0,
+        "StopScript": 0,
+        "ScanScripts": 0,
+        "configPath": 0,
+        "keybinds": 0,
+        "notices": 0,
+        "WriteLog": 0
+      }
     }
   ]
 }
