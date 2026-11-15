@@ -55,6 +55,28 @@ jobs:
           Get-Content dist/Nickel/self-check.json
           if ($check.ExitCode -ne 0) { throw 'Launcher self-test failed' }
 
+      - name: Release signer
+        shell: pwsh
+        run: |
+          # The signer compiles desktop/ReleaseTrust.cs by path: a move or change there must show up here, not at
+          # release time. The published v1.1.0-beta manifest and signature must keep verifying with the pinned key.
+          dotnet build tools/release-signer/release-signer.csproj -c Release -o build/release-signer
+          dotnet build/release-signer/release-signer.dll self-test
+          if ($LASTEXITCODE -ne 0) { throw 'Release signer self-test failed' }
+          dotnet build/release-signer/release-signer.dll verify tests/fixtures/release-v1.1.0-beta
+          if ($LASTEXITCODE -ne 0) { throw 'The published v1.1.0-beta manifest no longer verifies' }
+
+      - name: Launcher game check refuses other files
+        shell: pwsh
+        run: |
+          # --check-game on files that are not Minecraft: a missing file is an error (1), another program is refused (3).
+          $missing = Start-Process -FilePath dist/Nickel/Nickel.exe -ArgumentList '--check-game', 'C:\does-not-exist\Minecraft.Windows.exe' -Wait -PassThru
+          Get-Content dist/Nickel/data/check-game.json
+          if ($missing.ExitCode -eq 0) { throw 'A missing file was accepted' }
+          $other = Start-Process -FilePath dist/Nickel/Nickel.exe -ArgumentList '--check-game', "$env:WINDIR\System32\notepad.exe" -Wait -PassThru
+          Get-Content dist/Nickel/data/check-game.json
+          if ($other.ExitCode -ne 3) { throw "notepad.exe was not refused (exit $($other.ExitCode))" }
+
       - name: Build report
         shell: pwsh
         run: |
