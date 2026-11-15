@@ -1,7 +1,7 @@
 ﻿// Read-only access to the local player's state in Minecraft Bedrock 1.26.62.01 (no writes and, apart from
 // ReadPing, no game function calls). Offsets come from profiles/minecraft-1.26.62.01.json. Components are looked up
 // by the 32-bit FNV-1a hash of their name, as in the game's EnTT registry. Every memory read is SEH-guarded: an invalid
-// address yields "no data", never a crash. Only active in a Minecraft.Windows.exe whose image size matches the profile.
+// address yields "no data", never a crash. Only active in a Minecraft.Windows.exe holding a validated build (game_build.hpp).
 #pragma once
 #include <Windows.h>
 #include <intrin.h>
@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include "game_fault.hpp"
+#include "game_build.hpp"
 
 namespace game {
 struct Player{float position[3];float previous[3];float velocity[3];bool onGround;};
@@ -44,10 +45,15 @@ inline bool LocalActor(uintptr_t registry,uint32_t entity,uintptr_t* actor){
  uintptr_t local{},slot{};uint32_t packed{};if(!Storage(registry,Fnv("LocalPlayerComponent"),&local)||!Packed(local,entity,&packed))return false;
  uint64_t found{};if(!Element(registry,entity,"ActorOwnerComponent",8,&slot)||!Read(slot,&found)||!found)return false;*actor=found;return true;
 }
+// Active only in Minecraft.Windows.exe holding a validated build: its version resource and its section layout
+// (game_build.hpp). Any installation of that build is accepted (Microsoft Store / Xbox app, LeviLauncher, other
+// launchers), whatever its file size or hash; each hook still checks the code it patches before installing.
+inline int currentBuild=-1;
 inline bool Supported(uintptr_t* base,uint32_t* size){
  static int state=0;static uintptr_t image=0;static uint32_t imageSize=0;
  if(!state){state=-1;wchar_t path[MAX_PATH]{};GetModuleFileNameW(nullptr,path,MAX_PATH);auto file=wcsrchr(path,L'\\');
-  if(!_wcsicmp(file?file+1:path,L"Minecraft.Windows.exe")){image=(uintptr_t)GetModuleHandleW(nullptr);auto dos=(const IMAGE_DOS_HEADER*)image;auto nt=(const IMAGE_NT_HEADERS64*)(image+dos->e_lfanew);imageSize=nt->OptionalHeader.SizeOfImage;if(imageSize==327405568u)state=1;}}
+  if(!_wcsicmp(file?file+1:path,L"Minecraft.Windows.exe")){image=(uintptr_t)GetModuleHandleW(nullptr);auto dos=(const IMAGE_DOS_HEADER*)image;auto nt=(const IMAGE_NT_HEADERS64*)(image+dos->e_lfanew);imageSize=nt->OptionalHeader.SizeOfImage;
+   uint16_t version[4]{};if(GameVersion((HMODULE)image,version)){currentBuild=MatchBuild((const uint8_t*)image,version);if(currentBuild>=0)state=1;}}}
  *base=image;*size=imageSize;return state==1;
 }
 // Main client instance: *(base+0x128c0f90) -> +8 -> +0x20 -> +0x48, context at +0x30, tree at +0x9a0.
