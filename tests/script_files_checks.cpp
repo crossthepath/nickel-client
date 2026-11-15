@@ -4,6 +4,7 @@
 // is touched.
 #include <windows.h>
 
+#include <atomic>
 #include <cstdio>
 #include <mutex>
 #include <set>
@@ -157,8 +158,88 @@ void Writes(const std::wstring& base) {
           "no temporary file is left");
 
     ScriptHeldNames reread(f.scripts);
-    Check(reread.Names() == std::vector<std::string>({"Hello", "Bom", "Big"}),
-          "the held list reads back after a restart (a name ValidScriptName refuses is not kept on disk)");
+    Check(reread.Names() == std::vector<std::string>({"Hello", "Bom", " Spaced", "Big"}),
+          "the held list reads back after a restart, with the known name ValidScriptName refuses");
+}
+
+// Existing user files whose names ValidScriptName refuses for new files (longer than 64 bytes, 40 accented letters,
+// a leading space or dot): a write accepted for them keeps them held after a restart, so the new code does not run
+// before Start.
+void KnownNames(const std::wstring& base) {
+    Folder f(base);
+    std::string accented;
+    for (int i = 0; i < 40; ++i) {
+        accented += "\xc3\xa9";
+    }
+    const std::vector<std::string> names = {std::string(65, 'n'), accented, " Lead", ".dot"};
+    bool written = true;
+    for (const std::string& name : names) {
+        MakeScriptFolders(f.scripts);
+        WriteScriptFileInOneStep(ScriptFilePath(f.scripts, name), L"user", "print('user')");
+        written &= WriteScriptFile(f.store, name, true, "print('new')", f.Revision(name)) == ScriptFileResult::Done
+                && Bytes(ScriptFilePath(f.scripts, name)) == "print('new')" && f.Held(name);
+    }
+    Check(written, "a write to a known name ValidScriptName refuses: Done and held");
+    ScriptHeldNames restarted(f.scripts);
+    bool stillHeld = true;
+    for (const std::string& name : names) {
+        stillHeld &= restarted.Contains(name);
+    }
+    Check(stillHeld && restarted.Names() == names, "every one of them is still held after a restart");
+    Check(!f.held.Add("a/b") && !f.held.Add("line\nbreak") && !f.Held("a/b"),
+          "Add refuses a name the list could not read back");
+}
+
+// A write that fails after its temporary file was written: the script file and the held list stay as they were, no
+// temporary file is left, and nothing under `guard` (the folder scan) ever sees the name held while its file did not
+// change, so a running script that was not held keeps running.
+void FailedWrites(const std::wstring& base) {
+    Folder f(base);
+    const std::wstring file = ScriptFilePath(f.scripts, "Locked");
+    WriteScriptFile(f.store, "Locked", false, "v1", "");
+    {
+        std::lock_guard<std::recursive_mutex> lock(f.guard);
+        f.held.Remove("Locked");
+    }
+    const std::string heldBefore = Bytes(HeldListPath(f.scripts));
+    const std::string revision = f.Revision("Locked");
+    SetFileAttributesW(file.c_str(), FILE_ATTRIBUTE_READONLY);   // the move over the script fails
+
+    std::atomic<bool> stop{false};
+    std::atomic<bool> seenHeld{false};
+    std::thread scan([&] {
+        while (!stop) {
+            std::lock_guard<std::recursive_mutex> lock(f.guard);
+            if (f.held.Contains("Locked")) {
+                seenHeld = true;
+            }
+        }
+    });
+    bool allFailed = true;
+    for (int i = 0; i < 50; ++i) {
+        allFailed &= WriteScriptFile(f.store, "Locked", false, "v2", revision) == ScriptFileResult::Failed;
+    }
+    stop = true;
+    scan.join();
+    Check(allFailed, "a write whose move fails: Failed");
+    Check(!seenHeld, "the scan never sees the name held while the file is unchanged");
+    Check(Bytes(file) == "v1" && !f.Held("Locked") && Bytes(HeldListPath(f.scripts)) == heldBefore,
+          "the script file and the held list are unchanged");
+    Check(Bytes(ScriptBackupPath(f.scripts, "Locked")) == "v1", "the backup is a copy of the unchanged file");
+    Check(Listed(f.scripts, L"*.write").empty() && Listed(f.scripts + L"\\.nickel\\backup", L"*.write").empty(),
+          "no temporary file is left");
+    SetFileAttributesW(file.c_str(), FILE_ATTRIBUTE_NORMAL);
+
+    // the held list cannot be written: Failed before the move, the script file is unchanged
+    const std::wstring list = HeldListPath(f.scripts);
+    SetFileAttributesW(list.c_str(), FILE_ATTRIBUTE_READONLY);
+    Check(WriteScriptFile(f.store, "Locked", false, "v3", revision) == ScriptFileResult::Failed && Bytes(file) == "v1"
+                  && !f.Held("Locked") && Listed(f.scripts, L"*.write").empty(),
+          "a held list that cannot be written: Failed, the script file is unchanged, no temporary file is left");
+    SetFileAttributesW(list.c_str(), FILE_ATTRIBUTE_NORMAL);
+    Check(WriteScriptFile(f.store, "Locked", false, "v3", revision) == ScriptFileResult::Done && Bytes(file) == "v3"
+                  && f.Held("Locked"),
+          "once the disk accepts it, the same write succeeds");
 }
 
 void Backups(const std::wstring& base) {
@@ -269,6 +350,8 @@ int main() {
     Revisions();
     Writes(root + L"\\writes");
     Backups(root + L"\\backups");
+    KnownNames(root + L"\\known");
+    FailedWrites(root + L"\\failed");
     Removal(root + L"\\removal");
     HeldNames(root + L"\\held");
     Threads(root + L"\\threads");

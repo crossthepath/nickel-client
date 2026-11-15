@@ -196,14 +196,12 @@ inline std::string WithoutUtf8Bom(const std::string& source) {
     return source.compare(0, 3, "\xef\xbb\xbf") == 0 ? source.substr(3) : source;
 }
 
-// True when `name` can be the name of a new script file, `<scripts folder>\<name>.luau`, that the engine will run:
-// 1 to 64 bytes of well-formed UTF-8 (a malformed name would become U+FFFD in the file name, so the script could not
-// be found by its name); no control character and none of < > : " / \ | ? *; not starting with a dot or a space
-// (the engine keeps its own files there, such as .storage); not ending with a dot or a space (Windows drops them);
-// not ending with ".d" (a *.d.luau file is a type declaration and never runs); not a Windows device name (CON, PRN,
-// AUX, NUL, COM1 to COM9, LPT1 to LPT9, and COM or LPT followed by a superscript 1, 2 or 3, also before a dot).
-inline bool ValidScriptName(const std::string& name) {
-    if (name.empty() || name.size() > 64 || !WellFormedUtf8(name)) {
+// True when `name` can be the stem of a file in the scripts folder: not empty, well-formed UTF-8, no control
+// character and none of < > : " / \ | ? *. Looser than ValidScriptName on purpose: the held list keeps every name the
+// library accepted, including an existing user file that a new file could not be named (longer than 64 bytes, or
+// starting with a space or a dot), so that script stays held after a restart.
+inline bool HeldListName(const std::string& name) {
+    if (name.empty() || !WellFormedUtf8(name)) {
         return false;
     }
     for (char c : name) {
@@ -216,6 +214,19 @@ inline bool ValidScriptName(const std::string& name) {
                 return false;
             }
         }
+    }
+    return true;
+}
+
+// True when `name` can be the name of a new script file, `<scripts folder>\<name>.luau`, that the engine will run:
+// 1 to 64 bytes of well-formed UTF-8 (a malformed name would become U+FFFD in the file name, so the script could not
+// be found by its name); no control character and none of < > : " / \ | ? *; not starting with a dot or a space
+// (the engine keeps its own files there, such as .storage); not ending with a dot or a space (Windows drops them);
+// not ending with ".d" (a *.d.luau file is a type declaration and never runs); not a Windows device name (CON, PRN,
+// AUX, NUL, COM1 to COM9, LPT1 to LPT9, and COM or LPT followed by a superscript 1, 2 or 3, also before a dot).
+inline bool ValidScriptName(const std::string& name) {
+    if (name.size() > 64 || !HeldListName(name)) {
+        return false;
     }
     if (name.front() == '.' || name.front() == ' ' || name.back() == '.' || name.back() == ' ') {
         return false;
@@ -319,8 +330,9 @@ enum class ScriptFileResult {
 };
 constexpr size_t kMaxScriptBytes = 1024 * 1024;
 
-// The held list (scripts\.nickel\held.txt): one name per line; blank lines, invalid names (ValidScriptName) and
-// repeats (ignoring case, the first is kept) are dropped; '\r' is ignored, so a list saved with CRLF reads the same.
+// The held list (scripts\.nickel\held.txt): one name per line; blank lines, lines that cannot be a file stem
+// (HeldListName) and repeats (ignoring case, the first is kept) are dropped; '\r' is ignored, so a list saved with
+// CRLF reads the same.
 inline std::vector<std::string> ParseHeldList(const std::string& text) {
     std::vector<std::string> names;
     size_t start = 0;
@@ -339,7 +351,7 @@ inline std::vector<std::string> ParseHeldList(const std::string& text) {
         for (const std::string& name : names) {
             repeated = repeated || SameScriptName(name, line);
         }
-        if (!line.empty() && !repeated && ValidScriptName(line)) {
+        if (!repeated && HeldListName(line)) {
             names.push_back(line);
         }
         start = end + 1;

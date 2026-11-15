@@ -391,9 +391,26 @@ void HeldList() {
           "blank lines are dropped; the last line needs no line end");
     Check(ParseHeldList("Fly\nfly\nFLY\nother\n") == std::vector<std::string>({"Fly", "other"}),
           "repeats differing only in case are dropped, the first is kept");
-    Check(ParseHeldList("ok\na/b\n.hidden\ncon\nbad\xc3\n" + std::string(65, 'x') + "\nlast\n")
+    Check(ParseHeldList("ok\na/b\nback\\slash\nwhat?\nbad\xc3\ntab\there\nlast\n")
                   == std::vector<std::string>({"ok", "last"}),
-          "invalid names are dropped");
+          "lines that cannot be a file stem are dropped (separator, reserved character, bad UTF-8, control character)");
+    // Names a new file may not have but an existing user file can: the held list keeps them, so such a script stays
+    // held after a restart.
+    std::string accented;
+    for (int i = 0; i < 40; ++i) {
+        accented += "\xc3\xa9";
+    }
+    const std::vector<std::string> existing = {std::string(65, 'x'), accented, " Spaced", ".dotted", "trailing.", "con"};
+    bool refusedForNewFiles = true;
+    for (const std::string& name : existing) {
+        refusedForNewFiles &= !ValidScriptName(name) && HeldListName(name);
+    }
+    Check(refusedForNewFiles, "HeldListName accepts names ValidScriptName refuses for new files");
+    Check(ParseHeldList(FormatHeldList(existing)) == existing,
+          "a round trip keeps names ValidScriptName refuses (65 bytes, 40 accented letters, leading space or dot)");
+    Check(!HeldListName("") && !HeldListName("a/b") && !HeldListName("a\\b") && !HeldListName("a\nb")
+                  && !HeldListName("a\x7f") && !HeldListName("a\x80"),
+          "HeldListName refuses empty, separators, control characters and malformed UTF-8");
     Check(ParseHeldList("\xc3\xa9t\xc3\xa9\n") == std::vector<std::string>({"\xc3\xa9t\xc3\xa9"}), "UTF-8 names are kept");
     Check(ParseHeldList("").empty() && FormatHeldList({}).empty(), "an empty list is an empty file");
 }

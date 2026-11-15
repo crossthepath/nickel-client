@@ -8,8 +8,10 @@
 //   .nickel\held.txt                  the held list (ParseHeldList / FormatHeldList in script_library.hpp)
 //   .nickel\backup\<name>.luau.bak    the previous version of a script, one level
 // Locks: `files` (scriptFiles in the engine) orders the library's writers for the whole of a call; `guard`
-// (scriptGuard) is taken only to change the held list and is never held while waiting for `files`, so the two cannot
-// deadlock and the game thread never waits on the disk. Design: docs/architecture/script-management-next.md.
+// (scriptGuard) is taken only to change the held list (and, for a write, to move the finished temporary file over the
+// script in the same section) and is never held while waiting for `files`, so the two cannot deadlock and the game
+// thread waits at most for the held list and one file move, never for a script's text to be written.
+// Design: docs/architecture/script-management-next.md.
 #include <windows.h>
 #include <bcrypt.h>
 
@@ -101,11 +103,13 @@ inline void MakeScriptFolders(const std::wstring& folder) {
     CreateDirectoryW((folder + L"\\.nickel\\backup").c_str(), nullptr);
 }
 
-// Writes `bytes` to `target` in one step: first to ".<stem>.<thread>.<n>.write" in the same folder (a name the folder
-// scan ignores and no other call uses), then moved over the target. The temporary file is deleted on failure.
-inline bool WriteScriptFileInOneStep(const std::wstring& target, const std::wstring& stem, const std::string& bytes) {
+// Writes `bytes` to a new temporary file next to `target`, ".<stem>.<thread>.<n>.write" (a name the folder scan
+// ignores and no other call uses), and sets `temporary` to its path. False when it cannot be written completely; the
+// temporary file is deleted then.
+inline bool WriteScriptTemporary(const std::wstring& target, const std::wstring& stem, const std::string& bytes,
+                                 std::wstring& temporary) {
     static std::atomic<unsigned> writes{0};
-    const std::wstring temporary = target.substr(0, target.find_last_of(L'\\')) + L"\\." + stem + L"."
+    temporary = target.substr(0, target.find_last_of(L'\\')) + L"\\." + stem + L"."
             + std::to_wstring(GetCurrentThreadId()) + L"." + std::to_wstring(++writes) + L".write";
     FILE* file = nullptr;
     if (_wfopen_s(&file, temporary.c_str(), L"wb") || !file) {
@@ -113,12 +117,26 @@ inline bool WriteScriptFileInOneStep(const std::wstring& target, const std::wstr
     }
     const bool written = fwrite(bytes.data(), 1, bytes.size(), file) == bytes.size();
     const bool closed = fclose(file) == 0;
-    if (written && closed
-        && MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    if (!written || !closed) {
+        DeleteFileW(temporary.c_str());
+        return false;
+    }
+    return true;
+}
+
+// Moves a temporary file of WriteScriptTemporary over `target`; the temporary file is deleted on failure.
+inline bool MoveScriptTemporary(const std::wstring& temporary, const std::wstring& target) {
+    if (MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         return true;
     }
     DeleteFileW(temporary.c_str());
     return false;
+}
+
+// Writes `bytes` to `target` in one step: to a temporary file (WriteScriptTemporary), then moved over the target.
+inline bool WriteScriptFileInOneStep(const std::wstring& target, const std::wstring& stem, const std::string& bytes) {
+    std::wstring temporary;
+    return WriteScriptTemporary(target, stem, bytes, temporary) && MoveScriptTemporary(temporary, target);
 }
 
 // Writes the held list of `folder` (.nickel\held.txt).
@@ -150,11 +168,14 @@ public:
         return false;
     }
 
-    // Adds `name` and writes the list. False when the list cannot be written; nothing changes then. `added` (optional)
-    // tells whether the name was missing.
+    // Adds `name` and writes the list. False when the list cannot be written, or when `name` could not be read back
+    // from it (not a HeldListName); nothing changes then. `added` (optional) tells whether the name was missing.
     bool Add(const std::string& name, bool* added = nullptr) {
         if (added) {
             *added = false;
+        }
+        if (!HeldListName(name)) {
+            return false;
         }
         if (Contains(name)) {
             return true;
@@ -205,36 +226,45 @@ inline bool ScriptHasBackup(const std::wstring& folder, const std::string& name)
 }
 
 // WriteScriptFile with `files` already taken and `text` already without its byte order mark and within the limit.
+// Order: the new text goes to a temporary file first, then the replaced file to the backup, then, under `guard`, the
+// name is held and the temporary file moved over the script. A failure before the backup changes nothing; a failure
+// after it leaves the script file and the held list as they were, with the backup now a copy of the unchanged file.
+// The held entry and the move share one `guard` section, so the folder scan never sees a script held whose file did
+// not change: a running script that is not held keeps running when the write fails.
 inline ScriptFileResult WriteScriptFileLocked(const ScriptFolderFiles& store, const std::string& name,
                                               const std::string& text, const std::string& expectedSha256) {
     MakeScriptFolders(store.folder);
     const std::wstring target = ScriptFilePath(store.folder, name);
-    if (!ScriptFileExists(target)) {
+    const bool exists = ScriptFileExists(target);
+    std::string current;
+    if (!exists) {
         if (!expectedSha256.empty()) {
             return ScriptFileResult::Conflict;
         }
     } else {
-        std::string current;
         if (!ReadScriptBytes(target, current)) {
             return ScriptFileResult::Failed;
         }
         if (expectedSha256.empty() || ScriptSha256(current) != expectedSha256) {
             return ScriptFileResult::Conflict;
         }
-        if (!WriteScriptFileInOneStep(ScriptBackupPath(store.folder, name), ScriptWide(name), current)) {
-            return ScriptFileResult::Failed;
-        }
     }
+    std::wstring temporary;
+    if (!WriteScriptTemporary(target, ScriptWide(name), text, temporary)) {
+        return ScriptFileResult::Failed;
+    }
+    if (exists && !WriteScriptFileInOneStep(ScriptBackupPath(store.folder, name), ScriptWide(name), current)) {
+        DeleteFileW(temporary.c_str());
+        return ScriptFileResult::Failed;
+    }
+    std::lock_guard<std::recursive_mutex> lock(store.guard);
     bool added = false;
-    {
-        std::lock_guard<std::recursive_mutex> lock(store.guard);
-        if (!store.held.Add(name, &added)) {
-            return ScriptFileResult::Failed;
-        }
+    if (!store.held.Add(name, &added)) {
+        DeleteFileW(temporary.c_str());
+        return ScriptFileResult::Failed;
     }
-    if (!WriteScriptFileInOneStep(target, ScriptWide(name), text)) {
+    if (!MoveScriptTemporary(temporary, target)) {
         if (added) {
-            std::lock_guard<std::recursive_mutex> lock(store.guard);
             store.held.Remove(name);
         }
         return ScriptFileResult::Failed;

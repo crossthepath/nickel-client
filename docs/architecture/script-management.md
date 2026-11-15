@@ -55,6 +55,7 @@ Helpers shared by every caller:
 - `MatchingScripts` is the tab's search, which ignores case.
 - `ToggleScript` is the row button: it stops a running script and starts any other.
 - `WellFormedUtf8`, `ValidScriptName` and `WithoutUtf8Bom` check and clean what `WriteSource` receives.
+  `HeldListName`, looser, is what the held list keeps: any name a script file can have.
 
 ## The Scripting tab
 

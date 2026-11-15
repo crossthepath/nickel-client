@@ -29,7 +29,9 @@ migration, the risks and how the work splits into pull requests.
 
 The engine keeps a list of **held** names in `scripts\.nickel\held.txt`: UTF-8, one script name per line, compared
 without case (`SameScriptName`). A held script is never loaded, and therefore never runs, until something calls
-`Start` for it.
+`Start` for it. Reading the list keeps every line that can be a file stem (`HeldListName`: well-formed UTF-8, no control
+or reserved character), not only names `ValidScriptName` accepts, so an existing user file with a longer or unusual
+name stays held after a restart.
 
 Why this file:
 
@@ -135,11 +137,15 @@ so the game thread never waits on disk I/O):
    PUBLIC 200 KB, the AI 64 KB.
 3. Read the current file. If it is missing and `expectedSha256` is not empty, or it exists and its revision is not
    `expectedSha256`, return `Conflict`.
-4. If the file exists, copy it to the backup (below).
-5. Add the name to the held list and save the list (under `scriptGuard`).
-6. Write the temporary file `.<name>.<thread>.<n>.write`, then move it over `<name>.luau` with
-   `MOVEFILE_REPLACE_EXISTING`. On failure, delete the temporary file, remove the held entry again if this call added
-   it, and return `Failed`. Otherwise return `Done`.
+4. Write the temporary file `.<name>.<thread>.<n>.write` completely. On failure, delete it and return `Failed`:
+   nothing changed.
+5. If the file exists, copy it to the backup (below). On failure, delete the temporary file and return `Failed`; the
+   old backup is kept.
+6. Under one `scriptGuard` section: add the name to the held list and save the list, then move the temporary file over
+   `<name>.luau` with `MOVEFILE_REPLACE_EXISTING`. On failure, delete the temporary file, remove the held entry again if
+   this call added it, and return `Failed`. Otherwise return `Done`. Because the folder scan also runs under
+   `scriptGuard`, it never sees the name held while the file is unchanged, so a failed write does not stop a running
+   script. After a failure at this step the backup is a copy of the unchanged file.
 
 The new revision is the SHA-256 of the bytes written. The caller can compute it, or call `ReadSource`. A running
 script whose file is replaced this way is unloaded at the next scan and stays held. The AI then asks the player and
@@ -308,7 +314,7 @@ Pure tests, in `tests/script_library_checks.cpp` (no Lua, no Windows):
   - CRLF;
   - blank lines;
   - repeats differing only in case;
-  - invalid names dropped;
+  - lines that cannot be a file stem dropped, names `ValidScriptName` refuses but a file can have kept;
   - UTF-8 names kept.
 - `ParseCompileError`: `":12: msg"`, a message without a line, an empty message, a very large line number.
 - `Sha256Hex` / `ValidSha256Hex`: the FIPS 180-2 `"abc"` digest, upper case and 63-character input refused.
