@@ -53,7 +53,9 @@
         "native/script_api21.hpp",
         "native/script_modules.hpp",
         "native/script_host.hpp",
-        "native/module_registry.hpp"
+        "native/module_registry.hpp",
+        "native/script_canvas.hpp",
+        "native/script_draw.hpp"
       ],
       "identifiers": [
         "modules",
@@ -95,23 +97,23 @@
         "opened": 0,
         "KeysAllowed": 0,
         "gameWindowForKeys": 0,
-        "Label": 2,
-        "TextWidth": 1,
-        "HudList": 1,
-        "Place": 1,
-        "ParseColor": 1,
-        "FormatColor": 2,
+        "Label": 0,
+        "TextWidth": 0,
+        "HudList": 0,
+        "Place": 0,
+        "ParseColor": 0,
+        "FormatColor": 0,
         "Wide": 2,
         "Utf8": 1,
         "WriteLog": 1,
-        "regular": 1,
-        "bold": 1,
-        "semibold": 1,
-        "ImGui": 5,
-        "ImDrawList": 14,
-        "ImVec2": 19,
-        "ImVec4": 7,
-        "ImU32": 6
+        "regular": 0,
+        "bold": 0,
+        "semibold": 0,
+        "ImGui": 0,
+        "ImDrawList": 0,
+        "ImVec2": 0,
+        "ImVec4": 0,
+        "ImU32": 0
       }
     },
     {

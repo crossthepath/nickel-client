@@ -5,6 +5,24 @@
 // notifications). InitializeMenu passes MenuScriptHostInstance() to SetScriptHost before any script runs.
 #include "script_keys.hpp" // ScriptKeyDown
 
+// Script drawing on an ImGui draw list, with Nickel's fonts for text (Label, TextWidth).
+class MenuScriptCanvas final : public ImGuiScriptCanvas {
+public:
+    void Text(CanvasFont font, float size, CanvasPoint topLeft, const char* text, CanvasColor color) override {
+        Label(list, FontOf(font), size, ImVec2(topLeft.x, topLeft.y), text, color);
+    }
+
+    float MeasureText(CanvasFont font, float size, const char* text) override {
+        return TextWidth(FontOf(font), size, text);
+    }
+
+private:
+    // Read at each call: the fonts are rebuilt when the renderer restarts.
+    static ImFont* FontOf(CanvasFont font) {
+        return font == CanvasFont::Bold ? bold : (font == CanvasFont::SemiBold ? semibold : regular);
+    }
+};
+
 class MenuScriptHost final : public ScriptHost {
 public:
     int Count() const override { return static_cast<int>(modules.size()); }
@@ -86,6 +104,31 @@ public:
             WriteLog(line.c_str());
         }
     }
+
+    // World drawing goes to ImGui's background list; HUD drawing to the HUD list, which is never rendered while the
+    // HUD is hidden (outside play), so script HUD state keeps running.
+    ScriptCanvas& Canvas(CanvasLayer layer) override {
+        MenuScriptCanvas& canvas = layer == CanvasLayer::World ? world_ : hud_;
+        canvas.list = layer == CanvasLayer::World ? ImGui::GetBackgroundDrawList() : HudList();
+        return canvas;
+    }
+
+    CanvasPoint DisplaySize() const override {
+        const ImVec2 size = ImGui::GetIO().DisplaySize;
+        return {size.x, size.y};
+    }
+
+    HudFrame PlaceHud(const std::string& id, float width, float height) override {
+        HudPlace& place = Place(id.c_str(), 20, 200);
+        const HudFrame frame{place.x, place.y, place.scale};
+        place.lo = ImVec2(frame.x, frame.y);
+        place.hi = ImVec2(frame.x + width * frame.scale, frame.y + height * frame.scale);
+        return frame;
+    }
+
+private:
+    MenuScriptCanvas world_;
+    MenuScriptCanvas hud_;
 };
 
 ScriptHost& MenuScriptHostInstance() {
