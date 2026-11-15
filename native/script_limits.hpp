@@ -9,3 +9,16 @@ inline bool ScriptOverLimit(double start,double limit,bool& expired,double now){
  if(start<=0)return false;
  if(now-start>limit)expired=true;
  return expired;}
+
+// Start and end of a protected call (ScriptCall). Begin returns the state before the call, to give back to End.
+// A call made while another call of the same script is running (an API function that runs a script callback, such as
+// useItem's done) keeps the running call's start and limit: it can neither reset nor extend them, and when it runs out
+// of time the running call is out of time too. Only the outermost call starts and clears the clock.
+struct ScriptCallState{double start=0;bool expired=false;};
+inline ScriptCallState ScriptCallBegin(double& start,bool& expired,double now){
+ const ScriptCallState outer{start,expired};
+ if(start<=0){start=now;expired=false;}
+ return outer;}
+inline void ScriptCallEnd(double& start,bool& expired,const ScriptCallState& outer){
+ if(outer.start<=0){start=0;expired=false;}
+ else{start=outer.start;expired=outer.expired||expired;}}

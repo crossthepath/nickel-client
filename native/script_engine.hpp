@@ -49,7 +49,8 @@ void ScriptError(Script& s,const std::string& message){
 }
 // Stack: function then arguments; returns true if the call finished without error (results left on the stack).
 bool ScriptCall(Script& s,lua_State* L,int args,int results){
- s.callStart=ScriptNow();s.expired=false;const int status=lua_pcall(L,args,results,0);const double spent=ScriptNow()-s.callStart;if(!s.loading)s.frameSum+=spent;s.callStart=0;s.expired=false;
+ const double began=ScriptNow();const ScriptCallState outer=ScriptCallBegin(s.callStart,s.expired,began);
+ const int status=lua_pcall(L,args,results,0);const double spent=ScriptNow()-began;if(!s.loading)s.frameSum+=spent;ScriptCallEnd(s.callStart,s.expired,outer);
  if(status!=LUA_OK){const char* text=lua_tostring(L,-1);ScriptError(s,text?text:"error");lua_pop(L,1);return false;}return true;}
 void ScriptInterrupt(lua_State* L,int gc){if(gc>=0)return;Script* s=ScriptOf(L);if(s&&ScriptOverLimit(s->callStart,s->limit,s->expired,ScriptNow())){luaL_error(L,s->loading?"script took longer than one second to load":"script call took longer than 50 ms");}}
 void* ScriptAlloc(void* ud,void* ptr,size_t osize,size_t nsize){Script* s=(Script*)ud;if(nsize==0){free(ptr);s->memory-=std::min(s->memory,osize);return nullptr;}

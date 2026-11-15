@@ -22,19 +22,27 @@ void Interrupt(lua_State* L,int gc){
  Call* c=static_cast<Call*>(lua_callbacks(L)->userdata);
  if(c&&ScriptOverLimit(c->start,c->limit,c->expired,Now()))luaL_error(L,"script call took longer than 50 ms");}
 
+// The protected call of ScriptCall: start, lua_pcall, end (ScriptCallBegin / ScriptCallEnd).
+int ProtectedCall(lua_State* L,Call& call,int args,int results){
+ const ScriptCallState outer=ScriptCallBegin(call.start,call.expired,Now());
+ const int status=lua_pcall(L,args,results,0);
+ ScriptCallEnd(call.start,call.expired,outer);return status;}
+// nested(f): runs f through its own protected call while the script's call is running, as an API function does when it
+// calls a script callback (useItem's done, an event dispatched from inside an action). Returns f's success.
+int Nested(lua_State* L){
+ Call* c=static_cast<Call*>(lua_callbacks(L)->userdata);luaL_checktype(L,1,LUA_TFUNCTION);lua_pushvalue(L,1);
+ const int status=ProtectedCall(L,*c,0,0);if(status!=LUA_OK)lua_pop(L,1);lua_pushboolean(L,status==LUA_OK);return 1;}
 struct Outcome{bool ok=false;std::string error;double seconds=0;};
 // Compiles and runs `source` in a fresh VM under the 50 ms limit, like ScriptCall (start, pcall, reset).
 Outcome Run(const char* source){
  Outcome out;Call call;
  lua_State* L=luaL_newstate();luaL_openlibs(L);
- lua_callbacks(L)->userdata=&call;lua_callbacks(L)->interrupt=Interrupt;
+ lua_callbacks(L)->userdata=&call;lua_callbacks(L)->interrupt=Interrupt;lua_pushcfunction(L,Nested,"nested");lua_setglobal(L,"nested");
  size_t size=0;char* bytecode=luau_compile(source,std::strlen(source),nullptr,&size);
  const bool loaded=luau_load(L,"=check",bytecode,size,0)==0;std::free(bytecode);
  if(!loaded){out.error=lua_tostring(L,-1);lua_close(L);return out;}
  const double began=Now();
- call.start=began;call.expired=false;
- const int status=lua_pcall(L,0,0,0);
- call.start=0;call.expired=false;
+ const int status=ProtectedCall(L,call,0,0);
  out.seconds=Now()-began;out.ok=status==LUA_OK;
  if(!out.ok){const char* text=lua_tostring(L,-1);out.error=text?text:"";}
  lua_close(L);return out;}
@@ -58,6 +66,12 @@ int main(){
  Check(Stopped(RunWatched("local function f() while true do end end while true do xpcall(f,function(e) return e end) end","xpcall")),
        "an endless loop is stopped through xpcall with a handler");
  Check(Stopped(RunWatched("while true do pcall(error,'x') end","pcall of error")),"an endless loop of caught errors is stopped");
+ Check(Stopped(RunWatched("nested(function() end) while true do end","nested call then loop")),
+       "a nested protected call does not reset the running call's limit");
+ Check(Stopped(RunWatched("while true do nested(function() end) end","nested calls in a loop")),"an endless loop of nested calls is stopped");
+ Check(Stopped(RunWatched("nested(function() while true do end end) while true do end","nested call past the limit")),
+       "a nested call that runs out of time stops the call it runs in");
+ Check(RunWatched("local ok=nested(function() end) assert(ok)","short nested call").ok,"a short nested call finishes without error");
  // The limit belongs to one call: a later call starts with a fresh budget.
  {Call call;call.start=1;bool& e=call.expired;
   Check(!ScriptOverLimit(call.start,.05,e,1.01),"within the limit");
