@@ -1,9 +1,15 @@
 // PUBLIC pages of the menu: the sidebar group PUBLIC with Scripts (tab 11) and Configs (tab 12), shared by players on
-// nickelclient.com. Each page has the sort tabs Top Rated / Trending / Recent, a search box, a grid of cards (name,
-// author, stars, downloads, summary, installed / held / update pills) with Load more, and the details side panel
+// nickelclient.com. Each page has the tabs Top Rated / Trending / Recent / Starred, a search box, a grid of cards
+// (name, author, stars, downloads, summary, installed / held / update pills) with Load more, and the details side panel
 // (description, version, capabilities of scripts with the sensitive ones in red, the settings a config changes,
-// Install / Update / Start / Uninstall, the star). Scripts are always shown as source before they are installed, and
-// they are installed held: only Start (ScriptLibrary::Start, render thread) runs them.
+// Install / Update / Start / Uninstall, Star, Report). Scripts are always shown as source before they are installed,
+// and they are installed held: only Start (ScriptLibrary::Start, render thread) runs them.
+//
+// No sign-in anywhere: stars, reports and publishing carry this install's anonymous key (public_identity.hpp). Stars
+// are favourites listed in the Starred tab. OTHER -> Scripting and OTHER -> Configs get a Publish button
+// (DrawPublishButton) that opens the publish form in the main panel (DrawPublishForm): the automatic check first, a
+// clear warning that publishing is final, then Publish, or Publish update with a changelog for an item this install
+// published. Nothing here can delete, unlist or hide a published item.
 //
 // PUBLIC is off by default (Settings > Connection > Online community (PUBLIC)). While it is off the pages show how
 // to turn it on, and nothing is created, read or requested: the PublicClient and its worker thread only exist once
@@ -61,9 +67,17 @@ public:
 
     bool Revocations() override { return true; }
 
-    bool Library() override { return true; }
+    bool LookupStarred(std::vector<std::string>) override { return true; }
 
     bool Star(const std::string&, bool) override { return true; }
+
+    bool Check(pub::Kind, const std::string&, const std::string&, const std::string&) override { return true; }
+
+    bool Publish(const pub::PublishRequest&) override { return true; }
+
+    bool PublishVersion(const std::string&, const pub::PublishRequest&) override { return true; }
+
+    bool Report(const std::string&, const std::string&, const std::string&) override { return true; }
 };
 
 struct PublicMenu {
@@ -71,15 +85,29 @@ struct PublicMenu {
     // Created when PUBLIC is first on and never destroyed: the overlay has no unload path, and a destructor at
     // process exit would join the worker thread inside DllMain.
     pub::PublicClient* client = nullptr;
-    pub::CredentialTokenSource* tokens = nullptr;
+    pub::InstallIdentity* identity = nullptr; // root\public\install.key, read or created on the first write only
     pub::ClientRequests* requests = nullptr;
     pub::PageRequests* reviewRequests = nullptr;
     bool review = false;
     pub::Snapshot snap;
     uint64_t version = 0;
-    bool signedIn = false;
-    std::string handle;
     char search[2][72]{};
+    // report form of the side panel
+    std::string reportFor; // the card whose Report was pressed
+    int reportCategory = -1;
+    char reportDetails[1024]{};
+    // publish form (OTHER -> Scripting, OTHER -> Configs)
+    bool publishOpen = false;
+    pub::Kind publishKind = pub::Kind::Script;
+    std::string publishName;
+    char formName[128]{};
+    char formSummary[320]{};
+    char formDescription[16384]{};
+    char formTags[160]{};
+    char formAuthor[160]{};
+    char formChangelog[8192]{};
+    std::string publishError;
+    double publishArmedAt = -10;
     std::string armed; // the card whose Uninstall was clicked once
     double armedAt = 0;
     std::string edited; // the card whose Uninstall answered Modified: "Remove anyway?"
@@ -228,9 +256,11 @@ void PublicTick() {
         return; // never on in this session: nothing created, read or requested
     }
     if (!m.page) {
+        m.identity = new pub::InstallIdentity(pub::InstallKeyPath(PublicRoot())); // no disk access until a write
         pub::PageOptions options;
         options.root = PublicRoot();
         options.library = &ScriptsLibrary();
+        options.identity = m.identity;
         m.page = std::make_unique<pub::PublicPage>(std::move(options));
     }
     if (on && m.review && !m.reviewRequests) {
@@ -238,10 +268,9 @@ void PublicTick() {
         m.snap = PublicReviewSnapshot(reviewMode);
     }
     if (on && !m.review && !m.client) {
-        m.tokens = new pub::CredentialTokenSource();
         pub::ClientConfig config;
         config.userAgent = L"Nickel-Overlay/" + Wide(pub::kRunningNickel);
-        m.client = new pub::PublicClient(config, m.tokens);
+        m.client = new pub::PublicClient(config, m.identity);
         m.requests = new pub::ClientRequests(m.client);
     }
     m.page->SetRequests(on ? (m.review ? m.reviewRequests : static_cast<pub::PageRequests*>(m.requests)) : nullptr);
@@ -251,9 +280,8 @@ void PublicTick() {
             m.version = version;
             m.snap = m.client->Snap();
         }
-        m.signedIn = m.tokens->SignedIn(&m.handle);
     }
-    m.page->Tick(m.snap, on, m.signedIn, pub::detail::NowUnixMs());
+    m.page->Tick(m.snap, on, pub::detail::NowUnixMs());
     if (reviewMode > 0 && m.snap.lists[0] && !m.snap.lists[0]->items.empty()) {
         m.page->Select(pub::Kind::Script, m.snap.lists[0]->items[0].id);
         if (reviewMode == 2) {
@@ -446,6 +474,13 @@ const pub::Card* SelectedCard(pub::Kind kind, const pub::DetailResult** detailOu
         *detailOut = m.snap.detail.get();
         if (m.snap.detail->outcome.Ok() && !m.snap.detail->loading) {
             return &m.snap.detail->detail.card;
+        }
+    }
+    if (m.snap.starred && !m.snap.starred->loading) {
+        for (const pub::LookupEntry& entry : m.snap.starred->entries) {
+            if (entry.found && entry.card.id == id && entry.card.kind == kind) {
+                return &entry.card;
+            }
         }
     }
     if (const pub::ListResult* list = m.snap.List(kind)) {
@@ -818,14 +853,8 @@ void DrawPublic(ImVec2 origin, float s, float opacity) {
     }
     lastFrame = ImGui::GetFrameCount();
     age += io.DeltaTime;
-    // header, right side: account and installed items
+    // header, right side: installed items
     {
-        std::string account = m.review ? "Not signed in" : m.signedIn ? "Signed in" : "Not signed in";
-        if (m.signedIn && !m.handle.empty()) {
-            account = "Signed in as @" + m.handle;
-        }
-        const float w = TextWidth(regular, 12.5f, account.c_str());
-        Label(d, regular, 12.5f * s, P(menuW - 24 - w, 31), account.c_str(), Rgba(148, 148, 160, opacity));
         size_t updates = 0;
         const size_t installed = page.InstalledCount(kind);
         if (page.AnyUpdate(kind)) {
@@ -834,17 +863,18 @@ void DrawPublic(ImVec2 origin, float s, float opacity) {
         if (installed > 0) {
             const std::string mark = std::to_string(installed) + " installed" + (updates ? " \xc2\xb7 update" : "");
             const float mw = TextWidth(semibold, 12.5f, mark.c_str()) + 12;
-            const float x = menuW - 24 - w - 14 - mw;
+            const float x = menuW - 24 - mw;
             d->AddRectFilled(P(x, 29), P(x + mw, 48), Rgba(255, 255, 255, opacity), 0);
             Label(d, semibold, 12.5f * s, P(x + 6, 31), mark.c_str(), AccDeep(opacity));
         }
     }
-    // toolbar: search, the three sorts, Refresh
-    const pub::ListState state = page.StateOf(kind, m.snap, true);
+    // toolbar: search, the three rankings and Starred, Refresh
+    const pub::ListState state =
+            view.starredTab ? page.StarredState(kind, m.snap, true) : page.StateOf(kind, m.snap, true);
     {
-        const float sortW = 84 * U;
+        const float sortW = 76 * U;
         const float refreshW = 76 * U;
-        const float searchW = areaW - 3 * sortW - refreshW - 3 * 6 * U - 8 * U;
+        const float searchW = areaW - 4 * sortW - refreshW - 4 * 6 * U - 8 * U;
         ImGui::PushID(k);
         const bool entered = UiInput("##pub-search",
                                      kind == pub::Kind::Script ? "Search scripts" : "Search configs",
@@ -872,7 +902,7 @@ void DrawPublic(ImVec2 origin, float s, float opacity) {
         const pub::Sort values[3] = {pub::Sort::Top, pub::Sort::Trending, pub::Sort::Recent};
         float x = left + searchW + 8 * U;
         for (int i = 0; i < 3; ++i) {
-            const bool active = view.sort == values[i];
+            const bool active = !view.starredTab && view.sort == values[i];
             if (UiButton(d,
                          std::string("pub-sort") + sorts[i],
                          sorts[i],
@@ -886,6 +916,18 @@ void DrawPublic(ImVec2 origin, float s, float opacity) {
                 page.SetSort(kind, values[i]);
             }
             x += sortW + 6 * U;
+        }
+        if (UiButton(d,
+                     "pub-sort-starred",
+                     "Starred",
+                     P(x, top),
+                     sortW,
+                     32 * U,
+                     view.starredTab ? 1 : 0,
+                     true,
+                     opacity,
+                     s)) {
+            page.ShowStarred(kind);
         }
         const std::string refresh = state.retryIn > 0 ? std::to_string(state.retryIn) + " s" : "Refresh";
         if (UiButton(d,
@@ -933,7 +975,11 @@ void DrawPublic(ImVec2 origin, float s, float opacity) {
                          opacity,
                          s)) {
                 m.search[k][0] = 0;
-                page.ClearSearch(kind);
+                if (view.starredTab) {
+                    page.Type(kind, std::string());
+                } else {
+                    page.ClearSearch(kind);
+                }
             }
             return;
         default: {
@@ -1015,7 +1061,10 @@ void DrawPublic(ImVec2 origin, float s, float opacity) {
     }
     const std::vector<ScriptInfo> known =
             kind == pub::Kind::Script ? ScriptsLibrary().List() : std::vector<ScriptInfo>();
-    const size_t count = list != nullptr ? list->items.size() : 0;
+    const std::vector<pub::Card> starredCards =
+            view.starredTab ? page.StarredCards(kind, m.snap) : std::vector<pub::Card>();
+    const std::vector<pub::Card>* items = view.starredTab ? &starredCards : list != nullptr ? &list->items : nullptr;
+    const size_t count = items != nullptr ? items->size() : 0;
     const int rows = (int)((count + columns - 1) / columns);
     const float scrollY = ImGui::GetScrollY();
     const int firstRow = std::max(0, (int)(scrollY / (pitch * s)) - 2);
@@ -1026,11 +1075,11 @@ void DrawPublic(ImVec2 origin, float s, float opacity) {
             if (index >= count) {
                 break;
             }
-            const pub::Card& card = list->items[index];
+            const pub::Card& card = (*items)[index];
             const float rest = 1 - std::clamp((age - .03f * std::min((int)index, 12)) / .22f, 0.f, 1.f);
             const float e = 1 - rest * rest * rest;
             const ImVec2 p(base.x + col * (cardW + 10) * s, base.y + (row * pitch + (1 - e) * 10) * s);
-            const bool starred = pub::PublicPage::Starred(m.snap, card.id);
+            const bool starred = page.IsStarred(kind, card.id);
             DrawPublicCard(g,
                            card,
                            p,
@@ -1049,7 +1098,7 @@ void DrawPublic(ImVec2 origin, float s, float opacity) {
         }
     }
     float end = rows * pitch;
-    if (list != nullptr && !list->nextCursor.empty() && !list->fromCache) {
+    if (!view.starredTab && list != nullptr && !list->nextCursor.empty() && !list->fromCache) {
         const bool more = list->loadingMore;
         const ImVec2 at(base.x + (areaW - 120 * U) / 2 * s, base.y + (end + 4) * s);
         if (UiButton(g, "pub-more", more ? "Loading..." : "Load more", at, 120 * U, 30 * U, 0, !more, opacity, s)) {
@@ -1131,9 +1180,9 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
                                            : "Select a config to see its details.",
                  Rgba(148, 148, 160, a));
         }
-        if (!m.signedIn) {
-            note("Sign in through the Nickel launcher (Settings > Account) to star creations.", Rgba(120, 120, 132, a));
-        }
+        note(kind == pub::Kind::Script ? "Share your own from OTHER > Scripting: select a script and press Publish."
+                                       : "Share your own from OTHER > Configs: select a config and press Publish.",
+             Rgba(120, 120, 132, a));
         finish();
         return;
     }
@@ -1179,7 +1228,7 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
     }
     {
         const float at = take(16, 10);
-        const bool starred = pub::PublicPage::Starred(m.snap, card.id);
+        const bool starred = page.IsStarred(kind, card.id);
         DrawStar(d, P(x0 + 6, at + 7), 6 * s, starred ? Acc(a) : Rgba(148, 148, 160, a), starred);
         const std::string line = pub::FormatCount(card.stats.stars) + (card.stats.stars == 1 ? " star" : " stars")
                                  + "  \xc2\xb7  " + pub::FormatCount(card.stats.downloads)
@@ -1371,15 +1420,63 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
     if (mine && pending.step == pub::Step::Failed) {
         note(pending.message, Rgba(246, 160, 171, a));
     }
-    // star: only with an account (the launcher signs in)
-    if (m.signedIn) {
-        const bool starred = pub::PublicPage::Starred(m.snap, card.id);
+    // Star (a favourite of this install, listed in the Starred tab) and Report (anonymous, read by the moderators)
+    {
+        const bool starred = page.IsStarred(kind, card.id);
         const bool waiting = m.snap.star && m.snap.star->id == card.id && m.snap.star->loading;
-        if (one("pub-star", starred ? "Starred" : "Star", starred ? 1 : 0, !waiting)) {
-            page.Star(card.id, !starred);
+        const bool reporting = m.reportFor == card.id;
+        const int pressed = two("pub-star",
+                                starred ? "Starred" : "Star",
+                                starred ? 1 : 0,
+                                !waiting && !m.review,
+                                "pub-report",
+                                reporting ? "Cancel report" : "Report",
+                                reporting ? 0 : 3,
+                                !page.ReportSending());
+        if (pressed == 1) {
+            page.Star(kind, card.id, !starred);
+        } else if (pressed == 2) {
+            m.reportFor = reporting ? std::string() : card.id;
+            m.reportCategory = -1;
+            m.reportDetails[0] = 0;
         }
-    } else {
-        note("Sign in through the Nickel launcher (Settings > Account) to star creations.", Rgba(120, 120, 132, a));
+    }
+    if (m.reportFor == card.id) {
+        static const char* const kCategories[6] = {"malicious", "broken", "spam", "inappropriate", "stolen", "rules"};
+        static const char* const kLabels[6] = {
+                "Malicious", "Broken", "Spam", "Inappropriate", "Stolen", "Breaks rules"};
+        note("Why should the Nickel team look at it?", Rgba(214, 214, 222, a));
+        for (int row = 0; row < 3; ++row) {
+            const int first = row * 2;
+            const int pressed = two((std::string("pub-report-") + kCategories[first]).c_str(),
+                                    kLabels[first],
+                                    m.reportCategory == first ? 1 : 0,
+                                    true,
+                                    (std::string("pub-report-") + kCategories[first + 1]).c_str(),
+                                    kLabels[first + 1],
+                                    m.reportCategory == first + 1 ? 1 : 0,
+                                    true);
+            if (pressed != 0) {
+                m.reportCategory = first + pressed - 1;
+            }
+        }
+        {
+            const float at = take(32, 6);
+            UiInput("##pub-report-details",
+                    "Details (optional)",
+                    m.reportDetails,
+                    sizeof(m.reportDetails),
+                    P(x0, at),
+                    width,
+                    32 * U,
+                    10 * U,
+                    s,
+                    a);
+        }
+        if (one("pub-report-send", "Send report", 3, m.reportCategory >= 0 && !page.ReportSending())) {
+            page.Report(card, kCategories[m.reportCategory], m.reportDetails);
+            m.reportFor.clear();
+        }
     }
     {
         const float at = take(1, 10);
@@ -1525,4 +1622,308 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
     FadeEdges(s, opacity);
     EndChildWindow();
     finish();
+}
+
+// ---- publishing from OTHER -> Scripting and OTHER -> Configs
+
+// A multi-line field in the style of UiInput, with its hint drawn while it is empty.
+void PublicTextArea(const char* id,
+                    const char* hint,
+                    char* buffer,
+                    size_t size,
+                    ImVec2 at,
+                    float width,
+                    float height,
+                    float s,
+                    float a) {
+    ImGui::SetCursorScreenPos(at);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, a);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * s, 8 * s));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(.1f, .1f, .125f, .96f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(.12f, .12f, .15f, .96f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(.12f, .12f, .15f, .96f));
+    ImGui::InputTextMultiline(id, buffer, size, ImVec2(width * s, height * s));
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar(3);
+    if (buffer[0] == 0 && !ImGui::IsItemActive()) {
+        Label(ImGui::GetWindowDrawList(),
+              regular,
+              13 * s,
+              ImVec2(at.x + 10 * s, at.y + 8 * s),
+              hint,
+              Rgba(120, 120, 132, a));
+    }
+}
+
+void CopyField(char* buffer, size_t size, const std::string& text) {
+    strncpy_s(buffer, size, text.c_str(), _TRUNCATE);
+}
+
+// The Publish (or Publish update) button of the Scripting and Configs side panels: opens the form in the main panel.
+void DrawPublishButton(
+        ImDrawList* d, bool script, const std::string& name, ImVec2 lo, float width, float height, float s, float a) {
+    PublicMenu& m = Public();
+    const pub::Kind kind = script ? pub::Kind::Script : pub::Kind::Config;
+    const bool online = PublicOption().value && m.page;
+    const bool owned = m.page && m.page->OwnedItem(kind, name) != nullptr; // local: no request
+    const bool open = m.publishOpen && m.publishKind == kind && m.publishName == name;
+    if (UiButton(d,
+                 script ? "script-publish" : "config-publish",
+                 owned ? "Publish update" : "Publish",
+                 lo,
+                 width,
+                 height,
+                 open ? 1 : 0,
+                 !name.empty(),
+                 a,
+                 s)) {
+        if (m.page && m.page->Draft().step == pub::PublishStep::Publishing) {
+            return; // the publish on its way keeps its form
+        }
+        m.publishOpen = true;
+        m.publishKind = kind;
+        m.publishName = name;
+        m.publishError.clear();
+        m.publishArmedAt = -10;
+        CopyField(m.formName, sizeof(m.formName), name);
+        m.formSummary[0] = 0;
+        m.formDescription[0] = 0;
+        m.formTags[0] = 0;
+        m.formChangelog[0] = 0;
+        CopyField(m.formAuthor, sizeof(m.formAuthor), pub::ReadAuthorName(PublicRoot()));
+        if (online) {
+            m.page->BeginPublish(kind, name);
+        }
+    }
+}
+
+// The publish form in the main panel of OTHER -> Scripting (script) or OTHER -> Configs; false when it is not open
+// for that tab (the tab's own list is drawn instead).
+bool DrawPublishForm(ImVec2 origin, float s, float opacity, bool script) {
+    PublicMenu& m = Public();
+    const pub::Kind kind = script ? pub::Kind::Script : pub::Kind::Config;
+    if (!m.publishOpen || m.publishKind != kind) {
+        return false;
+    }
+    const float U = 242.f / 210.f;
+    const float left = 257;
+    const float right = menuW - 22;
+    const float top = 72;
+    const float areaW = right - left;
+    auto* d = ImGui::GetWindowDrawList();
+    auto P = [&](float x, float y) {
+        return ImVec2(origin.x + x * s, origin.y + y * s);
+    };
+    const bool online = PublicOption().value && m.page;
+    if (online) {
+        const pub::PublishDraft& draft = m.page->Draft();
+        if (draft.step != pub::PublishStep::Publishing
+            && (draft.step == pub::PublishStep::None || draft.kind != kind || draft.localName != m.publishName)) {
+            m.page->BeginPublish(kind, m.publishName); // PUBLIC was just turned on, or another item was chosen
+        }
+    }
+    const pub::PublishDraft* draft = online ? &m.page->Draft() : nullptr;
+    const bool publishing = draft != nullptr && draft->step == pub::PublishStep::Publishing;
+    const bool update = draft != nullptr && draft->update;
+    {
+        const std::string title = (update ? "Publish an update of " : "Publish ") + m.publishName;
+        Label(d,
+              bold,
+              17 * s,
+              P(left, top + 6),
+              Fit(bold, 17, title, areaW - 90 * U).c_str(),
+              Rgba(255, 255, 255, opacity));
+        if (UiButton(
+                    d, "pub-form-close", "Close", P(right - 76 * U, top), 76 * U, 32 * U, 0, !publishing, opacity, s)) {
+            if (!m.page || m.page->ClosePublish()) {
+                m.publishOpen = false;
+            }
+            return true;
+        }
+    }
+    float y = top + 42 * U;
+    auto line = [&](const std::string& text, ImU32 color, ImFont* font = nullptr, float size = 12.5f) {
+        for (const std::string& each : WrapText(font != nullptr ? font : regular, size, text, areaW - 20, 4)) {
+            Label(d, font != nullptr ? font : regular, size * s, P(left + 10, y), each.c_str(), color);
+            y += size + 5;
+        }
+    };
+    // the warning, always first
+    {
+        const char* body = "Once the automatic check passes it is public at once. You can never delete, unlist or make "
+                           "it private. Your file stays yours: later edits do not change the public copy, use Publish "
+                           "update.";
+        const size_t bodyLines = WrapText(regular, 12, body, areaW - 20, 4).size();
+        const float h = 8 + (13 + 5) + bodyLines * (12 + 5) + 4;
+        d->AddRectFilled(P(left, y), P(right, y + h), Rgba(42, 21, 24, .9f * opacity), 0);
+        const float keep = y;
+        y += 8;
+        line("Publishing is final: it cannot be removed.", Rgba(248, 113, 113, opacity), semibold, 13);
+        line(body, Rgba(246, 160, 171, opacity), regular, 12);
+        y = keep + h + 10;
+    }
+    if (!online) {
+        line("PUBLIC is off. Turn it on to check and publish; while it is off, Nickel sends nothing to the site.",
+             Rgba(214, 214, 222, opacity));
+        if (UiButton(d, "pub-form-turn-on", "Turn on PUBLIC", P(left, y + 4), 130 * U, 32 * U, 1, true, opacity, s)) {
+            TurnPublicOn();
+        }
+        return true;
+    }
+    // the automatic check
+    switch (draft->step) {
+        case pub::PublishStep::Checking:
+            line("Checking the file...", Rgba(148, 148, 160, opacity));
+            break;
+        case pub::PublishStep::Ready:
+        case pub::PublishStep::Publishing:
+        case pub::PublishStep::Done: {
+            std::string text = "Automatic check passed";
+            if (kind == pub::Kind::Script) {
+                std::string can;
+                for (const pub::Capability c : draft->check.capabilities) {
+                    can += (can.empty() ? "" : ", ") + std::string(pub::CapabilityName(c));
+                }
+                text += can.empty() ? ". It declares no capability." : ". It can: " + can + ".";
+            } else {
+                text += ".";
+            }
+            line(text, Rgba(159, 232, 191, opacity));
+            for (const pub::ScanNote& note : draft->check.warnings) {
+                line((note.line > 0 ? "Line " + std::to_string(note.line) + ": " : std::string()) + note.message,
+                     Rgba(255, 179, 92, opacity),
+                     regular,
+                     12);
+            }
+            break;
+        }
+        case pub::PublishStep::Failed:
+        default:
+            line(draft->message, Rgba(248, 113, 113, opacity));
+            for (const pub::ScanNote& note : draft->errors) {
+                line((note.line > 0 ? "Line " + std::to_string(note.line) + ": " : std::string())
+                             + (note.message.empty() ? note.code : note.message),
+                     Rgba(246, 160, 171, opacity),
+                     regular,
+                     12);
+            }
+            if (UiButton(d, "pub-form-retry", "Check again", P(left, y + 4), 110 * U, 30 * U, 0, true, opacity, s)) {
+                m.page->BeginPublish(kind, m.publishName);
+            }
+            return true;
+    }
+    if (draft->step == pub::PublishStep::Done) {
+        line(draft->message, Rgba(255, 255, 255, opacity), semibold, 13);
+        if (UiButton(d, "pub-form-done", "Close", P(left, y + 6), 90 * U, 30 * U, 1, true, opacity, s)) {
+            m.page->ClosePublish();
+            m.publishOpen = false;
+        }
+        return true;
+    }
+    y += 6;
+    const bool ready = draft->step == pub::PublishStep::Ready;
+    auto field = [&](const char* label, const char* id, const char* hint, char* buffer, size_t size) {
+        Label(d, bold, 10.5f * s, P(left, y), label, Rgba(120, 120, 132, opacity));
+        y += 15;
+        UiInput(id, hint, buffer, size, P(left, y), areaW, 30 * U, 10 * U, s, opacity);
+        y += 30 * U + 8;
+    };
+    if (update) {
+        Label(d, bold, 10.5f * s, P(left, y), "WHAT CHANGED", Rgba(120, 120, 132, opacity));
+        y += 15;
+        PublicTextArea("##pub-form-changelog",
+                       "Say what changed in this version",
+                       m.formChangelog,
+                       sizeof(m.formChangelog),
+                       P(left, y),
+                       areaW,
+                       90,
+                       s,
+                       opacity);
+        y += 98;
+        line("Players who installed it see Update available.", Rgba(148, 148, 160, opacity), regular, 12);
+    } else {
+        const float spare = menuH - 20 - y;
+        field("NAME", "##pub-form-name", "Name shown on PUBLIC", m.formName, sizeof(m.formName));
+        field("SUMMARY",
+              "##pub-form-summary",
+              "One line: what it does (up to 140 characters)",
+              m.formSummary,
+              sizeof(m.formSummary));
+        Label(d, bold, 10.5f * s, P(left, y), "DESCRIPTION", Rgba(120, 120, 132, opacity));
+        y += 15;
+        const float descriptionH = std::clamp(spare - 4 * (15 + 30 * U + 8) - 60, 40.f, 140.f);
+        PublicTextArea("##pub-form-description",
+                       "How to use it, its settings, what it needs",
+                       m.formDescription,
+                       sizeof(m.formDescription),
+                       P(left, y),
+                       areaW,
+                       descriptionH,
+                       s,
+                       opacity);
+        y += descriptionH + 8;
+        const float half = (areaW - 8) / 2;
+        Label(d, bold, 10.5f * s, P(left, y), "TAGS", Rgba(120, 120, 132, opacity));
+        Label(d, bold, 10.5f * s, P(left + half + 8, y), "AUTHOR NAME", Rgba(120, 120, 132, opacity));
+        y += 15;
+        UiInput("##pub-form-tags",
+                "pvp, hud (up to 5)",
+                m.formTags,
+                sizeof(m.formTags),
+                P(left, y),
+                half,
+                30 * U,
+                10 * U,
+                s,
+                opacity);
+        UiInput("##pub-form-author",
+                "Shown as the author",
+                m.formAuthor,
+                sizeof(m.formAuthor),
+                P(left + half + 8, y),
+                half,
+                30 * U,
+                10 * U,
+                s,
+                opacity);
+        y += 30 * U + 8;
+    }
+    if (!m.publishError.empty()) {
+        line(m.publishError, Rgba(246, 160, 171, opacity), regular, 12);
+    }
+    const bool armed = ImGui::GetTime() - m.publishArmedAt < 3;
+    const char* label = publishing ? "Publishing..."
+                        : armed    ? "Click again: publish for good"
+                        : update   ? "Publish update"
+                                   : "Publish";
+    if (UiButton(d,
+                 "pub-form-publish",
+                 label,
+                 P(left, y + 4),
+                 (armed ? 230 : 140) * U,
+                 32 * U,
+                 armed ? 3 : 1,
+                 ready && !publishing,
+                 opacity,
+                 s)) {
+        if (!armed) {
+            m.publishArmedAt = ImGui::GetTime();
+        } else {
+            m.publishArmedAt = -10;
+            if (update) {
+                m.publishError = m.page->SubmitUpdate(m.formChangelog);
+            } else {
+                pub::PublishFields fields;
+                fields.name = m.formName;
+                fields.summary = m.formSummary;
+                fields.description = m.formDescription;
+                fields.tags = m.formTags;
+                fields.authorName = m.formAuthor;
+                m.publishError = m.page->SubmitPublish(fields);
+            }
+        }
+    }
+    return true;
 }

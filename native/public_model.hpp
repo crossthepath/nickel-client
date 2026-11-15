@@ -12,7 +12,9 @@
 // Unknown fields are ignored, and unknown enum values of open lists (capabilities, categories) are dropped, as the API
 // asks of clients (api.md, section 1).
 //
-// Stars are binary: one star per account and item; stats.stars counts them and Top Rated sorts on it.
+// Stars are favourites: one star per install and item, given from the in-game menu only; stats.stars counts them and
+// Top Rated sorts on it. There are no accounts: authors are display names stored per item at publish time.
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -40,6 +42,8 @@ constexpr size_t kMaxLookupIds = 100;
 constexpr size_t kMaxRevocations = 10000;
 constexpr size_t kMaxReasonChars = 300;
 constexpr size_t kMaxProblemTextChars = 500;
+constexpr size_t kMaxReportChars = 1000;
+constexpr size_t kMaxScanNotes = 50; // warnings or errors of a check kept
 constexpr size_t kMaxCursorBytes = 512;
 constexpr size_t kMaxQueryChars = 64;
 constexpr size_t kMaxFileBytes = 200 * 1024;   // one version file, after base64 decoding on the server
@@ -261,6 +265,24 @@ struct Revocation {
     int64_t revokedAt = 0;
 };
 
+// One warning or error of the server's file checks (CheckResult, Problem errors[]): what and where.
+struct ScanNote {
+    std::string field;   // "file", "name", "tags[1]"... ("" when not sent)
+    std::string code;    // stable, for programs: obfuscated, require, too_long...
+    std::string message; // for the player
+    int line = 0;        // 1-based line of the file, 0 when not about a line
+};
+
+// The answer of POST /items/check: the dry run of the publish checks (scan of a script, filter of a config).
+struct CheckSummary {
+    bool ok = false;    // no error: the file can be published
+    std::string sha256; // of the file as it would be stored ("" when not sent)
+    uint32_t size = 0;
+    std::vector<Capability> capabilities; // scripts
+    std::vector<ScanNote> warnings;
+    std::vector<ScanNote> errors;
+};
+
 // An RFC 9457 problem (application/problem+json), read at the top level.
 struct Problem {
     int status = 0;
@@ -271,6 +293,7 @@ struct Problem {
     int retryAfter = 0;                       // seconds (429, 503)
     std::string goneState;                    // 410: "removed" or "deleted"
     std::string reasonCategory;               // 410 removed: malicious, stolen, ...
+    std::vector<ScanNote> errors;             // 400 / 422: the fields or file lines that were refused
 
     // The text to show: detail, else title.
     const std::string& Text() const { return detail.empty() ? title : detail; }
@@ -599,10 +622,11 @@ struct Reader {
         return true;
     }
 
+    // A string member matching `check`. Missing (or null when nullable) gives an empty string.
     template <typename Check>
-    bool Pattern(std::string_view key, std::string* out, bool required, Check check) const {
+    bool Pattern(std::string_view key, std::string* out, bool required, Check check, bool nullable = false) const {
         const json::Value* value = object.Find(key);
-        if (value == nullptr) {
+        if (value == nullptr || (nullable && value->IsNull())) {
             out->clear();
             return !required || Fail(key, "missing");
         }
@@ -666,10 +690,11 @@ inline bool ParseAuthor(const json::Value& value, Author* out, std::string* erro
     const detail::Reader read{value, error, "author."};
     Author author;
     std::string kind;
-    if (!read.Pattern("handle", &author.handle, true, ValidHandle)
-            || !read.String("display_name", &author.displayName, true, kMaxDisplayNameChars, detail::TextRule::OneLine)
-            || !read.String("kind", &kind, true, 16, detail::TextRule::OneLine)
-            || !read.Bool("verified", &author.verified, true)) {
+    // No accounts: the author is the display name given at publish time; handle, kind and verified are optional.
+    if (!read.Pattern("handle", &author.handle, false, ValidHandle, true)
+        || !read.String("display_name", &author.displayName, true, kMaxDisplayNameChars, detail::TextRule::OneLine)
+        || !read.String("kind", &kind, false, 16, detail::TextRule::OneLine, true)
+        || !read.Bool("verified", &author.verified, false)) {
         return false;
     }
     if (author.displayName.empty()) {
@@ -743,22 +768,24 @@ inline bool ParseCard(const json::Value& value, Card* out, std::string* error = 
         return read.Fail("kind", "unknown kind");
     }
     if (!read.Pattern("slug", &card.slug, true, ValidSlug)
-            || !read.String("name", &card.name, true, kMaxNameChars, detail::TextRule::OneLine)
-            || !read.String("summary", &card.summary, true, kMaxSummaryChars, detail::TextRule::OneLine)
-            || !read.Pattern("license", &card.license, true, ValidLicense)
-            || !read.Bool("featured", &card.featured, true)
-            || !read.Time("published_at", &card.publishedAt, true)
-            || !read.Time("updated_at", &card.updatedAt, true)) {
+        || !read.String("name", &card.name, true, kMaxNameChars, detail::TextRule::OneLine)
+        || !read.String("summary", &card.summary, true, kMaxSummaryChars, detail::TextRule::OneLine)
+        || !read.Pattern("license", &card.license, false, ValidLicense, true)
+        || !read.Bool("featured", &card.featured, false) || !read.Time("published_at", &card.publishedAt, true)
+        || !read.Time("updated_at", &card.updatedAt, true)) {
         return false;
     }
     if (card.name.empty()) {
         return read.Fail("name", "empty");
     }
     const json::Value* author = value.Find("author");
-    if (author == nullptr) {
-        return read.Fail("author", "missing");
-    }
-    if (!ParseAuthor(*author, &card.author, error)) {
+    if (author == nullptr || author->IsNull()) {
+        // the plain display name of an item published without an account
+        if (!read.String("author_name", &card.author.displayName, true, kMaxDisplayNameChars, detail::TextRule::OneLine)
+            || card.author.displayName.empty()) {
+            return read.Fail("author", "missing");
+        }
+    } else if (!ParseAuthor(*author, &card.author, error)) {
         return false;
     }
     const json::Value* latest = value.Find("latest_version");
@@ -836,8 +863,8 @@ inline bool ParseCard(const json::Value& value, Card* out, std::string* error = 
     const detail::Reader stat{*stats, error, "stats."};
     int64_t downloads = 0, favourites = 0, stars = 0;
     if (!stat.Int("downloads", &downloads, true, 0, detail::kMaxCount)
-            || !stat.Int("favourites", &favourites, true, 0, detail::kMaxCount)
-            || !stat.Int("stars", &stars, true, 0, detail::kMaxCount)) {
+        || !stat.Int("favourites", &favourites, false, 0, detail::kMaxCount)
+        || !stat.Int("stars", &stars, true, 0, detail::kMaxCount)) {
         return false;
     }
     if (const json::Value* score = stats->Find("trending_score")) {
@@ -1006,6 +1033,68 @@ inline bool ParseRevocations(const json::Value& value, std::vector<Revocation>* 
     return true;
 }
 
+// A list of ScanNote objects ({ field, code, message, line }); invalid entries are dropped, at most kMaxScanNotes kept.
+inline void ParseScanNotes(const json::Value* list, std::vector<ScanNote>* out) {
+    out->clear();
+    for (size_t i = 0; list != nullptr && list->IsArray() && i < list->size() && out->size() < kMaxScanNotes; ++i) {
+        const json::Value& entry = list->At(i);
+        if (!entry.IsObject()) {
+            continue;
+        }
+        std::string ignored;
+        const detail::Reader read{entry, &ignored, ""};
+        ScanNote note;
+        int64_t line = 0;
+        const json::Value* lineValue = entry.Find("line");
+        if (!read.String("field", &note.field, false, 64, detail::TextRule::OneLine, true)
+            || !read.String("code", &note.code, false, 64, detail::TextRule::OneLine, true)
+            || !read.String("message", &note.message, false, kMaxProblemTextChars, detail::TextRule::OneLine, true)
+            || (lineValue != nullptr && !lineValue->IsNull() && !read.Int("line", &line, false, 0, 10000000))) {
+            continue;
+        }
+        if (note.message.empty() && note.code.empty()) {
+            continue;
+        }
+        note.line = static_cast<int>(line);
+        out->push_back(std::move(note));
+    }
+}
+
+// The answer of POST /items/check.
+inline bool ParseCheckSummary(const json::Value& value, CheckSummary* out, std::string* error = nullptr) {
+    if (!value.IsObject()) {
+        if (error != nullptr && error->empty()) {
+            *error = "check: not an object";
+        }
+        return false;
+    }
+    const detail::Reader read{value, error, ""};
+    CheckSummary check;
+    int64_t size = 0;
+    if (!read.Bool("ok", &check.ok, true) || !read.Pattern("sha256", &check.sha256, false, ValidSha256)
+        || !read.Int("size", &size, false, 0, static_cast<int64_t>(kMaxFileBytes))) {
+        return false;
+    }
+    check.size = static_cast<uint32_t>(size);
+    if (const json::Value* capabilities = value.Find("capabilities");
+        capabilities != nullptr && capabilities->IsArray()) {
+        for (size_t i = 0; i < capabilities->size() && i < 64; ++i) {
+            Capability capability{};
+            const json::Value& entry = capabilities->At(i);
+            if (entry.IsString() && ParseCapability(entry.AsString(), &capability)
+                && std::find(check.capabilities.begin(), check.capabilities.end(), capability)
+                           == check.capabilities.end()) {
+                check.capabilities.push_back(capability);
+            }
+        }
+    }
+    ParseScanNotes(value.Find("warnings"), &check.warnings);
+    ParseScanNotes(value.Find("errors"), &check.errors);
+    check.ok = check.ok && check.errors.empty();
+    *out = std::move(check);
+    return true;
+}
+
 // A problem body; fields that are missing or invalid stay empty (the HTTP status still says what happened).
 inline Problem ParseProblem(const json::Value& value, int httpStatus) {
     Problem problem;
@@ -1049,6 +1138,7 @@ inline Problem ParseProblem(const json::Value& value, int httpStatus) {
     if (read.Pattern("reason_category", &text, false, KnownReasonCategory)) {
         problem.reasonCategory = text;
     }
+    ParseScanNotes(value.Find("errors"), &problem.errors);
     return problem;
 }
 

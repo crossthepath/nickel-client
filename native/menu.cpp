@@ -78,8 +78,7 @@
 #include "game_items.hpp"
 #include "game_sound.hpp"
 #include "game_player_b.hpp"
-#include "public_page.hpp"      // PUBLIC: what the pages do (public_ui.hpp draws them)
-#include "public_session.hpp"   // PUBLIC: the launcher's sign-in, read for stars
+#include "public_page.hpp"      // PUBLIC: what the pages do (public_ui.hpp draws them); no sign-in, an install key
 #include "generated_arrow_shape.hpp"
 #include "../include/nickel/visual_projection.hpp"
 #include "../include/nickel/visual_world.hpp"
@@ -2689,6 +2688,8 @@ void DrawConfigs(ImVec2 origin,float s,float opacity){
  }
  const float shown=(float)(ImGui::GetTime()-configStatusAt);if(shown<3&&!configStatus.empty())Label(ImGui::GetForegroundDrawList(),regular,13*s,P(left,menuH-28),configStatus.c_str(),Rgba(159,232,191,std::min(1.f,3-shown)*opacity));
 }
+// PUBLIC: the Publish button of the Scripting and Configs side panels and the publish form (public_ui.hpp)
+void DrawPublishButton(ImDrawList* d,bool script,const std::string& name,ImVec2 lo,float width,float height,float s,float a);
 #include "script_ui.hpp"
 void JumpPreAll(uint64_t a7,uint64_t a8){game::Move2JumpPre(a7,a8);game::LongJumpPre(a7,a8);ScriptsJumpPre(a7,a8);}   // jump hook #16: No Jump Delay, then scripts
 void JumpPostAll(uint64_t a8){game::Move2JumpPost(a8);game::LongJumpPost(a8);ScriptsJumpPost(a8);}
@@ -2734,6 +2735,7 @@ void DrawConfigPanel(ImVec2 origin,float s,float opacity){
   if(UiButton(d,"details-duplicate","Duplicate",P(x0+half+6*U,at),half,32*U,0,true,a,s)){auto names=ConfigNames();std::string copy;for(int n=2;n<1000;++n){copy=name+" "+std::to_string(n);if(std::find(names.begin(),names.end(),copy)==names.end())break;}if(CopyFileW(file.c_str(),ConfigFile(copy).c_str(),TRUE))Say("Duplicated as "+copy+".");}}
  {const float at=take(32,10);const bool armed=deleteArmed>=0&&ImGui::GetTime()-deleteArmed<3;
   if(UiButton(d,"details-delete",armed?"Click again to delete":"Delete",P(x0,at),width,32*U,3,true,a,s)){if(!armed)deleteArmed=ImGui::GetTime();else{DeleteFileW(file.c_str());SetConfigKey(name,0,"");if(current)SetCurrentConfig("");configSelected.clear();deleteArmed=-1;}}}
+ {const float at=take(32,10);DrawPublishButton(d,false,name,P(x0,at),width,32*U,s,a);}   // PUBLIC: publish this config (final), or publish an update of it
  EndWindow();ImGui::PopStyleVar(2);
 }
 // Settings screen: INTERFACE, KEYBINDS, ABOUT, ITEM PROFILES and SCHEMATICS sections, built from shared section
@@ -3026,8 +3028,8 @@ const bool modulesTab=tab<6;const float panelTop=64.f;const std::string crumb=st
   if(listLimit>0){const float view=menuH-12-panelTop-20,total=view+listLimit/s,bar=std::max(30.f,view*view/total),top=panelTop+10+(view-bar)*(listScroll/listLimit);
    ImGui::GetWindowDrawList()->AddRectFilled(P(px0+pw+1,top+6),P(px0+pw+4,top+bar-6),Acc(.85f*opacity),0);}
  }else if(tab==6)DrawMenuSettings(origin,s,opacity);
- else if(tab==7)DrawConfigs(origin,s,opacity);
- else if(tab==8)DrawScripting(origin,s,opacity);
+ else if(tab==7){if(!DrawPublishForm(origin,s,opacity,false))DrawConfigs(origin,s,opacity);}   // the publish form replaces the list while it is open
+ else if(tab==8){if(!DrawPublishForm(origin,s,opacity,true))DrawScripting(origin,s,opacity);}
  else if(tab==9)DrawSchematics(origin,s,opacity);
  else if(PublicTab(tab))DrawPublic(origin,s,opacity);
  else{ImGui::SetCursorScreenPos(P(273,90));ImGui::BeginGroup();ImGui::TextWrapped("%s","This section is being reconstructed from the original client.");ImGui::EndGroup();}

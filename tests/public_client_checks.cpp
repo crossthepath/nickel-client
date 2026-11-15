@@ -1,21 +1,26 @@
 // PUBLIC client core without the game: the model's validation (native/public_model.hpp), the API calls against a
-// local HTTP server on 127.0.0.1 serving fixture JSON (native/public_client.hpp), and the installer on a temporary
-// folder with a ScriptLibrary over that folder (native/public_installer.hpp). Nothing here reaches the internet or
-// touches %APPDATA%.
+// local HTTP server on 127.0.0.1 serving fixture JSON (native/public_client.hpp): reads, and the writes that carry the
+// install key (check, publish, publish update, stars, reports); the install identity (native/public_identity.hpp), the
+// local starred and published lists (native/public_local.hpp), and the installer on a temporary folder with a
+// ScriptLibrary over that folder (native/public_installer.hpp). Nothing here reaches the internet or touches %APPDATA%.
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
 #pragma comment(lib, "ws2_32.lib")
 
 #include "public_client.hpp"
+#include "public_identity.hpp"
 #include "public_installer.hpp"
+#include "public_local.hpp"
 #include "script_files.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <map>
+#include <sstream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -134,6 +139,18 @@ void ModelChecks() {
     }
     Check(!refused(CardJson(kScriptId, "script", longName, 3, Sha("x"))), "caps count code points, not bytes");
 
+    // No accounts: an item published from the game may carry only its author's display name and no licence.
+    std::string anonymous = CardJson(kScriptId, "script", "From the game", 1, Sha("x"));
+    const size_t authorAt = anonymous.find("\"author\":{");
+    anonymous.replace(authorAt, anonymous.find('}', authorAt) + 1 - authorAt, "\"author_name\":\"Steve\"");
+    anonymous.replace(anonymous.find("\"license\":\"MIT\""), 15, "\"license\":null");
+    Check(json::Parse(anonymous, &value) && ParseCard(value, &card) && card.author.displayName == "Steve"
+                  && card.author.handle.empty() && card.license.empty() && !card.author.verified,
+          "an item with a plain author name and no licence parses");
+    std::string nameless = anonymous;
+    nameless.replace(nameless.find("\"author_name\":\"Steve\""), 21, "\"author_name\":\"\"");
+    Check(refused(nameless), "an item without any author name is refused");
+
     const std::string page = "{\"items\":[" + CardJson(kScriptId, "script", "One", 1, Sha("a")) + ","
             + CardJson(kScriptId, "script", "Repeated", 1, Sha("a")) + ","
             + CardJson(kConfigId, "config", std::string(70, 'x'), 1, Sha("b")) + "],\"next_cursor\":\"c2\","
@@ -246,6 +263,23 @@ public:
         return std::string();
     }
 
+    // The body of the last request whose "METHOD path" starts with `prefix`.
+    std::string LastBody(const std::string& prefix) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (size_t i = seen_.size(); i > 0; --i) {
+            if (seen_[i - 1].compare(0, prefix.size(), prefix) == 0) {
+                return seenBodies_[i - 1];
+            }
+        }
+        return std::string();
+    }
+
+    // Every "METHOD path" seen so far.
+    std::vector<std::string> Seen() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return seen_;
+    }
+
     std::string LastPath(const std::string& prefix) {
         std::lock_guard<std::mutex> lock(mutex_);
         for (size_t i = seen_.size(); i > 0; --i) {
@@ -258,6 +292,7 @@ public:
 
     std::atomic<bool> failConfigs{false};
     std::atomic<int> lookupLatest{3};
+    std::string blockedInstall; // an "Install ..." header answered 403 (set before the requests)
 
 private:
     struct Incoming {
@@ -368,6 +403,7 @@ private:
                 std::lock_guard<std::mutex> lock(mutex_);
                 seen_.push_back(request.method + " " + request.path);
                 seenHeaders_.push_back(request.headers);
+                seenBodies_.push_back(request.body);
             }
             Send(client, Route(request));
         }
@@ -482,22 +518,116 @@ private:
                               "\"revoked_at\":\"2026-11-14T10:00:00.000Z\"},{\"sha256\":\"bad\"}]}",
                     "ETag: \"rev-1\"\r\n");
         }
+        const std::string install = HeaderValue(request.headers, "Authorization");
+        const bool writes = request.method != "GET" && path != "/items/lookup";
+        if (writes && !ValidInstallHeader(install)) {
+            return ProblemReply("401 Unauthorized", 401, "unauthorized", "", "WWW-Authenticate: Install\r\n");
+        }
+        if (writes && !blockedInstall.empty() && install == blockedInstall) {
+            return ProblemReply("403 Forbidden", 403, "install_blocked");
+        }
         if (path.size() > 5 && path.compare(path.size() - 5, 5, "/star") == 0) {
-            if (HeaderValue(request.headers, "Authorization") != "Bearer nk_at_good") {
-                return ProblemReply("401 Unauthorized", 401, "unauthorized", "", "WWW-Authenticate: Bearer\r\n");
-            }
             if (path == std::string("/items/") + kConfigId + "/star") {
                 return ProblemReply("409 Conflict", 409, "conflict");
             }
             return Reply("204 No Content", "", "");
         }
-        if (path == "/me/library") {
-            if (HeaderValue(request.headers, "Authorization") != "Bearer nk_at_good") {
-                return ProblemReply("401 Unauthorized", 401, "unauthorized");
+        if (path == "/items/check" && request.method == "POST") {
+            std::string bytes;
+            if (!DecodeFile(request.body, &bytes)) {
+                return ProblemReply("400 Bad Request", 400, "invalid");
             }
-            return Json("200 OK", "{\"stars\":[\"abcdefghjkmn\"],\"favourites\":[],\"downloads\":[]}");
+            if (bytes.find("require(") != std::string::npos) {
+                return Json("200 OK",
+                            "{\"ok\":false,\"warnings\":[],\"errors\":[{\"field\":\"file\",\"code\":\"require\","
+                            "\"message\":\"require is not allowed.\",\"line\":1}]}");
+            }
+            return Json(
+                    "200 OK",
+                    "{\"ok\":true,\"sha256\":\"" + Sha(bytes) + "\",\"size\":" + std::to_string(bytes.size())
+                            + ",\"capabilities\":[\"render\",\"chat.print\",\"future.thing\"],\"warnings\":[{\"code\":"
+                              "\"chat\",\"message\":\"Prints in chat.\",\"line\":3}],\"errors\":[]}");
+        }
+        if (path == "/items" && request.method == "POST") {
+            json::Value body;
+            std::string bytes;
+            if (!json::Parse(request.body, &body) || !body["name"].IsString() || !body["summary"].IsString()
+                || !body["description"].IsString() || !body["tags"].IsArray() || !body["author_name"].IsString()
+                || !DecodeFile(request.body, &bytes)) {
+                return ProblemReply("400 Bad Request", 400, "invalid");
+            }
+            if (bytes.find("getfenv") != std::string::npos) {
+                return ProblemReply("422 Unprocessable Content",
+                                    422,
+                                    "file_refused",
+                                    ",\"errors\":[{\"field\":\"file\",\"code\":\"obfuscated\",\"message\":"
+                                    "\"Obfuscated code is not allowed.\",\"line\":2}]");
+            }
+            std::lock_guard<std::mutex> lock(ownersMutex_);
+            const std::string id = std::string("n3wq7p2x9k4") + "abcdefghjk"[owners_.size() % 10];
+            owners_[id] = install;
+            return Json("201 Created",
+                        "{\"item\":{\"id\":\"" + id + "\",\"slug\":\"published-" + id
+                                + "\",\"state\":\"published\"},\"version\":{\"number\":1,\"state\":\"published\"}}");
+        }
+        if (request.method == "POST" && path.size() == 7 + 12 + 9 && path.compare(0, 7, "/items/") == 0
+            && path.compare(19, 9, "/versions") == 0) {
+            const std::string id = path.substr(7, 12);
+            json::Value body;
+            std::string bytes;
+            if (!json::Parse(request.body, &body) || !body["changelog"].IsString()
+                || !DecodeFile(request.body, &bytes)) {
+                return ProblemReply("400 Bad Request", 400, "invalid");
+            }
+            std::lock_guard<std::mutex> lock(ownersMutex_);
+            const auto owner = owners_.find(id);
+            if (owner == owners_.end()) {
+                return ProblemReply("404 Not Found", 404, "not_found");
+            }
+            if (owner->second != install) {
+                return ProblemReply("403 Forbidden", 403, "not_owner");
+            }
+            return Json("201 Created", "{\"version\":{\"number\":2,\"state\":\"published\"}}");
+        }
+        if (path == "/reports" && request.method == "POST") {
+            json::Value body;
+            if (!json::Parse(request.body, &body) || !body["item_id"].IsString() || !body["category"].IsString()) {
+                return ProblemReply("400 Bad Request", 400, "invalid");
+            }
+            if (body["item_id"].AsString() == kGoneId) {
+                return ProblemReply("409 Conflict", 409, "already_reported");
+            }
+            return Json("202 Accepted", "{\"id\":\"r1\"}");
         }
         return ProblemReply("404 Not Found", 404, "not_found");
+    }
+
+    // "Install " and 43 characters of base64url (32 bytes).
+    static bool ValidInstallHeader(const std::string& value) {
+        if (value.size() != 8 + 43 || value.compare(0, 8, "Install ") != 0) {
+            return false;
+        }
+        for (size_t i = 8; i < value.size(); ++i) {
+            const char c = value[i];
+            const bool ok =
+                    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+            if (!ok) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // The bytes of a request's file { name, content, encoding: "base64" }.
+    static bool DecodeFile(const std::string& text, std::string* bytes) {
+        json::Value body;
+        if (!json::Parse(text, &body)) {
+            return false;
+        }
+        const json::Value& file = body["file"];
+        return file.IsObject() && file["name"].IsString() && file["encoding"].IsString()
+               && file["encoding"].AsString() == "base64" && file["content"].IsString()
+               && net::Base64Decode(file["content"].AsString(), bytes);
     }
 
     SOCKET listener_ = INVALID_SOCKET;
@@ -508,40 +638,9 @@ private:
     std::vector<std::thread> handlers_;
     std::vector<std::string> seen_;
     std::vector<std::string> seenHeaders_;
-};
-
-class FixedTokens : public TokenSource {
-public:
-    explicit FixedTokens(std::string token) : token_(std::move(token)) {}
-
-    bool AccessToken(std::string* token) override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (token_.empty()) {
-            return false;
-        }
-        *token = token_;
-        return true;
-    }
-
-    void TokenRejected(const std::string& token) override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        rejected_.push_back(token);
-    }
-
-    void Set(std::string token) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        token_ = std::move(token);
-    }
-
-    size_t Rejected() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return rejected_.size();
-    }
-
-private:
-    std::mutex mutex_;
-    std::string token_;
-    std::vector<std::string> rejected_;
+    std::vector<std::string> seenBodies_;
+    std::mutex ownersMutex_;
+    std::map<std::string, std::string> owners_; // item id -> the Install header that published it
 };
 
 ClientConfig LoopbackConfig(const TestServer& server, const std::string& base = "/api/community/v1") {
@@ -816,48 +915,6 @@ void LookupAndRevocationChecks(TestServer& server) {
             "revocations, an invalid entry dropped");
 }
 
-void StarChecks(TestServer& server) {
-    FixedTokens tokens("");
-    PublicClient client(LoopbackConfig(server), &tokens);
-    const int before = server.Hits("PUT");
-    Check(client.Star(kScriptId, true), "a star without a token is posted");
-    Check(WaitFor(client, [](const Snapshot& s) { return s.star && !s.star->loading; }), "the star answer");
-    Check(client.Snap().star->outcome.status == Status::SignedOut && server.Hits("PUT") == before,
-            "signed out: no request");
-
-    tokens.Set("nk_at_good");
-    Check(client.Library(), "the library");
-    Check(WaitFor(client, [](const Snapshot& s) { return s.library && !s.library->loading; }), "the library arrives");
-    Check(client.Snap().library->outcome.Ok() && client.Snap().library->Starred(kGoneId)
-                    && !client.Snap().library->Starred(kScriptId),
-            "the library lists the stars");
-
-    Check(client.Star(kScriptId, true), "a star");
-    Check(WaitFor(client, [](const Snapshot& s) { return s.star && !s.star->loading; }), "the star answer");
-    Snapshot snapshot = client.Snap();
-    Check(snapshot.star->outcome.Ok() && snapshot.star->starred && snapshot.library->Starred(kScriptId),
-            "starred: the library shows it");
-    Check(server.LastHeaders("PUT /api/community/v1/items/7k2m9x4qa1dz/star").find("Authorization: Bearer nk_at_good")
-                    != std::string::npos,
-            "the star carries the bearer token");
-
-    Check(client.Star(kScriptId, false), "an unstar");
-    Check(WaitFor(client, [](const Snapshot& s) { return s.star && !s.star->loading; }), "the unstar answer");
-    Check(client.Snap().star->outcome.Ok() && !client.Snap().library->Starred(kScriptId)
-                    && server.Hits("DELETE /api/community/v1/items/7k2m9x4qa1dz/star") == 1,
-            "unstar is DELETE and updates the library");
-
-    Check(client.Star(kConfigId, true), "starring one's own item");
-    Check(WaitFor(client, [](const Snapshot& s) { return s.star && !s.star->loading; }), "the conflict answer");
-    Check(client.Snap().star->outcome.status == Status::Conflict, "409 for one's own item");
-
-    tokens.Set("nk_at_expired");
-    Check(client.Star(kScriptId, true), "a star with an expired token");
-    Check(WaitFor(client, [](const Snapshot& s) { return s.star && !s.star->loading; }), "the 401 answer");
-    Check(client.Snap().star->outcome.status == Status::Unauthorized && tokens.Rejected() == 1,
-            "401: the token source hears of it");
-}
-
 void RateLimitChecks(TestServer& server) {
     PublicClient client(LoopbackConfig(server, "/rl/api/community/v1"));
     Check(client.Detail(kScriptId), "a request that is rate limited");
@@ -887,6 +944,10 @@ void PolicyChecks() {
     plain.baseUrl = "http://nickelclient.com/api/community/v1";
     Check(!PublicClient(plain).Usable(), "plain HTTP is refused for the real host");
     Check(PublicClient().Usable(), "the default base URL is usable");
+
+    PublicClient noKey(config);
+    Check(!noKey.Star(kScriptId, true) && noKey.Snap().star->outcome.status == Status::Invalid,
+          "a write to a host outside the policy is refused first");
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1357,6 +1418,351 @@ void SidecarChecks() {
     Check(DecideLocal(record, &entry, false, false) == Local::NotListed, "not found: not listed");
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Install identity, starred and published lists (temporary folder)
+
+std::string FileText(const std::wstring& path) {
+    std::ifstream file(path, std::ios::binary);
+    std::stringstream text;
+    text << file.rdbuf();
+    return text.str();
+}
+
+bool Exists(const std::wstring& path) {
+    return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+void IdentityChecks(const std::wstring& root) {
+    const std::wstring path = InstallKeyPath(root);
+    Check(path == root + L"\\public\\install.key", "the key lives in <root>\\public\\install.key");
+    {
+        InstallIdentity identity(path);
+        std::string fingerprint;
+        Check(identity.State() == IdentityState::Missing && !identity.Fingerprint(&fingerprint) && !Exists(path),
+              "no key before the first write, and reading it creates none");
+        std::string header;
+        Check(identity.Authorization(&header) && Exists(path), "the first write creates the key");
+        Check(header.size() == 8 + 43 && header.compare(0, 8, "Install ") == 0
+                      && header.find_first_of("+/= ", 8) == std::string::npos,
+              "Authorization: Install <43 characters of base64url>");
+        std::string secret;
+        Check(detail::FromBase64Url(header.substr(8), &secret) && secret.size() == 32, "a 32-byte secret");
+        const std::string text = FileText(path);
+        Check(text == header.substr(8) + "\n", "the file holds the secret as base64url text");
+        Check(identity.Fingerprint(&fingerprint) && fingerprint == net::Sha256Hex(secret) && fingerprint.size() == 64
+                      && fingerprint.find(header.substr(8)) == std::string::npos,
+              "the fingerprint is SHA-256 of the secret, not the secret");
+        std::string again;
+        Check(identity.Authorization(&again) && again == header, "the same key on every write");
+
+        InstallIdentity reloaded(path);
+        std::string other;
+        Check(reloaded.State() == IdentityState::Ready && reloaded.Authorization(&other) && other == header
+                      && FileText(path) == text,
+              "the key persists: a new identity on the same file reads it, never replaces it");
+
+        InstallIdentity second(root + L"\\second\\install.key");
+        std::string secondHeader;
+        Check(second.Authorization(&secondHeader) && secondHeader != header, "another install gets another secret");
+    }
+    {
+        const std::wstring damaged = root + L"\\damaged.key";
+        WriteText(damaged, "not a key\n");
+        InstallIdentity identity(damaged);
+        std::string header;
+        Check(identity.State() == IdentityState::Damaged && !identity.Authorization(&header) && header.empty(),
+              "a damaged key refuses writes");
+        Check(FileText(damaged) == "not a key\n", "a damaged key is never overwritten");
+        WriteText(damaged, std::string(43, '+'));
+        InstallIdentity plusSigns(damaged);
+        Check(plusSigns.State() == IdentityState::Damaged, "only the url-safe alphabet is a key");
+    }
+}
+
+void LocalListChecks(const std::wstring& root) {
+    const std::wstring starredPath = StarredPath(root);
+    {
+        StarredList starred(starredPath);
+        Check(starred.Ids(Kind::Script).empty() && !starred.Has(Kind::Script, kScriptId), "no stars at first");
+        Check(starred.Set(Kind::Script, kScriptId, true) && starred.Set(Kind::Script, kGoneId, true)
+                      && starred.Set(Kind::Config, kConfigId, true),
+              "stars are saved");
+        Check(!starred.Set(Kind::Script, "NOT-AN-ID", true), "an invalid id is refused");
+        Check(starred.Ids(Kind::Script).size() == 2 && starred.Ids(Kind::Script)[0] == kGoneId
+                      && starred.Has(Kind::Config, kConfigId) && !starred.Has(Kind::Script, kConfigId),
+              "ids per kind, newest first");
+        starred.Set(Kind::Script, kScriptId, true);
+        Check(starred.Ids(Kind::Script).size() == 2 && starred.Ids(Kind::Script)[0] == kScriptId,
+              "starring again moves it first, once");
+        starred.Set(Kind::Script, kGoneId, false);
+    }
+    {
+        StarredList reloaded(starredPath);
+        Check(reloaded.Ids(Kind::Script).size() == 1 && reloaded.Has(Kind::Script, kScriptId)
+                      && reloaded.Has(Kind::Config, kConfigId) && !reloaded.Has(Kind::Script, kGoneId),
+              "the starred list persists in starred.json");
+    }
+    WriteText(starredPath, "{\"format\":1,\"script\":[\"7k2m9x4qa1dz\",\"BAD\",\"7k2m9x4qa1dz\"],\"config\":5}");
+    StarredList messy(starredPath);
+    Check(messy.Ids(Kind::Script).size() == 1 && messy.Ids(Kind::Config).empty(),
+          "invalid and repeated entries are dropped");
+
+    const std::wstring publishedPath = PublishedPath(root);
+    const std::string owner = Sha("owner");
+    const std::string stranger = Sha("stranger");
+    {
+        PublishedList published(publishedPath);
+        PublishedRecord record;
+        record.kind = Kind::Script;
+        record.name = "Auto GG";
+        record.id = kScriptId;
+        record.owner = owner;
+        record.version = 1;
+        record.publishedAt = "2026-11-15T18:00:00.000Z";
+        Check(published.Remember(record), "a published item is remembered");
+        Check(published.Find(Kind::Script, "auto gg", owner) != nullptr, "found by name (case ignored) and owner");
+        Check(published.Find(Kind::Script, "Auto GG", stranger) == nullptr
+                      && published.Find(Kind::Script, "Auto GG", "") == nullptr,
+              "another install does not own it");
+        Check(published.Find(Kind::Config, "Auto GG", owner) == nullptr, "a config of the same name is another item");
+        record.version = 2;
+        published.Remember(record);
+        Check(published.Records().size() == 1 && published.Find(Kind::Script, "Auto GG", owner)->version == 2,
+              "remembering again replaces the entry");
+        PublishedRecord bad = record;
+        bad.owner = "secret";
+        Check(!published.Remember(bad), "an owner that is not a fingerprint is refused");
+    }
+    PublishedList reloaded(publishedPath);
+    Check(reloaded.Find(Kind::Script, "Auto GG", owner) != nullptr
+                  && reloaded.Find(Kind::Script, "Auto GG", owner)->id == kScriptId,
+          "published.json persists");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Writes with the install key, against the local server
+
+template <typename Done>
+bool WaitSlot(const PublicClient& client, Done done) {
+    return WaitFor(client, [&](const Snapshot& s) { return done(s); });
+}
+
+void StarChecks(TestServer& server, const std::wstring& root) {
+    {
+        PublicClient client(LoopbackConfig(server));
+        const int before = server.Hits("PUT");
+        Check(client.Star(kScriptId, true), "a star without an identity is posted");
+        Check(WaitSlot(client, [](const Snapshot& s) { return s.star && !s.star->loading; }), "the star answer");
+        Check(client.Snap().star->outcome.status == Status::NoIdentity && server.Hits("PUT") == before,
+              "without an install key: no request");
+    }
+    InstallIdentity identity(InstallKeyPath(root));
+    PublicClient client(LoopbackConfig(server), &identity);
+    Check(client.Star(kScriptId, true), "a star");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.star && !s.star->loading; }), "the star answer");
+    Check(client.Snap().star->outcome.Ok() && client.Snap().star->starred, "starred");
+    std::string header;
+    identity.Authorization(&header);
+    Check(server.LastHeaders("PUT /api/community/v1/items/7k2m9x4qa1dz/star").find("Authorization: " + header)
+                  != std::string::npos,
+          "the star carries the install key");
+
+    Check(client.Star(kScriptId, false), "an unstar");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.star && !s.star->loading && !s.star->starred; }),
+          "the unstar answer");
+    Check(client.Snap().star->outcome.Ok() && server.Hits("DELETE /api/community/v1/items/7k2m9x4qa1dz/star") == 1,
+          "unstar is DELETE");
+
+    Check(client.Star(kConfigId, true), "starring one's own item");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.star && !s.star->loading && s.star->id == kConfigId; }),
+          "the conflict answer");
+    Check(client.Snap().star->outcome.status == Status::Conflict, "409 for one's own item");
+
+    // Reads never send the key.
+    Check(client.Detail(kScriptId), "a read");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.detail && !s.detail->loading; }), "the read answer");
+    Check(server.LastHeaders("GET /api/community/v1/items/7k2m9x4qa1dz").find("Authorization") == std::string::npos,
+          "reads carry no key");
+    Check(client.Lookup({kScriptId}), "a lookup");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.lookup && !s.lookup->loading; }), "the lookup answer");
+    Check(server.LastHeaders("POST /api/community/v1/items/lookup").find("Authorization") == std::string::npos,
+          "lookups carry no key");
+
+    // The Starred tabs' lookup has its own slot.
+    Check(client.LookupStarred({kScriptId, kGoneId}), "the starred lookup");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.starred && !s.starred->loading; }), "its answer");
+    const Snapshot snapshot = client.Snap();
+    Check(snapshot.starred->outcome.Ok() && snapshot.starred->entries.size() == 2 && snapshot.starred->entries[0].found
+                  && !snapshot.starred->entries[1].found && snapshot.lookup->ids.size() == 1,
+          "starred cards come in their own slot");
+
+    // A blocked install: 403.
+    server.blockedInstall = header;
+    Check(client.Star(kScriptId, true), "a star of a blocked install");
+    Check(WaitSlot(client,
+                   [](const Snapshot& s) {
+                       return s.star && !s.star->loading && s.star->id == kScriptId && s.star->starred;
+                   }),
+          "the 403 answer");
+    Check(client.Snap().star->outcome.status == Status::Forbidden, "a blocked install is Forbidden");
+    server.blockedInstall.clear();
+}
+
+void PublishChecks(TestServer& server, const std::wstring& root) {
+    InstallIdentity identity(InstallKeyPath(root + L"\\author"));
+    PublicClient client(LoopbackConfig(server), &identity);
+    const std::string script = "-- Auto GG\nlocal mod = nickel.module(\"Auto GG\")\nprint('gg')\n";
+
+    // The check: a dry run, with the file in base64.
+    Check(client.Check(Kind::Script, "Auto GG.luau", script, "Auto GG"), "a check");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.check && !s.check->loading; }), "the check answer");
+    Snapshot snapshot = client.Snap();
+    Check(snapshot.check->outcome.Ok() && snapshot.check->check.ok && snapshot.check->check.sha256 == Sha(script)
+                  && snapshot.check->sentSha256 == Sha(script) && snapshot.check->ref == "Auto GG",
+          "the check passed for these bytes");
+    Check(snapshot.check->check.capabilities.size() == 2 && snapshot.check->check.warnings.size() == 1
+                  && snapshot.check->check.warnings[0].line == 3,
+          "capabilities and warnings of the check");
+    json::Value body;
+    Check(json::Parse(server.LastBody("POST /api/community/v1/items/check"), &body)
+                  && body["kind"].AsString() == "script" && body["file"]["name"].AsString() == "Auto GG.luau"
+                  && body["file"]["encoding"].AsString() == "base64",
+          "the check body");
+    Check(server.LastHeaders("POST /api/community/v1/items/check").find("Authorization: Install ") != std::string::npos,
+          "the check carries the install key");
+
+    Check(client.Check(Kind::Script, "Bad.luau", "local x = require(\"y\")\n"), "a check of a refused file");
+    Check(WaitSlot(client,
+                   [](const Snapshot& s) { return s.check && !s.check->loading && s.check->fileName == "Bad.luau"; }),
+          "its answer");
+    snapshot = client.Snap();
+    Check(snapshot.check->outcome.Ok() && !snapshot.check->check.ok && snapshot.check->check.errors.size() == 1
+                  && snapshot.check->check.errors[0].code == "require",
+          "a refused file: not ok, with its error and line");
+    Check(!client.Check(Kind::Script, "Nope.ini", script), "a script must be a .luau file");
+    Check(!client.Check(Kind::Config, "big.ini", std::string(kMaxFileBytes + 1, 'x')), "over 200 KB is refused");
+
+    // Publish: a new item, final.
+    PublishRequest request;
+    request.kind = Kind::Script;
+    request.name = "Auto GG";
+    request.summary = "Says gg after a win.";
+    request.description = "Line one.\nLine two.";
+    request.tags = {"pvp", "chat"};
+    request.authorName = "Mash";
+    request.fileName = "Auto GG.luau";
+    request.bytes = script;
+    request.ref = "Auto GG";
+    Check(client.Publish(request), "a publish");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.publish && !s.publish->loading; }), "the publish answer");
+    snapshot = client.Snap();
+    const std::string published = snapshot.publish->itemId;
+    Check(snapshot.publish->outcome.Ok() && ValidId(published) && snapshot.publish->versionNumber == 1
+                  && snapshot.publish->state == "published" && !snapshot.publish->update
+                  && snapshot.publish->ref == "Auto GG",
+          "201: the new item's id, version 1, published");
+    std::string decoded;
+    Check(json::Parse(server.LastBody("POST /api/community/v1/items"), &body) && body["kind"].AsString() == "script"
+                  && body["name"].AsString() == "Auto GG" && body["summary"].AsString() == "Says gg after a win."
+                  && body["description"].AsString() == "Line one.\nLine two." && body["tags"].size() == 2
+                  && body["author_name"].AsString() == "Mash"
+                  && net::Base64Decode(body["file"]["content"].AsString(), &decoded) && decoded == script,
+          "the publish body: fields, author name and the exact bytes");
+    Check(server.LastHeaders("POST /api/community/v1/items").find("Authorization: Install ") != std::string::npos,
+          "the publish carries the install key");
+
+    PublishRequest refused = request;
+    refused.authorName.clear();
+    const int posts = server.Hits("POST /api/community/v1/items");
+    Check(!client.Publish(refused) && client.Snap().publish->outcome.status == Status::Invalid
+                  && client.Snap().publish->outcome.message == "author name",
+          "an author name is required");
+    refused = request;
+    refused.tags = {"Not A Tag"};
+    Check(!client.Publish(refused), "invalid tags are refused");
+    refused = request;
+    refused.name = std::string(61, 'n');
+    Check(!client.Publish(refused) && server.Hits("POST /api/community/v1/items") == posts,
+          "a name over 60 is refused before any request");
+
+    PublishRequest obfuscated = request;
+    obfuscated.bytes = "local f = getfenv(1)\nprint(f)\n";
+    obfuscated.ref = "Obfuscated";
+    Check(client.Publish(obfuscated), "a publish the server refuses");
+    Check(WaitSlot(
+                  client,
+                  [](const Snapshot& s) { return s.publish && !s.publish->loading && s.publish->ref == "Obfuscated"; }),
+          "the 422 answer");
+    snapshot = client.Snap();
+    Check(snapshot.publish->outcome.status == Status::Rejected && snapshot.publish->outcome.problem.errors.size() == 1
+                  && snapshot.publish->outcome.problem.errors[0].code == "obfuscated"
+                  && snapshot.publish->outcome.problem.errors[0].line == 2,
+          "422: rejected, with the refused line");
+
+    // Publish update: only the owner install.
+    PublishRequest update;
+    update.kind = Kind::Script;
+    update.fileName = "Auto GG.luau";
+    update.bytes = script + "-- v2\n";
+    update.changelog = "Waits a random delay.";
+    update.ref = "Auto GG";
+    Check(!client.PublishVersion(published, PublishRequest()), "a version needs its file and changelog");
+    Check(client.PublishVersion(published, update), "a publish update");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.publish && !s.publish->loading && s.publish->update; }),
+          "the update answer");
+    snapshot = client.Snap();
+    Check(snapshot.publish->outcome.Ok() && snapshot.publish->itemId == published
+                  && snapshot.publish->versionNumber == 2,
+          "the owner's update: version 2 of the same item");
+    Check(json::Parse(server.LastBody("POST /api/community/v1/items/" + published + "/versions"), &body)
+                  && body["changelog"].AsString() == "Waits a random delay." && body.Find("name") == nullptr
+                  && net::Base64Decode(body["file"]["content"].AsString(), &decoded) && decoded == update.bytes,
+          "the update body: changelog and file only");
+
+    InstallIdentity strangerIdentity(InstallKeyPath(root + L"\\stranger"));
+    PublicClient stranger(LoopbackConfig(server), &strangerIdentity);
+    Check(stranger.PublishVersion(published, update), "an update from another install");
+    Check(WaitSlot(stranger, [](const Snapshot& s) { return s.publish && !s.publish->loading; }), "its answer");
+    Check(stranger.Snap().publish->outcome.status == Status::Forbidden, "another install cannot publish an update");
+
+    // Reports: anonymous, with the install key only for rate limits.
+    Check(client.Report(kScriptId, "malicious", "Sends my chat to a webhook."), "a report");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.report && !s.report->loading; }), "the report answer");
+    Check(client.Snap().report->outcome.Ok(), "202: reported");
+    Check(json::Parse(server.LastBody("POST /api/community/v1/reports"), &body)
+                  && body["item_id"].AsString() == kScriptId && body["category"].AsString() == "malicious"
+                  && body["details"].AsString() == "Sends my chat to a webhook.",
+          "the report body");
+    Check(!client.Report(kScriptId, "boring", ""), "an unknown category is refused");
+    Check(client.Report(kGoneId, "spam", ""), "a second report");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.report && !s.report->loading && s.report->id == kGoneId; }),
+          "its answer");
+    Check(client.Snap().report->outcome.status == Status::Conflict, "409: already reported");
+}
+
+// Publishing is final: the client has no request that deletes, unlists or hides an item.
+void NoDeleteChecks(TestServer& server) {
+    bool onlyStars = true;
+    for (const std::string& seen : server.Seen()) {
+        if (seen.compare(0, 7, "DELETE ") == 0) {
+            onlyStars = onlyStars && seen.size() > 5 && seen.compare(seen.size() - 5, 5, "/star") == 0;
+        }
+        onlyStars = onlyStars && seen.find("unlist") == std::string::npos && seen.find("PATCH") != 0;
+    }
+    Check(onlyStars, "the only DELETE requests are unstars; nothing unlists or edits an item");
+    std::ifstream file(std::string(NICKEL_SOURCE_DIR) + "/native/public_client.hpp", std::ios::binary);
+    std::stringstream text;
+    text << file.rdbuf();
+    const std::string source = text.str();
+    size_t deletes = 0;
+    for (size_t at = source.find("\"DELETE\""); at != std::string::npos; at = source.find("\"DELETE\"", at + 1)) {
+        ++deletes;
+    }
+    Check(!source.empty() && deletes == 1 && source.find("\"PATCH\"") == std::string::npos
+                  && source.find("/unlist") == std::string::npos && source.find("/me/") == std::string::npos,
+          "public_client.hpp: DELETE only for stars, no PATCH, no unlist, no account endpoint");
+}
+
 }  // namespace
 
 int main() {
@@ -1372,9 +1778,18 @@ int main() {
     CursorChecks(server);
     DetailAndFileChecks(server);
     LookupAndRevocationChecks(server);
-    StarChecks(server);
+    const std::wstring writesRoot = TemporaryRoot();
+    StarChecks(server, writesRoot);
+    PublishChecks(server, writesRoot);
+    NoDeleteChecks(server);
     RateLimitChecks(server);
     server.Stop();
+    DeleteTree(writesRoot);
+
+    const std::wstring localRoot = TemporaryRoot();
+    IdentityChecks(localRoot);
+    LocalListChecks(localRoot);
+    DeleteTree(localRoot);
 
     const std::wstring root = TemporaryRoot();
     InstallerScriptChecks(root);

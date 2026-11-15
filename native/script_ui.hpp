@@ -67,6 +67,7 @@ void DrawScriptPanel(ImVec2 origin,float s,float opacity){
   for(int i=0;i<3;++i){const float x=x0+i*(w+6*U);d->AddRectFilled(P(x,at),P(x+w,at+52*U),Rgba(0,0,0,.22f*a),0);Label(d,bold,9.5f*U*s,P(x+9*U,at+9*U),terms[i],Rgba(120,120,132,a));Label(d,bold,14*U*s,P(x+9*U,at+27*U),values[i].c_str(),Rgba(230,230,235,a));}}
  {const float at=take(32,10);const float half=(width-6*U)/2;if(UiButton(d,"script-reload","Reload",P(x0,at),half,32*U,1,true,a,s))library.Start(sc.name);
   if(UiButton(d,"script-stop","Stop",P(x0+half+6*U,at),half,32*U,3,sc.state==ScriptState::Running,a,s))library.Stop(sc.name);}
+ {const float at=take(32,10);DrawPublishButton(d,true,sc.name,P(x0,at),width,32*U,s,a);}   // PUBLIC: publish this script (final), or publish an update of it
  // The previous version (the file a library write or a removal replaced): restored held, so it waits for Start.
  if(library.HasBackup(sc.name)){const float at=take(32,10);
   if(UiButton(d,"script-restore","Restore previous version",P(x0,at),width,32*U,0,true,a,s)){ScriptSource current;const bool read=library.ReadSource(sc.name,current);

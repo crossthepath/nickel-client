@@ -1,7 +1,14 @@
 #pragma once
-// What the PUBLIC pages of the menu do, without drawing: the view of each kind (sort, search, selection), the
-// requests they make, the install / update / uninstall flow, revocations, updates and stars. public_ui.hpp draws it
-// with the menu's widgets; tests/public_page_checks.cpp drives it with recorded requests and hand-made snapshots.
+// What the PUBLIC pages of the menu do, without drawing: the view of each kind (sort, search, selection, the Starred
+// tab), the requests they make, the install / update / uninstall flow, revocations, updates, stars, reports, and
+// publishing from OTHER -> Scripting and OTHER -> Configs. public_ui.hpp draws it with the menu's widgets;
+// tests/public_page_checks.cpp drives it with recorded requests and hand-made snapshots.
+//
+// - No sign-in anywhere: writes carry this install's key (public_identity.hpp). Stars are favourites kept in
+//   root\public\starred.json (public_local.hpp); the Starred tab shows them through a lookup.
+// - Publishing is final and immediate once the server's automatic check passes: there is no way to delete, unlist or
+//   hide an item from here. The local file stays the author's; edits never change the public copy. Only the install
+//   that published an item (root\public\published.json, by fingerprint) is offered "Publish update".
 //
 // - Nothing is requested while the "Online community (PUBLIC)" setting is off: Tick and the page calls return early,
 //   and the menu does not even create the PublicClient.
@@ -24,7 +31,9 @@
 #include <vector>
 
 #include "public_client.hpp"
+#include "public_identity.hpp"
 #include "public_installer.hpp"
+#include "public_local.hpp"
 #include "script_library.hpp"
 
 namespace nickel::pub {
@@ -44,8 +53,12 @@ public:
     virtual bool File(const std::string& id, int number, const std::string& sha256) = 0;
     virtual bool Lookup(std::vector<std::string> ids) = 0;
     virtual bool Revocations() = 0;
-    virtual bool Library() = 0;
+    virtual bool LookupStarred(std::vector<std::string> ids) = 0;
     virtual bool Star(const std::string& id, bool starred) = 0;
+    virtual bool Check(Kind kind, const std::string& fileName, const std::string& bytes, const std::string& ref) = 0;
+    virtual bool Publish(const PublishRequest& request) = 0;
+    virtual bool PublishVersion(const std::string& id, const PublishRequest& request) = 0;
+    virtual bool Report(const std::string& id, const std::string& category, const std::string& details) = 0;
 };
 
 class ClientRequests : public PageRequests {
@@ -70,9 +83,23 @@ public:
 
     bool Revocations() override { return client_->Revocations(); }
 
-    bool Library() override { return client_->Library(); }
+    bool LookupStarred(std::vector<std::string> ids) override { return client_->LookupStarred(std::move(ids)); }
 
     bool Star(const std::string& id, bool starred) override { return client_->Star(id, starred); }
+
+    bool Check(Kind kind, const std::string& fileName, const std::string& bytes, const std::string& ref) override {
+        return client_->Check(kind, fileName, bytes, ref);
+    }
+
+    bool Publish(const PublishRequest& request) override { return client_->Publish(request); }
+
+    bool PublishVersion(const std::string& id, const PublishRequest& request) override {
+        return client_->PublishVersion(id, request);
+    }
+
+    bool Report(const std::string& id, const std::string& category, const std::string& details) override {
+        return client_->Report(id, category, details);
+    }
 
 private:
     PublicClient* client_;
@@ -365,7 +392,8 @@ inline ListState ListStateOf(Kind kind, const ListResult* list, bool enabled, in
             if (list->query.text.empty() && list->query.tags.empty() && list->query.categories.empty()
                 && !list->query.reviewedOnly) {
                 state.view = ListView::Empty;
-                state.message = "No " + KindWord(kind, true) + " shared yet. Share yours on nickelclient.com.";
+                state.message = "No " + KindWord(kind, true) + " shared yet. Publish yours from OTHER > "
+                                + (kind == Kind::Script ? "Scripting." : "Configs.");
             } else {
                 state.view = ListView::NoMatch;
                 state.message = "No " + KindWord(kind, true) + " match \"" + list->query.text + "\".";
@@ -506,6 +534,57 @@ inline bool WriteCommunitySetting(const std::wstring& root, bool on) {
            != FALSE;
 }
 
+// The author name the player publishes under (a display name, no account behind it), in the same file.
+inline std::string ReadAuthorName(const std::wstring& root) {
+    wchar_t value[128] = {};
+    GetPrivateProfileStringW(L"public", L"author_name", L"", value, 128, CommunitySettingPath(root).c_str());
+    const int count = WideCharToMultiByte(CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
+    std::string text(count > 1 ? static_cast<size_t>(count - 1) : 0, '\0');
+    if (count > 1) {
+        WideCharToMultiByte(CP_UTF8, 0, value, -1, text.data(), count, nullptr, nullptr);
+    }
+    return text;
+}
+
+inline bool WriteAuthorName(const std::wstring& root, const std::string& name) {
+    detail::MakeFolder(root);
+    detail::MakeFolder(root + L"\\public");
+    return WritePrivateProfileStringW(
+                   L"public", L"author_name", detail::ToWide(name).c_str(), CommunitySettingPath(root).c_str())
+           != FALSE;
+}
+
+// Tags as the player types them ("pvp, hud" or "pvp hud"): lower case, split on commas and spaces, repeated ones
+// dropped. False when one is not a valid tag or there are more than 5.
+inline bool ParseTags(std::string_view text, std::vector<std::string>* out) {
+    std::vector<std::string> tags;
+    std::string tag;
+    auto flush = [&] {
+        if (!tag.empty() && std::find(tags.begin(), tags.end(), tag) == tags.end()) {
+            tags.push_back(tag);
+        }
+        tag.clear();
+    };
+    for (const char c : text) {
+        if (c == ',' || c == ' ' || c == '\t') {
+            flush();
+        } else {
+            tag += (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+        }
+    }
+    flush();
+    if (tags.size() > kMaxTags) {
+        return false;
+    }
+    for (const std::string& each : tags) {
+        if (!ValidTag(each)) {
+            return false;
+        }
+    }
+    *out = std::move(tags);
+    return true;
+}
+
 // One section of an ini as GetPrivateProfileSectionW gives it ("key=value\0...\0\0"); empty when it has none.
 inline std::wstring ReadIniSection(const std::wstring& path, const wchar_t* section) {
     std::wstring buffer(4096, L'\0');
@@ -548,6 +627,7 @@ CopyConfigKeepingSections(const std::wstring& from, const std::wstring& to, cons
 struct PageOptions {
     std::wstring root;                         // %APPDATA%\Nickel in the game
     overlay::ScriptLibrary* library = nullptr; // ScriptsLibrary()
+    InstallIdentity* identity = nullptr;       // the install key the client sends: who owns what was published
     std::string running = kRunningNickel;
     std::function<int64_t()> now; // for the installer's records (tests); the clock when empty
 };
@@ -559,6 +639,7 @@ struct KindView {
     std::string typed;   // the search box
     int64_t typedAt = 0;
     bool listed = false;                        // its first list was asked for
+    bool starredTab = false;                    // the Starred tab is shown instead of a ranking
     std::string selected;                       // the card shown in the side panel ("" for none)
     bool sourceOpen = false;                    // the main panel shows the selected item's source / settings
     std::shared_ptr<const ListResult> seenList; // kept alive: a new answer is a new object
@@ -591,10 +672,48 @@ struct PendingInstall {
     std::shared_ptr<const FileResult> stale; // the file slot when the download was asked (an older answer)
 };
 
+// Publishing a local script or config: the check first, then Publish (or Publish update for an item this install
+// owns), then the mapping is remembered.
+enum class PublishStep : uint8_t {
+    None,
+    Checking,   // POST /items/check on its way
+    Ready,      // the check passed: the form can be sent
+    Publishing, // POST /items or /versions on its way (the form cannot be closed)
+    Done,
+    Failed
+};
+
+struct PublishFields {
+    std::string name;
+    std::string summary;
+    std::string description;
+    std::string tags; // as typed
+    std::string authorName;
+    std::string changelog; // Publish update
+};
+
+struct PublishDraft {
+    PublishStep step = PublishStep::None;
+    Kind kind = Kind::Script;
+    std::string localName; // the script or config name in this install
+    bool update = false;   // this install owns `itemId`: Publish update
+    std::string itemId;
+    std::string fileName;
+    std::string bytes; // what was read and checked: exactly what is published
+    std::string sha256;
+    CheckSummary check; // when the check answered
+    bool checked = false;
+    std::string message; // Failed or Done
+    std::vector<ScanNote> errors;
+    std::shared_ptr<const CheckResult> staleCheck;
+    std::shared_ptr<const PublishResult> stalePublish;
+};
+
 class PublicPage {
 public:
     explicit PublicPage(PageOptions options)
-        : options_(std::move(options)), installer_(InstallerOptions{options_.root, options_.library, options_.now}) {}
+        : options_(std::move(options)), installer_(InstallerOptions{options_.root, options_.library, options_.now}),
+          starred_(StarredPath(options_.root)), published_(PublishedPath(options_.root)) {}
 
     // The requests go there (nullptr while PUBLIC is off).
     void SetRequests(PageRequests* requests) { requests_ = requests; }
@@ -612,8 +731,8 @@ public:
 
     const std::string& Running() const { return options_.running; }
 
-    // Once per frame on the render thread, menu open or not. `signedIn`: a token is available for stars.
-    void Tick(const Snapshot& snap, bool enabled, bool signedIn, int64_t nowMs) {
+    // Once per frame on the render thread, menu open or not.
+    void Tick(const Snapshot& snap, bool enabled, int64_t nowMs) {
         now_ = nowMs;
         if (!enabled || requests_ == nullptr) {
             if (wasEnabled_) {
@@ -622,8 +741,8 @@ public:
                     view.relistDue = false;
                 }
                 revocationsAt_ = 0;
-                libraryAsked_ = false;
                 lookupAt_ = 0;
+                starredAsked_.clear();
             }
             wasEnabled_ = false;
             return;
@@ -636,12 +755,6 @@ public:
         if (revocationsAt_ == 0 || nowMs - revocationsAt_ > 3 * 3600 * 1000LL) {
             revocationsAt_ = nowMs;
             requests_->Revocations();
-        }
-        if (signedIn && !libraryAsked_) {
-            libraryAsked_ = true;
-            requests_->Library();
-        } else if (!signedIn) {
-            libraryAsked_ = false;
         }
         for (int k = 0; k < 2; ++k) {
             KindView& view = views_[k];
@@ -657,7 +770,7 @@ public:
             if (view.relistDue && view.retryUntil <= nowMs) {
                 Relist(static_cast<Kind>(k));
             }
-            if (view.listed && view.typed != view.applied && nowMs - view.typedAt >= 700) {
+            if (view.listed && !view.starredTab && view.typed != view.applied && nowMs - view.typedAt >= 700) {
                 const size_t chars = detail::CodePoints(view.typed);
                 if (chars == 0 || chars >= 2) {
                     Submit(static_cast<Kind>(k));
@@ -699,11 +812,25 @@ public:
         if (snap.star != seenStar_) {
             seenStar_ = snap.star;
             const StarResult* star = seenStar_.get();
+            const bool asked = star != nullptr && star->id == lastStar_.id && star->starred == lastStar_.on;
+            if (star != nullptr && !star->loading && star->outcome.Ok() && asked) {
+                fingerprintKnown_ = false; // the key may have been created by this star
+                fingerprintAt_ = 0;
+                for (int k = 0; k < 2; ++k) {
+                    if (views_[k].selected == star->id && requests_ != nullptr) {
+                        requests_->Detail(star->id); // the star count, as the server now counts it
+                    }
+                }
+            }
+            if (star != nullptr && !star->loading && !star->outcome.Ok() && asked) {
+                starred_.Set(lastStar_.kind, lastStar_.id, !lastStar_.on); // the server refused: undo it
+            }
             if (star != nullptr && !star->loading && !star->outcome.Ok()) {
                 switch (star->outcome.status) {
-                    case Status::SignedOut:
+                    case Status::NoIdentity:
                     case Status::Unauthorized:
-                        Notice("Sign in again through the Nickel launcher to star.", true);
+                    case Status::Forbidden:
+                        Notice(WriteRefusal(star->outcome, "star"), true);
                         break;
                     case Status::Conflict:
                         Notice("You can't star your own creation.", true);
@@ -718,6 +845,26 @@ public:
                 }
             }
         }
+        if (snap.report != seenReport_) {
+            seenReport_ = snap.report;
+            const ReportResult* report = seenReport_.get();
+            if (report != nullptr && !report->loading && report->id == reportPending_) {
+                reportPending_.clear();
+                if (report->outcome.Ok()) {
+                    Notice("Thanks. The report was sent to the Nickel team.");
+                } else if (report->outcome.status == Status::Conflict) {
+                    Notice("You already reported this.", true);
+                } else if (report->outcome.status == Status::RateLimited) {
+                    Notice("Too many reports. Try again later.", true);
+                } else {
+                    Notice(WriteRefusal(report->outcome, "report"), true);
+                }
+            }
+        }
+        HandleCheck(snap);
+        HandlePublish(snap);
+        lastCheck_ = snap.check;
+        lastPublish_ = snap.publish;
         const FileResult* file = snap.file.get();
         if (pending_.step == Step::Downloading && file != nullptr && snap.file != pending_.stale && !file->loading
             && file->id == pending_.card.id && file->number == pending_.card.latest.number) {
@@ -741,7 +888,10 @@ public:
             return;
         }
         KindView& view = View(kind);
-        if (!view.listed) {
+        if (view.starredTab) {
+            AskStarred(false);
+        }
+        if (!view.listed && !view.starredTab) {
             view.listed = true;
             requests_->List(QueryOf(kind));
         }
@@ -773,6 +923,14 @@ public:
 
     void SetSort(Kind kind, Sort sort) {
         KindView& view = View(kind);
+        if (view.starredTab) {
+            view.starredTab = false;
+            if (view.sort != sort || !view.listed) {
+                view.sort = sort;
+                Relist(kind);
+            }
+            return;
+        }
         if (view.sort == sort) {
             return;
         }
@@ -809,6 +967,10 @@ public:
     // Retry / Refresh: the first page again (refused while a 429 or 503 countdown runs).
     bool Retry(Kind kind) {
         KindView& view = View(kind);
+        if (view.starredTab) {
+            AskStarred(true);
+            return true;
+        }
         if (view.retryUntil > now_) {
             return false;
         }
@@ -921,19 +1083,255 @@ public:
 
     bool Stop(const std::string& name) { return options_.library != nullptr && options_.library->Stop(name); }
 
-    void Star(const std::string& id, bool starred) {
-        if (requests_ != nullptr) {
-            requests_->Star(id, starred);
+    // Stars (on) or unstars an item for this install. The local list changes at once and is undone if the server
+    // refuses it.
+    bool Star(Kind kind, const std::string& id, bool on) {
+        if (requests_ == nullptr || !ValidId(id)) {
+            return false;
         }
+        starred_.Set(kind, id, on);
+        lastStar_ = LastStar{kind, id, on};
+        return requests_->Star(id, on);
     }
 
-    // The star as shown: the request on its way or done, else the library.
-    static bool Starred(const Snapshot& snap, const std::string& id) {
-        if (snap.star && snap.star->id == id && (snap.star->loading || snap.star->outcome.Ok())) {
-            return snap.star->starred;
-        }
-        return snap.library && snap.library->Starred(id);
+    bool IsStarred(Kind kind, const std::string& id) const { return starred_.Has(kind, id); }
+
+    const StarredList& Starred() const { return starred_; }
+
+    // ---- the Starred tab
+
+    void ShowStarred(Kind kind) {
+        View(kind).starredTab = true;
+        AskStarred(false);
     }
+
+    // The cards of the Starred tab of `kind`: the lookup answer for the ids this install starred, newest star first,
+    // filtered by the search box (name, summary or author). `missing`: starred items no longer available.
+    std::vector<Card> StarredCards(Kind kind, const Snapshot& snap, size_t* missing = nullptr) const {
+        std::vector<Card> cards;
+        size_t gone = 0;
+        const LookupResult* lookup = snap.starred.get();
+        if (lookup != nullptr && !lookup->loading && lookup->outcome.Ok()) {
+            const std::string filter = Lower(views_[Slot(kind)].typed);
+            for (const std::string& id : starred_.Ids(kind)) {
+                for (const LookupEntry& entry : lookup->entries) {
+                    if (entry.id != id) {
+                        continue;
+                    }
+                    if (!entry.found) {
+                        ++gone;
+                    } else if (entry.card.kind == kind
+                               && (filter.empty() || Lower(entry.card.name).find(filter) != std::string::npos
+                                   || Lower(entry.card.summary).find(filter) != std::string::npos
+                                   || Lower(entry.card.author.displayName).find(filter) != std::string::npos)) {
+                        cards.push_back(entry.card);
+                    }
+                }
+            }
+        }
+        if (missing != nullptr) {
+            *missing = gone;
+        }
+        return cards;
+    }
+
+    ListState StarredState(Kind kind, const Snapshot& snap, bool enabled) const {
+        ListState state;
+        if (!enabled || requests_ == nullptr) {
+            return ListStateOf(kind, nullptr, false, 0, now_);
+        }
+        if (starred_.Ids(kind).empty()) {
+            state.view = ListView::Empty;
+            state.message = "You have not starred any " + KindWord(kind, true)
+                            + " yet. Open one and press Star to keep it here.";
+            return state;
+        }
+        const LookupResult* lookup = snap.starred.get();
+        if (lookup == nullptr || lookup->loading) {
+            state.view = ListView::Loading;
+            return state;
+        }
+        state.detail = lookup->outcome.problem.Text();
+        switch (lookup->outcome.status) {
+            case Status::Ok:
+                break;
+            case Status::Offline:
+            case Status::Timeout:
+                state.view = ListView::Offline;
+                state.message = "Can't reach nickelclient.com.";
+                return state;
+            case Status::RateLimited:
+                state.view = ListView::RateLimited;
+                state.message = "Too many requests. Try again in a moment.";
+                return state;
+            case Status::Maintenance:
+                state.view = ListView::Maintenance;
+                state.message = "PUBLIC is under maintenance.";
+                return state;
+            default:
+                state.view = ListView::Unavailable;
+                state.message = "PUBLIC is unavailable right now.";
+                return state;
+        }
+        size_t missing = 0;
+        const std::vector<Card> cards = StarredCards(kind, snap, &missing);
+        if (cards.empty() && !views_[Slot(kind)].typed.empty()) {
+            state.view = ListView::NoMatch;
+            state.message = "No starred " + KindWord(kind, true) + " match \"" + views_[Slot(kind)].typed + "\".";
+            return state;
+        }
+        if (cards.empty()) {
+            state.view = ListView::Empty;
+            state.message = "Your starred " + KindWord(kind, true) + " are no longer available.";
+            return state;
+        }
+        state.view = ListView::Ready;
+        if (missing > 0) {
+            state.message = std::to_string(missing) + " starred " + KindWord(kind, missing != 1)
+                            + (missing == 1 ? " is" : " are") + " no longer available.";
+        }
+        return state;
+    }
+
+    // ---- reports (anonymous: the moderators read them on the website)
+
+    bool Report(const Card& card, const std::string& category, const std::string& details) {
+        if (requests_ == nullptr || !ValidId(card.id) || !KnownReasonCategory(category) || !reportPending_.empty()) {
+            return false;
+        }
+        reportPending_ = card.id;
+        return requests_->Report(card.id, category, details);
+    }
+
+    bool ReportSending() const { return !reportPending_.empty(); }
+
+    // ---- publishing from OTHER -> Scripting and OTHER -> Configs
+
+    // The item this install published from the local `name`, or nullptr (never one of another install).
+    const PublishedRecord* OwnedItem(Kind kind, const std::string& name) {
+        return published_.Find(kind, name, Fingerprint());
+    }
+
+    const PublishDraft& Draft() const { return draft_; }
+
+    // Opens the publish form for a local script or config: reads its bytes (scripts through the library, configs from
+    // root\configs) and asks the check. "Publish update" when this install owns the item published from that name.
+    bool BeginPublish(Kind kind, const std::string& localName) {
+        if (draft_.step == PublishStep::Publishing) {
+            return false;
+        }
+        draft_ = PublishDraft();
+        draft_.kind = kind;
+        draft_.localName = localName;
+        const auto fail = [&](std::string text) {
+            draft_.step = PublishStep::Failed;
+            draft_.message = std::move(text);
+            return false;
+        };
+        if (requests_ == nullptr) {
+            return fail("Turn PUBLIC on to publish.");
+        }
+        std::string bytes;
+        if (kind == Kind::Script) {
+            overlay::ScriptSource source;
+            if (options_.library == nullptr || !options_.library->ReadSource(localName, source)) {
+                return fail("The script could not be read.");
+            }
+            bytes = std::move(source.text);
+        } else if (!detail::ReadAll(installer_.ConfigsFolder() + L"\\" + detail::ToWide(localName) + L".ini",
+                                    &bytes,
+                                    kMaxFileBytes + 1)) {
+            return fail("The config could not be read, or it is over 200 KB.");
+        }
+        if (bytes.empty()) {
+            return fail("An empty file cannot be published.");
+        }
+        if (bytes.size() > kMaxFileBytes) {
+            return fail("Files over 200 KB cannot be published.");
+        }
+        const char* extension = kind == Kind::Script ? ".luau" : ".ini";
+        draft_.fileName = localName + extension;
+        if (!detail::ValidUploadName(draft_.fileName, extension)) {
+            return fail("This name cannot be used on PUBLIC. Rename it first.");
+        }
+        draft_.bytes = std::move(bytes);
+        draft_.sha256 = net::Sha256Hex(draft_.bytes);
+        if (const PublishedRecord* owned = OwnedItem(kind, localName)) {
+            draft_.update = true;
+            draft_.itemId = owned->id;
+        }
+        draft_.step = PublishStep::Checking;
+        draft_.staleCheck = lastCheck_;
+        requests_->Check(kind, draft_.fileName, draft_.bytes, localName);
+        return true;
+    }
+
+    // Sends the form of a new item; "" when it was sent, else what to fix.
+    std::string SubmitPublish(const PublishFields& fields) {
+        if (draft_.step != PublishStep::Ready || draft_.update || requests_ == nullptr) {
+            return "Wait for the check to finish.";
+        }
+        PublishRequest request = RequestOfDraft();
+        request.name = Trim(fields.name);
+        request.summary = Trim(fields.summary);
+        request.description = Trim(fields.description);
+        request.authorName = Trim(fields.authorName);
+        if (detail::CodePoints(request.name) == 0 || detail::CodePoints(request.name) > kMaxNameChars) {
+            return "Give it a name of 1 to 60 characters.";
+        }
+        if (detail::CodePoints(request.summary) == 0 || detail::CodePoints(request.summary) > kMaxSummaryChars) {
+            return "Write a summary of 1 to 140 characters.";
+        }
+        if (detail::CodePoints(request.description) > kMaxDescriptionChars) {
+            return "The description is over 4000 characters.";
+        }
+        if (!ParseTags(fields.tags, &request.tags)) {
+            return "Up to 5 tags of 2 to 24 lower-case letters, digits or dashes.";
+        }
+        if (detail::CodePoints(request.authorName) == 0
+            || detail::CodePoints(request.authorName) > kMaxDisplayNameChars) {
+            return "Set the author name you publish under (1 to 32 characters).";
+        }
+        const std::string problem = detail::PublishProblem(request, false);
+        if (!problem.empty()) {
+            return "Check the " + problem + ": it has a character that cannot be used.";
+        }
+        WriteAuthorName(options_.root, request.authorName);
+        draft_.step = PublishStep::Publishing;
+        draft_.stalePublish = lastPublish_;
+        requests_->Publish(request);
+        return "";
+    }
+
+    // Sends a new version of the owned item; "" when it was sent, else what to fix.
+    std::string SubmitUpdate(const std::string& changelog) {
+        if (draft_.step != PublishStep::Ready || !draft_.update || requests_ == nullptr) {
+            return "Wait for the check to finish.";
+        }
+        PublishRequest request = RequestOfDraft();
+        request.changelog = Trim(changelog);
+        if (detail::CodePoints(request.changelog) == 0 || detail::CodePoints(request.changelog) > kMaxChangelogChars) {
+            return "Say what changed in this version (1 to 2000 characters).";
+        }
+        if (!detail::PublishProblem(request, true).empty()) {
+            return "The changelog has a character that cannot be used.";
+        }
+        draft_.step = PublishStep::Publishing;
+        draft_.stalePublish = lastPublish_;
+        requests_->PublishVersion(draft_.itemId, request);
+        return "";
+    }
+
+    // Closes the form (refused while the publish is on its way: its answer must be remembered).
+    bool ClosePublish() {
+        if (draft_.step == PublishStep::Publishing) {
+            return false;
+        }
+        draft_ = PublishDraft();
+        return true;
+    }
+
+    std::string AuthorName() const { return ReadAuthorName(options_.root); }
 
     void SkipVersion(const Card& card) {
         installer_.SkipVersion(card.kind, card.id, card.latest.number);
@@ -999,7 +1397,178 @@ public:
     int64_t Now() const { return now_; }
 
 private:
+    struct LastStar {
+        Kind kind = Kind::Script;
+        std::string id;
+        bool on = false;
+    };
+
     static size_t Slot(Kind kind) { return static_cast<size_t>(kind); }
+
+    static std::string Lower(std::string text) {
+        for (char& c : text) {
+            c = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+        }
+        return text;
+    }
+
+    static std::string Trim(const std::string& text) {
+        const size_t first = text.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) {
+            return std::string();
+        }
+        const size_t last = text.find_last_not_of(" \t\r\n");
+        return text.substr(first, last - first + 1);
+    }
+
+    // The fingerprint of this install's key, read once it exists ("" before the first write); while there is none,
+    // the file is looked for at most every 2 seconds (the side panels ask every frame).
+    std::string Fingerprint() {
+        if (!fingerprintKnown_ && options_.identity != nullptr
+            && (fingerprintAt_ == 0 || now_ < fingerprintAt_ || now_ - fingerprintAt_ >= 2000)) {
+            fingerprintAt_ = now_ == 0 ? 1 : now_;
+            fingerprintKnown_ = options_.identity->Fingerprint(&fingerprint_);
+        }
+        return fingerprintKnown_ ? fingerprint_ : std::string();
+    }
+
+    // The Starred tab's lookup: when a starred id was not asked yet, or force (Refresh).
+    void AskStarred(bool force) {
+        if (requests_ == nullptr) {
+            return;
+        }
+        std::vector<std::string> ids;
+        bool fresh = force;
+        for (Kind kind : {Kind::Script, Kind::Config}) {
+            for (const std::string& id : starred_.Ids(kind)) {
+                ids.push_back(id);
+                fresh = fresh || std::find(starredAsked_.begin(), starredAsked_.end(), id) == starredAsked_.end();
+            }
+        }
+        if (!fresh || ids.empty()) {
+            return;
+        }
+        starredAsked_ = ids;
+        requests_->LookupStarred(std::move(ids));
+    }
+
+    PublishRequest RequestOfDraft() const {
+        PublishRequest request;
+        request.kind = draft_.kind;
+        request.fileName = draft_.fileName;
+        request.bytes = draft_.bytes;
+        request.ref = draft_.localName;
+        return request;
+    }
+
+    // Why a write was refused, for the player. what: "star", "report", "publish".
+    static std::string WriteRefusal(const Outcome& outcome, const char* what) {
+        switch (outcome.status) {
+            case Status::NoIdentity:
+                return "This install's PUBLIC key (public\\install.key) cannot be used. If it is damaged, delete it to "
+                       "get a new one; what you published with it can then no longer be updated.";
+            case Status::Unauthorized:
+                return "The server refused this install's PUBLIC key.";
+            case Status::Forbidden:
+                return "This install is blocked from PUBLIC.";
+            case Status::Offline:
+            case Status::Timeout:
+                return "Can't reach nickelclient.com.";
+            case Status::RateLimited:
+                return "Too many requests. Try again in "
+                       + std::to_string(outcome.retryAfter > 0 ? outcome.retryAfter : 30) + " s.";
+            default:
+                return std::string("The ") + what + " could not be sent (" + StatusName(outcome.status) + ")."
+                       + (outcome.problem.Text().empty() ? std::string() : " " + outcome.problem.Text());
+        }
+    }
+
+    void HandleCheck(const Snapshot& snap) {
+        const CheckResult* check = snap.check.get();
+        if (draft_.step != PublishStep::Checking || check == nullptr || snap.check == draft_.staleCheck
+            || check->loading || check->sentSha256 != draft_.sha256 || check->ref != draft_.localName) {
+            return;
+        }
+        if (check->outcome.Ok()) {
+            draft_.check = check->check;
+            draft_.checked = true;
+            if (check->check.ok) {
+                draft_.step = PublishStep::Ready;
+            } else {
+                draft_.step = PublishStep::Failed;
+                draft_.message = "The automatic check refused this file. It cannot be published as it is.";
+                draft_.errors = check->check.errors;
+            }
+            return;
+        }
+        draft_.step = PublishStep::Failed;
+        draft_.errors = check->outcome.problem.errors;
+        draft_.message = check->outcome.status == Status::Rejected || check->outcome.status == Status::BadRequest
+                                 ? "The automatic check refused this file. It cannot be published as it is."
+                                 : WriteRefusal(check->outcome, "check");
+    }
+
+    void HandlePublish(const Snapshot& snap) {
+        const PublishResult* result = snap.publish.get();
+        if (draft_.step != PublishStep::Publishing || result == nullptr || snap.publish == draft_.stalePublish
+            || result->loading || result->sentSha256 != draft_.sha256 || result->ref != draft_.localName) {
+            return;
+        }
+        if (!result->outcome.Ok()) {
+            draft_.step = PublishStep::Failed;
+            draft_.errors = result->outcome.problem.errors;
+            const std::string said = result->outcome.problem.Text();
+            switch (result->outcome.status) {
+                case Status::Rejected:
+                case Status::BadRequest:
+                    draft_.message = "The server refused it." + (said.empty() ? std::string() : " " + said);
+                    break;
+                case Status::Conflict:
+                    draft_.message = said.empty() ? "This file is already published." : said;
+                    break;
+                case Status::NotFound:
+                case Status::Gone:
+                    draft_.message = "This item is no longer on PUBLIC.";
+                    break;
+                case Status::Forbidden:
+                    draft_.message = draft_.update ? "Only the install that published this item can update it."
+                                                   : WriteRefusal(result->outcome, "publish");
+                    break;
+                default:
+                    draft_.message = WriteRefusal(result->outcome, "publish");
+                    break;
+            }
+            Notice(draft_.message, true);
+            return;
+        }
+        fingerprintKnown_ = false; // the first write created the key
+        fingerprintAt_ = 0;
+        PublishedRecord record;
+        if (const PublishedRecord* owned = OwnedItem(draft_.kind, draft_.localName)) {
+            record = *owned;
+        }
+        record.kind = draft_.kind;
+        record.name = draft_.localName;
+        record.id = result->itemId;
+        record.owner = Fingerprint();
+        record.version = result->versionNumber > 0 ? result->versionNumber : record.version;
+        const std::string at = FormatIsoTime(now_);
+        if (draft_.update) {
+            record.updatedAt = at;
+        } else {
+            record.publishedAt = at;
+            record.updatedAt.clear();
+        }
+        const bool remembered = published_.Remember(record);
+        draft_.step = PublishStep::Done;
+        const bool pending = result->state == "pending";
+        draft_.message = (draft_.update ? "Published the update of " : "Published ") + draft_.localName
+                         + (pending ? ". It will be public once it is approved." : ". It is public now.");
+        if (!remembered) {
+            draft_.message += " This install could not save that it owns it, so it cannot be updated from here.";
+        }
+        Notice(draft_.message, !remembered);
+    }
 
     // The first page again; while a 429 or 503 countdown runs it is kept for Tick to send when it ends.
     void Relist(Kind kind) {
@@ -1094,6 +1663,18 @@ private:
     std::shared_ptr<const LookupResult> seenLookup_;
     std::shared_ptr<const RevocationsResult> seenRevocations_;
     std::shared_ptr<const StarResult> seenStar_;
+    std::shared_ptr<const ReportResult> seenReport_;
+    std::shared_ptr<const CheckResult> lastCheck_;
+    std::shared_ptr<const PublishResult> lastPublish_;
+    StarredList starred_;
+    PublishedList published_;
+    LastStar lastStar_;
+    std::vector<std::string> starredAsked_;
+    std::string reportPending_;
+    PublishDraft draft_;
+    std::string fingerprint_;
+    bool fingerprintKnown_ = false;
+    int64_t fingerprintAt_ = 0;
     std::shared_ptr<const FileResult> lastFile_;
     std::shared_ptr<const FileResult> lastSource_;
     std::vector<std::string> notices_;
@@ -1101,7 +1682,6 @@ private:
     int64_t now_ = 0;
     int64_t revocationsAt_ = 0;
     int64_t lookupAt_ = 0;
-    bool libraryAsked_ = false;
     bool wasEnabled_ = false;
 };
 

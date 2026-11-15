@@ -14,9 +14,10 @@
 //   the kept body. When the network fails, a list or the revocation list falls back to the kept body (fromCache).
 // - 429: the Retry-After (or the problem's retry_after) blocks every request of this client until it has elapsed;
 //   requests made meanwhile fail at once with Status::RateLimited, without reaching the server.
-// - Stars are binary (one per account and item): Star(id, true) is PUT /items/{id}/star, Star(id, false) DELETE.
-//   They need the player's access token, which a TokenSource supplies on the worker thread; there is no token in this
-//   header, and no request other than stars and the library sends one.
+// - No sign-in anywhere. Writes (Check, Publish, PublishVersion, Star, Report) send "Authorization: Install <secret>"
+//   from the InstallIdentity (public_identity.hpp), read on the worker thread; reads never send it. Stars are
+//   favourites: Star(id, true) is PUT /items/{id}/star, Star(id, false) DELETE; the list of what this install starred
+//   is local (public_local.hpp). Publishing is final: there is no call that deletes, unlists or hides an item.
 // - Nothing here reads or writes files; installing is public_installer.hpp. Stop() (or the destructor) cancels and
 //   joins the worker: call it from the overlay's unload path, never from DllMain.
 #include <algorithm>
@@ -34,6 +35,7 @@
 
 #include "https_client.hpp"
 #include "json_value.hpp"
+#include "public_identity.hpp"
 #include "public_model.hpp"
 
 namespace nickel::pub {
@@ -42,7 +44,7 @@ namespace nickel::pub {
 enum class Status : uint8_t {
     Ok,
     Loading,         // posted, no answer yet
-    SignedOut,       // a star or the library without an access token: nothing was sent
+    NoIdentity,      // a write without a usable install key (damaged or not creatable): nothing was sent
     Invalid,         // the caller's arguments (an id, a hash) or the base URL were refused before any request
     Offline,         // DNS, connection or TLS failure
     Timeout,
@@ -52,19 +54,22 @@ enum class Status : uint8_t {
     RateLimited,     // 429, or a request made while a Retry-After runs
     Maintenance,     // 503
     BadRequest,      // 400 (an expired cursor: start from the first page again)
-    Unauthorized,    // 401: the token was refused (the TokenSource heard of it)
-    Forbidden,       // 403
+    Unauthorized,    // 401: the install key was refused
+    Forbidden,       // 403: this install is blocked from writes
     NotFound,        // 404
     Gone,            // 410: removed or deleted (outcome.problem.goneState, reasonCategory)
-    Conflict,        // 409 (starring one's own item)
+    Conflict,        // 409 (a file already published, starring one's own item)
+    Rejected,        // 422: the file or a field failed the checks (outcome.problem.errors says which)
     ServerError,     // 5xx and any other status
     Cancelled,       // Stop(), or a newer request of the same slot
 };
 
 inline const char* StatusName(Status status) {
-    static const char* const kNames[] = {"ok", "loading", "signed out", "invalid", "offline", "timeout", "too large",
-            "malformed", "digest mismatch", "rate limited", "maintenance", "bad request", "unauthorized", "forbidden",
-            "not found", "gone", "conflict", "server error", "cancelled"};
+    static const char* const kNames[] = {
+            "ok",          "loading",     "no install key", "invalid",         "offline",
+            "timeout",     "too large",   "malformed",      "digest mismatch", "rate limited",
+            "maintenance", "bad request", "unauthorized",   "forbidden",       "not found",
+            "gone",        "conflict",    "rejected",       "server error",    "cancelled"};
     const size_t index = static_cast<size_t>(status);
     return index < sizeof(kNames) / sizeof(kNames[0]) ? kNames[index] : "unknown";
 }
@@ -78,18 +83,6 @@ struct Outcome {
     std::string message;         // what failed, for the log (a field name, a network error)
 
     bool Ok() const { return status == Status::Ok; }
-};
-
-// Supplies the player's access token for the calls that need one. Called on the worker thread.
-class TokenSource {
-public:
-    virtual ~TokenSource() = default;
-
-    // The current access token ("nk_at_..."), or false when the player is not signed in.
-    virtual bool AccessToken(std::string* token) = 0;
-
-    // The API answered 401 to that token (expired or revoked): refresh it, or sign the player out.
-    virtual void TokenRejected(const std::string& token) { (void)token; }
 };
 
 struct ClientConfig {
@@ -164,26 +157,53 @@ struct RevocationsResult {
     int64_t fetchedAt = 0;
 };
 
-// The signed-in player's stars and favourites (GET /me/library), kept up to date by Star().
-struct LibraryResult {
-    std::vector<std::string> stars;
-    std::vector<std::string> favourites;
-    Outcome outcome;
-    bool loading = false;
-
-    bool Starred(std::string_view id) const {
-        for (const std::string& star : stars) {
-            if (star == id) {
-                return true;
-            }
-        }
-        return false;
-    }
-};
-
 struct StarResult {
     std::string id;
-    bool starred = false;                  // what was asked
+    bool starred = false; // what was asked
+    Outcome outcome;
+    bool loading = false;
+};
+
+// What a player publishes from OTHER -> Scripting or OTHER -> Configs (POST /items), or the file of a new version
+// (POST /items/{id}/versions: only id, changelog, fileName and bytes are sent).
+struct PublishRequest {
+    Kind kind = Kind::Script;
+    std::string name;
+    std::string summary;
+    std::string description;
+    std::vector<std::string> tags; // slugs, up to 5
+    std::string authorName;        // the display name set in Nickel, stored with the item
+    std::string fileName;          // "<name>.luau" or "<name>.ini"
+    std::string bytes;             // the file, sent in base64 exactly as read
+    std::string changelog;         // new versions
+    std::string ref;               // the caller's own reference (the local name), returned in the result
+};
+
+// The dry run of POST /items/check for a file.
+struct CheckResult {
+    Kind kind = Kind::Script;
+    std::string fileName;
+    std::string sentSha256; // of the bytes sent: the answer is about these bytes
+    std::string ref;
+    CheckSummary check; // when outcome is Ok
+    Outcome outcome;
+    bool loading = false;
+};
+
+struct PublishResult {
+    Kind kind = Kind::Script;
+    std::string ref;
+    bool update = false;   // a new version of `itemId`
+    std::string itemId;    // the item created, or the one updated
+    int versionNumber = 0; // the version created (0 when the answer did not say)
+    std::string state;     // the item's or version's state when sent ("published"...)
+    std::string sentSha256;
+    Outcome outcome;
+    bool loading = false;
+};
+
+struct ReportResult {
+    std::string id;
     Outcome outcome;
     bool loading = false;
 };
@@ -197,8 +217,11 @@ struct Snapshot {
     std::shared_ptr<const FileResult> file;
     std::shared_ptr<const LookupResult> lookup;
     std::shared_ptr<const RevocationsResult> revocations;
-    std::shared_ptr<const LibraryResult> library;
+    std::shared_ptr<const LookupResult> starred; // the cards of the Starred tabs
     std::shared_ptr<const StarResult> star;
+    std::shared_ptr<const CheckResult> check;
+    std::shared_ptr<const PublishResult> publish;
+    std::shared_ptr<const ReportResult> report;
 
     const ListResult* List(Kind kind) const { return lists[static_cast<size_t>(kind)].get(); }
 };
@@ -258,25 +281,79 @@ inline int64_t NowUnixMs() {
     return static_cast<int64_t>(ticks / 10000 - 11644473600000ULL);
 }
 
-inline bool ValidAccessToken(std::string_view token) {
-    if (token.empty() || token.size() > 512) {
+// A file name the API accepts: 1 to 80 bytes, no path separator or control character, ending in `extension`.
+inline bool ValidUploadName(std::string_view name, std::string_view extension) {
+    if (name.size() <= extension.size() || name.size() > 80
+        || name.compare(name.size() - extension.size(), extension.size(), extension) != 0) {
         return false;
     }
-    for (const char c : token) {
-        if (c <= 0x20 || c >= 0x7F) {
+    for (const char c : name) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u < 0x20 || u == 0x7F || c == '\\' || c == '/') {
             return false;
         }
     }
     return true;
 }
 
+inline json::Value FileJson(const std::string& name, const std::string& bytes) {
+    json::Value file = json::Value::MakeObject();
+    file.Set("name", json::Value::MakeString(name));
+    file.Set("content",
+             json::Value::MakeString(net::Base64Encode(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size())));
+    file.Set("encoding", json::Value::MakeString("base64"));
+    return file;
+}
+
+// What is wrong with a publish request before it is sent ("" when nothing is): the API's limits.
+inline std::string PublishProblem(const PublishRequest& request, bool update) {
+    const char* extension = request.kind == Kind::Script ? ".luau" : ".ini";
+    if (!ValidUploadName(request.fileName, extension)) {
+        return "file name";
+    }
+    if (request.bytes.empty()) {
+        return "the file is empty";
+    }
+    if (request.bytes.size() > kMaxFileBytes) {
+        return "the file is over 200 KB";
+    }
+    if (update) {
+        return CodePoints(request.changelog) == 0
+                               || !ValidText(request.changelog, kMaxChangelogChars, TextRule::MultiLine)
+                       ? "changelog"
+                       : "";
+    }
+    if (CodePoints(request.name) == 0 || !ValidText(request.name, kMaxNameChars, TextRule::OneLine)) {
+        return "name";
+    }
+    if (CodePoints(request.summary) == 0 || !ValidText(request.summary, kMaxSummaryChars, TextRule::OneLine)) {
+        return "summary";
+    }
+    if (!ValidText(request.description, kMaxDescriptionChars, TextRule::MultiLine)) {
+        return "description";
+    }
+    if (request.tags.size() > kMaxTags) {
+        return "tags";
+    }
+    for (const std::string& tag : request.tags) {
+        if (!ValidTag(tag)) {
+            return "tags";
+        }
+    }
+    if (CodePoints(request.authorName) == 0
+        || !ValidText(request.authorName, kMaxDisplayNameChars, TextRule::OneLine)) {
+        return "author name";
+    }
+    return "";
+}
+
 }  // namespace detail
 
 class PublicClient {
 public:
-    explicit PublicClient(ClientConfig config = ClientConfig(), TokenSource* tokens = nullptr)
-        : config_(std::move(config)),
-          tokens_(tokens),
+    // identity: the install key for writes (nullptr: every write ends as Status::NoIdentity).
+    explicit PublicClient(ClientConfig config = ClientConfig(), InstallIdentity* identity = nullptr)
+        : config_(std::move(config)), identity_(identity),
           http_(net::ClientOptions{config_.userAgent, config_.policy}) {
         while (!config_.baseUrl.empty() && config_.baseUrl.back() == '/') {
             config_.baseUrl.pop_back();
@@ -475,66 +552,15 @@ public:
         return FetchFile(&snapshot_.file, &fileGeneration_, id, number, sha256, true);
     }
 
-    // The latest state of installed items (POST /items/lookup, in chunks of 100, without a token): an update when
-    // latest_version.number is greater than the installed number.
+    // The latest state of installed items (POST /items/lookup, in chunks of 100, without the install key): an update
+    // when latest_version.number is greater than the installed number.
     bool Lookup(std::vector<std::string> ids) {
-        std::vector<std::string> unique;
-        bool valid = usable_;
-        for (const std::string& id : ids) {
-            valid = valid && ValidId(id);
-            bool repeated = false;
-            for (const std::string& seen : unique) {
-                repeated = repeated || seen == id;
-            }
-            if (!repeated) {
-                unique.push_back(id);
-            }
-        }
-        auto placeholder = std::make_shared<LookupResult>();
-        placeholder->ids = unique;
-        placeholder->loading = true;
-        const uint64_t generation = PublishPlaceholder(&snapshot_.lookup, &lookupGeneration_, placeholder);
-        auto publish = [this, generation](std::shared_ptr<LookupResult> result) {
-            PublishSlot(&snapshot_.lookup, &lookupGeneration_, generation, std::move(result));
-        };
-        if (!valid) {
-            return Refuse(placeholder, publish);
-        }
-        auto token = worker_.Post([this, unique, publish](net::CancelToken& cancel) {
-            auto result = std::make_shared<LookupResult>();
-            result->ids = unique;
-            for (size_t start = 0; start < unique.size(); start += kMaxLookupIds) {
-                const size_t end = (std::min)(unique.size(), start + kMaxLookupIds);
-                std::vector<std::string> chunk(unique.begin() + static_cast<std::ptrdiff_t>(start),
-                        unique.begin() + static_cast<std::ptrdiff_t>(end));
-                json::Value list = json::Value::MakeArray();
-                for (const std::string& id : chunk) {
-                    list.Push(json::Value::MakeString(id));
-                }
-                json::Value body = json::Value::MakeObject();
-                body.Set("ids", std::move(list));
-                Fetched fetched = Fetch(cancel, "POST", "/items/lookup", json::Serialize(body), false, kMaxJsonBytes,
-                        false);
-                result->outcome = fetched.outcome;
-                std::vector<LookupEntry> entries;
-                json::Value value;
-                std::string error;
-                if (fetched.outcome.Ok()
-                        && (!ParseJson(fetched, &value, &result->outcome) || !ParseLookup(value, chunk, &entries, &error))) {
-                    Malformed(&result->outcome, error);
-                }
-                if (!result->outcome.Ok()) {
-                    result->entries.clear();
-                    break;
-                }
-                for (LookupEntry& entry : entries) {
-                    result->entries.push_back(std::move(entry));
-                }
-            }
-            result->fetchedAt = detail::NowUnixMs();
-            publish(std::move(result));
-        });
-        return token ? true : Refuse(placeholder, publish, Status::Cancelled);
+        return StartLookup(&snapshot_.lookup, &lookupGeneration_, std::move(ids));
+    }
+
+    // The cards of the items this install starred (the Starred tabs), the same call in its own slot.
+    bool LookupStarred(std::vector<std::string> ids) {
+        return StartLookup(&snapshot_.starred, &starredGeneration_, std::move(ids));
     }
 
     // The files revoked as malicious (GET /revocations); the installer holds the matching scripts.
@@ -573,37 +599,8 @@ public:
         return token ? true : Refuse(placeholder, publish, Status::Cancelled);
     }
 
-    // The signed-in player's stars and favourites (GET /me/library). Status::SignedOut without a token.
-    bool Library() {
-        auto placeholder = std::make_shared<LibraryResult>();
-        placeholder->loading = true;
-        const uint64_t generation = PublishPlaceholder(&snapshot_.library, &libraryGeneration_, placeholder);
-        auto publish = [this, generation](std::shared_ptr<LibraryResult> result) {
-            PublishSlot(&snapshot_.library, &libraryGeneration_, generation, std::move(result));
-        };
-        if (!usable_) {
-            return Refuse(placeholder, publish);
-        }
-        auto token = worker_.Post([this, publish](net::CancelToken& cancel) {
-            auto result = std::make_shared<LibraryResult>();
-            Fetched fetched = Fetch(cancel, "GET", "/me/library", std::string(), true, kMaxJsonBytes, false);
-            result->outcome = fetched.outcome;
-            json::Value value;
-            if (fetched.outcome.Ok()
-                    && (!ParseJson(fetched, &value, &result->outcome) || !ReadIds(value, "stars", &result->stars)
-                            || !ReadIds(value, "favourites", &result->favourites))) {
-                Malformed(&result->outcome, "stars or favourites");
-                result->stars.clear();
-                result->favourites.clear();
-            }
-            publish(std::move(result));
-        });
-        return token ? true : Refuse(placeholder, publish, Status::Cancelled);
-    }
-
-    // Stars (true) or unstars (false) an item for the signed-in player: one star per account and item, starring
-    // again changes nothing. On success the library snapshot is updated. Status::SignedOut without a token,
-    // Status::Conflict for one's own item.
+    // Stars (true) or unstars (false) an item for this install: one star per install and item, starring again
+    // changes nothing. Status::NoIdentity without a usable install key, Status::Conflict for one's own item.
     bool Star(const std::string& id, bool starred) {
         auto placeholder = std::make_shared<StarResult>();
         placeholder->id = id;
@@ -623,9 +620,81 @@ public:
             Fetched fetched = Fetch(cancel, starred ? "PUT" : "DELETE", "/items/" + id + "/star", std::string(), true,
                     16 * 1024, false);
             result->outcome = fetched.outcome;
-            if (fetched.outcome.Ok()) {
-                UpdateLibraryStar(id, starred);
+            publish(std::move(result));
+        });
+        return token ? true : Refuse(placeholder, publish, Status::Cancelled);
+    }
+
+    // The dry run of the publish checks for a file (POST /items/check): shown before Publish. ref: returned as is.
+    bool
+    Check(Kind kind, const std::string& fileName, const std::string& bytes, const std::string& ref = std::string()) {
+        auto placeholder = std::make_shared<CheckResult>();
+        placeholder->kind = kind;
+        placeholder->fileName = fileName;
+        placeholder->sentSha256 = net::Sha256Hex(bytes);
+        placeholder->ref = ref;
+        placeholder->loading = true;
+        const uint64_t generation = PublishPlaceholder(&snapshot_.check, &checkGeneration_, placeholder);
+        auto publish = [this, generation](std::shared_ptr<CheckResult> result) {
+            PublishSlot(&snapshot_.check, &checkGeneration_, generation, std::move(result));
+        };
+        const bool valid = detail::ValidUploadName(fileName, kind == Kind::Script ? ".luau" : ".ini") && !bytes.empty()
+                           && bytes.size() <= kMaxFileBytes;
+        if (!usable_ || !valid) {
+            return Refuse(placeholder, publish);
+        }
+        json::Value body = json::Value::MakeObject();
+        body.Set("kind", json::Value::MakeString(KindName(kind)));
+        body.Set("file", detail::FileJson(fileName, bytes));
+        auto token = worker_.Post([this, placeholder, publish, text = json::Serialize(body)](net::CancelToken& cancel) {
+            auto result = std::make_shared<CheckResult>(*placeholder);
+            result->loading = false;
+            Fetched fetched = Fetch(cancel, "POST", "/items/check", text, true, kMaxJsonBytes, false);
+            result->outcome = fetched.outcome;
+            json::Value value;
+            std::string error;
+            if (fetched.outcome.Ok()
+                && (!ParseJson(fetched, &value, &result->outcome)
+                    || !ParseCheckSummary(value, &result->check, &error))) {
+                Malformed(&result->outcome, error);
             }
+            publish(std::move(result));
+        });
+        return token ? true : Refuse(placeholder, publish, Status::Cancelled);
+    }
+
+    // Publishes a new item with its first version (POST /items): final and immediate once the server's checks pass.
+    bool Publish(const PublishRequest& request) { return StartPublish(request, std::string()); }
+
+    // A new version of an item this install owns (POST /items/{id}/versions, with its changelog). The server refuses
+    // it for any other install.
+    bool PublishVersion(const std::string& id, const PublishRequest& request) {
+        return StartPublish(request, id.empty() ? std::string("-") : id);
+    }
+
+    // Reports an item to the moderators (POST /reports): category is one of malicious, stolen, spam, inappropriate,
+    // broken, rules. Anonymous: the install key only lets the server limit how often one install reports.
+    bool Report(const std::string& id, const std::string& category, const std::string& details) {
+        auto placeholder = std::make_shared<ReportResult>();
+        placeholder->id = id;
+        placeholder->loading = true;
+        const uint64_t generation = PublishPlaceholder(&snapshot_.report, &reportGeneration_, placeholder);
+        auto publish = [this, generation](std::shared_ptr<ReportResult> result) {
+            PublishSlot(&snapshot_.report, &reportGeneration_, generation, std::move(result));
+        };
+        if (!usable_ || !ValidId(id) || !KnownReasonCategory(category)
+            || !detail::ValidText(details, kMaxReportChars, detail::TextRule::MultiLine)) {
+            return Refuse(placeholder, publish);
+        }
+        json::Value body = json::Value::MakeObject();
+        body.Set("item_id", json::Value::MakeString(id));
+        body.Set("category", json::Value::MakeString(category));
+        body.Set("details", json::Value::MakeString(details));
+        auto token = worker_.Post([this, id, publish, text = json::Serialize(body)](net::CancelToken& cancel) {
+            auto result = std::make_shared<ReportResult>();
+            result->id = id;
+            Fetched fetched = Fetch(cancel, "POST", "/reports", text, true, 16 * 1024, false);
+            result->outcome = fetched.outcome;
             publish(std::move(result));
         });
         return token ? true : Refuse(placeholder, publish, Status::Cancelled);
@@ -820,41 +889,156 @@ private:
         return token ? true : Refuse(placeholder, publish, Status::Cancelled);
     }
 
-    static bool ReadIds(const json::Value& value, std::string_view key, std::vector<std::string>* out) {
-        const json::Value* list = value.Find(key);
-        if (list == nullptr || !list->IsArray() || list->size() > 10000) {
-            return false;
-        }
-        std::vector<std::string> ids;
-        for (size_t i = 0; i < list->size(); ++i) {
-            if (!list->At(i).IsString() || !ValidId(list->At(i).AsString())) {
-                return false;
+    bool
+    StartLookup(std::shared_ptr<const LookupResult>* slot, uint64_t* generationSlot, std::vector<std::string> ids) {
+        std::vector<std::string> unique;
+        bool valid = usable_;
+        for (const std::string& id : ids) {
+            valid = valid && ValidId(id);
+            bool repeated = false;
+            for (const std::string& seen : unique) {
+                repeated = repeated || seen == id;
             }
-            ids.push_back(list->At(i).AsString());
+            if (!repeated) {
+                unique.push_back(id);
+            }
         }
-        *out = std::move(ids);
-        return true;
+        auto placeholder = std::make_shared<LookupResult>();
+        placeholder->ids = unique;
+        placeholder->loading = true;
+        const uint64_t generation = PublishPlaceholder(slot, generationSlot, placeholder);
+        auto publish = [this, slot, generationSlot, generation](std::shared_ptr<LookupResult> result) {
+            PublishSlot(slot, generationSlot, generation, std::move(result));
+        };
+        if (!valid) {
+            return Refuse(placeholder, publish);
+        }
+        auto token = worker_.Post([this, unique, publish](net::CancelToken& cancel) {
+            auto result = std::make_shared<LookupResult>();
+            result->ids = unique;
+            for (size_t start = 0; start < unique.size(); start += kMaxLookupIds) {
+                const size_t end = (std::min)(unique.size(), start + kMaxLookupIds);
+                std::vector<std::string> chunk(unique.begin() + static_cast<std::ptrdiff_t>(start),
+                                               unique.begin() + static_cast<std::ptrdiff_t>(end));
+                json::Value list = json::Value::MakeArray();
+                for (const std::string& id : chunk) {
+                    list.Push(json::Value::MakeString(id));
+                }
+                json::Value body = json::Value::MakeObject();
+                body.Set("ids", std::move(list));
+                Fetched fetched =
+                        Fetch(cancel, "POST", "/items/lookup", json::Serialize(body), false, kMaxJsonBytes, false);
+                result->outcome = fetched.outcome;
+                std::vector<LookupEntry> entries;
+                json::Value value;
+                std::string error;
+                if (fetched.outcome.Ok()
+                    && (!ParseJson(fetched, &value, &result->outcome)
+                        || !ParseLookup(value, chunk, &entries, &error))) {
+                    Malformed(&result->outcome, error);
+                }
+                if (!result->outcome.Ok()) {
+                    result->entries.clear();
+                    break;
+                }
+                for (LookupEntry& entry : entries) {
+                    result->entries.push_back(std::move(entry));
+                }
+            }
+            result->fetchedAt = detail::NowUnixMs();
+            publish(std::move(result));
+        });
+        return token ? true : Refuse(placeholder, publish, Status::Cancelled);
     }
 
-    void UpdateLibraryStar(const std::string& id, bool starred) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!snapshot_.library || !snapshot_.library->outcome.Ok() || snapshot_.library->loading) {
-            return;
+    // POST /items (updateOf empty) or POST /items/{updateOf}/versions.
+    bool StartPublish(const PublishRequest& request, const std::string& updateOf) {
+        const bool update = !updateOf.empty();
+        auto placeholder = std::make_shared<PublishResult>();
+        placeholder->kind = request.kind;
+        placeholder->ref = request.ref;
+        placeholder->update = update;
+        placeholder->itemId = update ? updateOf : std::string();
+        placeholder->sentSha256 = net::Sha256Hex(request.bytes);
+        placeholder->loading = true;
+        const uint64_t generation = PublishPlaceholder(&snapshot_.publish, &publishGeneration_, placeholder);
+        auto publish = [this, generation](std::shared_ptr<PublishResult> result) {
+            PublishSlot(&snapshot_.publish, &publishGeneration_, generation, std::move(result));
+        };
+        const std::string problem = detail::PublishProblem(request, update);
+        if (!usable_ || !problem.empty() || (update && !ValidId(updateOf))) {
+            auto refused = std::make_shared<PublishResult>(*placeholder);
+            refused->loading = false;
+            refused->outcome.status = Status::Invalid;
+            refused->outcome.message = problem.empty() ? "refused before any request" : problem;
+            publish(std::move(refused));
+            return false;
         }
-        auto library = std::make_shared<LibraryResult>(*snapshot_.library);
-        auto& stars = library->stars;
-        for (size_t i = 0; i < stars.size();) {
-            if (stars[i] == id) {
-                stars.erase(stars.begin() + static_cast<std::ptrdiff_t>(i));
-            } else {
-                ++i;
+        json::Value body = json::Value::MakeObject();
+        if (update) {
+            body.Set("changelog", json::Value::MakeString(request.changelog));
+        } else {
+            body.Set("kind", json::Value::MakeString(KindName(request.kind)));
+            body.Set("name", json::Value::MakeString(request.name));
+            body.Set("summary", json::Value::MakeString(request.summary));
+            body.Set("description", json::Value::MakeString(request.description));
+            json::Value tags = json::Value::MakeArray();
+            for (const std::string& tag : request.tags) {
+                tags.Push(json::Value::MakeString(tag));
             }
+            body.Set("tags", std::move(tags));
+            body.Set("author_name", json::Value::MakeString(request.authorName));
         }
-        if (starred) {
-            stars.push_back(id);
+        body.Set("file", detail::FileJson(request.fileName, request.bytes));
+        const std::string path = update ? "/items/" + updateOf + "/versions" : std::string("/items");
+        auto token = worker_.Post(
+                [this, placeholder, publish, path, text = json::Serialize(body)](net::CancelToken& cancel) {
+                    auto result = std::make_shared<PublishResult>(*placeholder);
+                    result->loading = false;
+                    Fetched fetched = Fetch(cancel, "POST", path, text, true, kMaxJsonBytes, false);
+                    result->outcome = fetched.outcome;
+                    json::Value value;
+                    if (fetched.outcome.Ok()) {
+                        if (!ParseJson(fetched, &value, &result->outcome) || !ReadPublished(value, result.get())) {
+                            Malformed(&result->outcome, "the published item");
+                        }
+                    }
+                    publish(std::move(result));
+                });
+        return token ? true : Refuse(placeholder, publish, Status::Cancelled);
+    }
+
+    // The answer of a publish: { item, version } or the item itself; a version answer { version } or the version.
+    static bool ReadPublished(const json::Value& value, PublishResult* result) {
+        if (!value.IsObject()) {
+            return false;
         }
-        snapshot_.library = std::move(library);
-        Bump();
+        const json::Value* item = value.Find("item");
+        const json::Value* version = value.Find("version");
+        const json::Value& itemObject = item != nullptr && item->IsObject() ? *item : value;
+        const json::Value& versionObject = version != nullptr && version->IsObject() ? *version : value;
+        std::string ignored;
+        if (!result->update) {
+            std::string id;
+            const detail::Reader read{itemObject, &ignored, ""};
+            if (!read.Pattern("id", &id, true, ValidId)) {
+                return false;
+            }
+            result->itemId = id;
+        }
+        const json::Value* number = versionObject.Find("number");
+        int64_t n = 0;
+        if (number != nullptr && number->GetInt64(&n) && n >= 1 && n <= 1000000) {
+            result->versionNumber = static_cast<int>(n);
+        } else if (!result->update) {
+            result->versionNumber = 1;
+        }
+        const json::Value* state = (result->update ? versionObject : itemObject).Find("state");
+        if (state != nullptr && state->IsString()
+            && detail::ValidText(state->AsString(), 16, detail::TextRule::OneLine)) {
+            result->state = state->AsString();
+        }
+        return true;
     }
 
     // Seconds left of a Retry-After, or 0.
@@ -911,6 +1095,8 @@ private:
                 return Status::Conflict;
             case 410:
                 return Status::Gone;
+            case 422:
+                return Status::Rejected;
             case 413:
                 return Status::TooLarge;
             case 429:
@@ -981,14 +1167,14 @@ private:
             fetched.outcome.message = "waiting for Retry-After";
             return fetched;
         }
-        std::string token;
         if (authorized) {
-            if (tokens_ == nullptr || !tokens_->AccessToken(&token) || !detail::ValidAccessToken(token)) {
-                fetched.outcome.status = Status::SignedOut;
-                fetched.outcome.message = "no access token";
+            std::string header;
+            if (identity_ == nullptr || !identity_->Authorization(&header)) {
+                fetched.outcome.status = Status::NoIdentity;
+                fetched.outcome.message = "no install key";
                 return fetched;
             }
-            request.headers.push_back({"Authorization", "Bearer " + token});
+            request.headers.push_back({"Authorization", std::move(header)});
         }
         if (!body.empty()) {
             request.headers.push_back({"Content-Type", "application/json"});
@@ -1052,9 +1238,6 @@ private:
                 BlockFor(wait);
             }
         }
-        if (response.status == 401 && authorized && tokens_ != nullptr) {
-            tokens_->TokenRejected(token);
-        }
         return fetched;
     }
 
@@ -1088,7 +1271,7 @@ private:
     }
 
     ClientConfig config_;
-    TokenSource* tokens_;
+    InstallIdentity* identity_;
     net::HttpsClient http_;
     bool usable_ = false;
 
@@ -1102,8 +1285,11 @@ private:
     uint64_t fileGeneration_ = 0;
     uint64_t lookupGeneration_ = 0;
     uint64_t revocationGeneration_ = 0;
-    uint64_t libraryGeneration_ = 0;
+    uint64_t starredGeneration_ = 0;
     uint64_t starGeneration_ = 0;
+    uint64_t checkGeneration_ = 0;
+    uint64_t publishGeneration_ = 0;
+    uint64_t reportGeneration_ = 0;
     std::vector<CacheEntry> cache_;
     std::chrono::steady_clock::time_point blockedUntil_{};
 

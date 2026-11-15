@@ -165,11 +165,13 @@
       }
     },
     {
-      "name": "the PUBLIC core reaching into the menu or the Luau engine (public_model.hpp, public_client.hpp, public_installer.hpp: ScriptLibrary only, handed in by the owner)",
+      "name": "the PUBLIC core reaching into the menu or the Luau engine (public_model.hpp, public_client.hpp, public_installer.hpp, public_identity.hpp, public_local.hpp: ScriptLibrary only, handed in by the owner)",
       "files": [
         "native/public_model.hpp",
         "native/public_client.hpp",
-        "native/public_installer.hpp"
+        "native/public_installer.hpp",
+        "native/public_identity.hpp",
+        "native/public_local.hpp"
       ],
       "identifiers": [
         "ImGui",
@@ -209,10 +211,9 @@
       }
     },
     {
-      "name": "the PUBLIC pages' logic reaching into the menu or the Luau engine (public_page.hpp, public_session.hpp: ScriptLibrary only, handed in by the owner)",
+      "name": "the PUBLIC pages' logic reaching into the menu or the Luau engine (public_page.hpp: ScriptLibrary only, handed in by the owner)",
       "files": [
-        "native/public_page.hpp",
-        "native/public_session.hpp"
+        "native/public_page.hpp"
       ],
       "identifiers": [
         "ImGui",

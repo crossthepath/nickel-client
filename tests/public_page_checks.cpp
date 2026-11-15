@@ -1,11 +1,9 @@
-// What the PUBLIC pages of the menu do, without ImGui and without the network (native/public_page.hpp,
-// native/public_session.hpp): requests are recorded, answers are hand-made snapshots, and installs go to a temporary
-// folder through a ScriptLibrary over that folder. Nothing here reaches the internet, the Credential Manager or
-// %APPDATA%.
+// What the PUBLIC pages of the menu do, without ImGui and without the network (native/public_page.hpp): requests are
+// recorded, answers are hand-made snapshots, and installs, stars, the install key and what was published go to a
+// temporary folder through a ScriptLibrary over that folder. Nothing here reaches the internet or %APPDATA%.
 #include <windows.h>
 
 #include "public_page.hpp"
-#include "public_session.hpp"
 #include "script_files.hpp"
 
 #include <cstdio>
@@ -44,6 +42,13 @@ struct Recorded {
     int number = 0;
     bool starred = false;
     std::vector<std::string> ids;
+    Kind kind = Kind::Script;
+    std::string fileName;
+    std::string bytes;
+    std::string ref;
+    std::string category;
+    std::string details;
+    PublishRequest request;
 };
 
 class RecordingRequests : public PageRequests {
@@ -84,8 +89,36 @@ public:
         return Add("revocations", [](Recorded&) {});
     }
 
-    bool Library() override {
-        return Add("library", [](Recorded&) {});
+    bool LookupStarred(std::vector<std::string> ids) override {
+        return Add("starred", [&](Recorded& r) { r.ids = ids; });
+    }
+
+    bool Check(Kind kind, const std::string& fileName, const std::string& bytes, const std::string& ref) override {
+        return Add("check", [&](Recorded& r) {
+            r.kind = kind;
+            r.fileName = fileName;
+            r.bytes = bytes;
+            r.ref = ref;
+        });
+    }
+
+    bool Publish(const PublishRequest& request) override {
+        return Add("publish", [&](Recorded& r) { r.request = request; });
+    }
+
+    bool PublishVersion(const std::string& id, const PublishRequest& request) override {
+        return Add("version", [&](Recorded& r) {
+            r.id = id;
+            r.request = request;
+        });
+    }
+
+    bool Report(const std::string& id, const std::string& category, const std::string& details) override {
+        return Add("report", [&](Recorded& r) {
+            r.id = id;
+            r.category = category;
+            r.details = details;
+        });
     }
 
     bool Star(const std::string& id, bool starred) override {
@@ -413,34 +446,6 @@ void ParserChecks() {
     const std::vector<std::string> lines = SourceLines("a\r\nb\n\tc\rd");
     Check(lines.size() == 4 && lines[0] == "a" && lines[2] == "    c" && lines[3] == "d", "source lines");
     Check(SourceLines("").empty() && SourceLines("x\n").size() == 1, "source lines at the ends");
-
-    Session session;
-    const std::string good =
-            "{\"version\":1,\"client_id\":\"nickel-launcher\",\"access_token\":\"nk_at_abc\","
-            "\"access_expires_at\":1800003600,\"refresh_token\":\"nk_rt_def\",\"scope\":\"community ai\","
-            "\"handle\":\"steve\"}";
-    Check(ParseSession(good, &session) && session.accessToken == "nk_at_abc" && session.accessExpiresAt == 1800003600
-                  && session.handle == "steve",
-          "the launcher's session blob");
-    Check(SessionUsable(session, 1800003600 - 61) && !SessionUsable(session, 1800003600 - 60),
-          "60 seconds of margin before expiry");
-    Session other;
-    Check(!ParseSession(
-                  "{\"version\":2,\"access_token\":\"nk_at_abc\",\"access_expires_at\":1,\"refresh_token\":\"r\"}",
-                  &other),
-          "another version reads as signed out");
-    Check(!ParseSession("{\"version\":1,\"access_token\":\"nk_at_abc\",\"access_expires_at\":1}", &other),
-          "no refresh token reads as signed out");
-    Check(!ParseSession(
-                  "{\"version\":1,\"access_token\":\"bad token\",\"access_expires_at\":1,\"refresh_token\":\"r\"}",
-                  &other),
-          "a token with a space is refused");
-    Check(!ParseSession("not json", &other) && !ParseSession(std::string(3000, ' '), &other), "garbage and oversize");
-    Check(ParseSession("{\"version\":1,\"access_token\":\"t\",\"access_expires_at\":5,\"refresh_token\":\"r\","
-                       "\"handle\":\"Bad Handle\"}",
-                       &other)
-                  && other.handle.empty(),
-          "an invalid handle is dropped");
 }
 
 // The version items must support follows the launcher's.
@@ -583,21 +588,19 @@ void PageChecks() {
         int64_t now = 1794765600000LL;
 
         // Off: nothing at all is asked, even when the page is shown.
-        page.Tick(snap, false, true, now);
+        page.Tick(snap, false, now);
         page.Shown(Kind::Script);
         page.Select(Kind::Script, "7k2m9x4qa1dz");
         Check(requests.calls.empty(), "off: no request");
         Check(page.StateOf(Kind::Script, snap, false).view == ListView::Off, "off: the enable prompt");
         page.Select(Kind::Script, "");
 
-        // On: revocations once, the first list on Shown, the library only when signed in.
+        // On: revocations once, the first list on Shown; no account, nothing else is asked.
         page.SetRequests(&requests);
-        page.Tick(snap, true, false, now);
-        Check(requests.Count("revocations") == 1 && requests.Count("library") == 0, "on: revocations, no library");
-        page.Tick(snap, true, true, now += 16);
-        Check(requests.Count("revocations") == 1 && requests.Count("library") == 1, "signed in: the library once");
-        page.Tick(snap, true, true, now += 16);
-        Check(requests.Count("library") == 1, "the library is not asked again");
+        page.Tick(snap, true, now);
+        Check(requests.Count("revocations") == 1 && requests.calls.size() == 1, "on: revocations only");
+        page.Tick(snap, true, now += 16);
+        Check(requests.Count("revocations") == 1 && requests.calls.size() == 1, "revocations are not asked again");
         page.Shown(Kind::Script);
         page.Shown(Kind::Script);
         Check(requests.Count("list") == 1, "the first list is asked once");
@@ -613,19 +616,19 @@ void PageChecks() {
         page.SetSort(Kind::Script, Sort::Trending);
         Check(requests.Count("list") == 2, "the same sort asks nothing");
         page.Type(Kind::Script, "a");
-        page.Tick(snap, true, true, now += 800);
+        page.Tick(snap, true, now += 800);
         Check(requests.Count("list") == 2, "one character is not sent");
         page.Type(Kind::Script, "au");
-        page.Tick(snap, true, true, now += 500);
+        page.Tick(snap, true, now += 500);
         Check(requests.Count("list") == 2, "not before 700 ms");
-        page.Tick(snap, true, true, now += 250);
+        page.Tick(snap, true, now += 250);
         Check(requests.Count("list") == 3 && requests.Last("list")->query.text == "au"
                       && requests.Last("list")->query.sort == Sort::Trending,
               "sent 700 ms after the last key, with the sort");
         page.Type(Kind::Script, "auto gg");
         page.Submit(Kind::Script);
         Check(requests.Count("list") == 4 && requests.Last("list")->query.text == "auto gg", "Enter sends at once");
-        page.Tick(snap, true, true, now += 800);
+        page.Tick(snap, true, now += 800);
         Check(requests.Count("list") == 4, "nothing more once sent");
         page.ClearSearch(Kind::Script);
         Check(requests.Count("list") == 5 && requests.Last("list")->query.text.empty(), "Clear search");
@@ -636,10 +639,10 @@ void PageChecks() {
         limited->outcome.status = Status::RateLimited;
         limited->outcome.retryAfter = 20;
         snap.lists[0] = limited;
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(page.StateOf(Kind::Script, snap, true).retryIn == 20, "the countdown starts at the answer");
         Check(!page.Retry(Kind::Script) && requests.Count("list") == 5, "Retry refused while it runs");
-        page.Tick(snap, true, true, now += 20000);
+        page.Tick(snap, true, now += 20000);
         Check(page.Retry(Kind::Script) && requests.Count("list") == 6, "Retry once it is over");
         snap.lists[0].reset();
 
@@ -652,19 +655,19 @@ void PageChecks() {
         const Card card = MakeCard("7k2m9x4qa1dz", Kind::Script, "Auto GG", 3, bytes);
         auto older = FileAnswer(card, bytes); // an answer already in the slot must not be used
         snap.file = older;
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(page.Install(card), "Install starts");
         Check(requests.Count("file") == 1 && requests.Last("file")->id == card.id && requests.Last("file")->number == 3,
               "the install download is asked by id and version");
         Check(page.Pending().step == Step::Downloading, "downloading");
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(page.Pending().step == Step::Downloading && !Exists(root + L"\\scripts\\Auto GG.luau"),
               "the older answer in the slot is not installed");
         snap.file = FileAnswer(card, bytes, Status::Ok, true);
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(page.Pending().step == Step::Downloading, "still downloading while the slot loads");
         snap.file = FileAnswer(card, bytes);
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(page.Pending().step == Step::None && Exists(root + L"\\scripts\\Auto GG.luau"), "installed");
         Check(library.Held("Auto GG"), "an installed script is held");
         std::vector<std::string> notices = page.TakeNotices();
@@ -690,7 +693,7 @@ void PageChecks() {
         const Card filter = MakeCard("pqrstvwxyz01", Kind::Script, "Chat Filter", 1, filterBytes);
         page.Install(filter);
         snap.file = FileAnswer(filter, filterBytes);
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(page.Pending().step == Step::NameConflict
                       && page.Pending().message.find("Chat Filter") != std::string::npos,
               "name conflict asked");
@@ -700,7 +703,7 @@ void PageChecks() {
         page.TakeNotices();
 
         // The update check: lookup of installed ids when the page opens again (30 minutes later).
-        page.Tick(snap, true, true, now += 31 * 60 * 1000LL);
+        page.Tick(snap, true, now += 31 * 60 * 1000LL);
         page.Shown(Kind::Script);
         const Recorded* lookup = requests.Last("lookup");
         Check(lookup != nullptr && lookup->ids.size() == 2, "lookup of the installed ids");
@@ -714,7 +717,7 @@ void PageChecks() {
             answer->entries.push_back(entry);
         }
         snap.lookup = answer;
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         local = page.LocalOf(Kind::Script, card.id);
         Check(local != nullptr && local->state == Local::UpdateAvailable && page.AnyUpdate(Kind::Script),
               "an update is found");
@@ -725,7 +728,7 @@ void PageChecks() {
         const Card card4 = MakeCard(card.id, Kind::Script, "Auto GG", 4, bytes4);
         page.Install(card4, true);
         snap.file = FileAnswer(card4, bytes4);
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(page.Pending().step == Step::None && library.Held("Auto GG"), "updated and held again");
         InstallRecord record;
         Check(page.Installs().Find(Kind::Script, card.id, &record) && record.versionNumber == 4, "the record is v4");
@@ -743,7 +746,7 @@ void PageChecks() {
         const Card card5 = MakeCard(card.id, Kind::Script, "Auto GG", 5, bytes5);
         page.Install(card5, true);
         snap.file = FileAnswer(card5, bytes5);
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(page.Pending().step == Step::Modified, "edits: asked first");
         page.ReplaceEdits();
         Check(page.Pending().step == Step::None && page.Installs().Find(Kind::Script, card.id, &record)
@@ -759,14 +762,14 @@ void PageChecks() {
         revoked.reason = "Steals session tokens.";
         revocations->files.push_back(revoked);
         snap.revocations = revocations;
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         notices = page.TakeNotices();
         Check(HasNotice(notices,
                         "Auto GG was revoked by the Nickel team: Steals session tokens. It was stopped and held."),
               "revocation notice");
         Check(library.Held("Auto GG") && page.LocalOf(Kind::Script, card.id)->state == Local::Revoked,
               "the revoked script is held");
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(page.TakeNotices().empty(), "the same revocation is told once");
 
         // Uninstall: local edits ask first.
@@ -794,7 +797,7 @@ void PageChecks() {
         const Card broken = MakeCard("abcdefghjkmn", Kind::Script, "Broken", 1, "print(1)\n");
         page.Install(broken);
         snap.file = FileAnswer(broken, "", Status::DigestMismatch);
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(page.Pending().step == Step::Failed && page.Pending().message.find("damaged") != std::string::npos
                       && !Exists(root + L"\\scripts\\Broken.luau"),
               "damaged download: nothing installed");
@@ -805,7 +808,7 @@ void PageChecks() {
         const Card config = MakeCard("9x8w7v6t5s4r", Kind::Config, "Hypixel PvP", 1, ini);
         page.Install(config);
         snap.file = FileAnswer(config, ini);
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(page.Pending().step == Step::None && Exists(root + L"\\configs\\Hypixel PvP.ini")
                       && page.LocalOf(Kind::Config, config.id) != nullptr,
               "config installed");
@@ -820,43 +823,50 @@ void PageChecks() {
         source->number = 1;
         source->bytes = ini;
         snap.source = source;
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         page.OpenSource(config);
         Check(requests.Count("source") == 1, "a shown source is not asked again");
         page.OpenSource(config, true);
         Check(requests.Count("source") == 2, "Retry asks again");
 
-        // Stars: as asked while the request runs or succeeded, else the library.
-        auto libraryAnswer = std::make_shared<LibraryResult>();
-        libraryAnswer->stars = {"9x8w7v6t5s4r"};
-        snap.library = libraryAnswer;
-        Check(PublicPage::Starred(snap, "9x8w7v6t5s4r") && !PublicPage::Starred(snap, card.id),
-              "stars from the library");
-        page.Star(card.id, true);
-        Check(requests.Last("star") != nullptr && requests.Last("star")->starred, "star request");
+        // Stars: favourites of this install, kept in public\starred.json; shown at once, undone when refused.
+        Check(!page.IsStarred(Kind::Script, card.id), "not starred at first");
+        Check(page.Star(Kind::Script, card.id, true), "Star");
+        Check(requests.Last("star") != nullptr && requests.Last("star")->starred
+                      && requests.Last("star")->id == card.id,
+              "star request");
+        Check(page.IsStarred(Kind::Script, card.id) && Exists(root + L"\\public\\starred.json"),
+              "a star shows at once and is saved");
         auto star = std::make_shared<StarResult>();
         star->id = card.id;
         star->starred = true;
         star->loading = true;
         snap.star = star;
-        Check(PublicPage::Starred(snap, card.id), "a star shows at once");
+        page.Tick(snap, true, now += 16);
         auto refused = std::make_shared<StarResult>(*star);
         refused->loading = false;
-        refused->outcome.status = Status::SignedOut;
+        refused->outcome.status = Status::NoIdentity;
         snap.star = refused;
-        page.Tick(snap, true, true, now += 16);
-        Check(!PublicPage::Starred(snap, card.id), "a refused star is not shown");
-        Check(HasNotice(page.TakeNotices(), "Sign in again through the Nickel launcher"), "signed out: sign-in hint");
+        page.Tick(snap, true, now += 16);
+        Check(!page.IsStarred(Kind::Script, card.id), "a refused star is undone");
+        Check(HasNotice(page.TakeNotices(), "public\\install.key"), "no usable key: the notice names the key file");
+        page.Star(Kind::Script, card.id, true);
+        auto accepted = std::make_shared<StarResult>(*star);
+        accepted->loading = false;
+        snap.star = accepted;
+        page.Tick(snap, true, now += 16);
+        Check(page.IsStarred(Kind::Script, card.id), "an accepted star stays");
+        page.TakeNotices();
 
         // Off again: nothing more is asked, and the first list is asked again when PUBLIC comes back.
         const size_t before = requests.calls.size();
         page.SetRequests(nullptr);
-        page.Tick(snap, false, true, now += 16);
+        page.Tick(snap, false, now += 16);
         page.Shown(Kind::Script);
         page.Install(card);
         Check(requests.calls.size() == before, "turned off: no request");
         page.SetRequests(&requests);
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         page.Shown(Kind::Script);
         Check(requests.Count("list") == 7 && requests.Count("revocations") == 2,
               "turned on again: list and revocations");
@@ -877,15 +887,15 @@ void MessageAndTimerChecks() {
         Snapshot snap;
         int64_t now = 1794765600000LL;
         page.SetRequests(&requests);
-        page.Tick(snap, true, true, now);
+        page.Tick(snap, true, now);
         Check(requests.Count("revocations") == 1, "revocations once PUBLIC is on");
 
         // Revocations again every 3 hours.
-        page.Tick(snap, true, true, now + 3 * 3600000LL);
+        page.Tick(snap, true, now + 3 * 3600000LL);
         Check(requests.Count("revocations") == 1, "not again at exactly 3 h");
-        page.Tick(snap, true, true, now += 3 * 3600000LL + 1);
+        page.Tick(snap, true, now += 3 * 3600000LL + 1);
         Check(requests.Count("revocations") == 2, "again after 3 h");
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(requests.Count("revocations") == 2, "once per period");
 
         // Install a config, then the update lookup: when the page opens, then at most every 30 minutes.
@@ -897,22 +907,22 @@ void MessageAndTimerChecks() {
         Check(!page.Install(other) && requests.Count("file") == files && page.Pending().card.id == config.id,
               "a second install waits for the first (the buttons say so)");
         snap.file = FileAnswer(config, ini);
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(!page.Busy() && page.LocalOf(Kind::Config, config.id) != nullptr, "installed");
         page.TakeNotices();
         Check(!page.Messages().empty() && page.Messages().back().text.find("Installed Hypixel PvP") == 0
                       && !page.Messages().back().problem,
               "the install is told on the page too");
-        page.Tick(snap, true, true, now += 8001);
+        page.Tick(snap, true, now += 8001);
         Check(page.Messages().empty(), "a good message goes after 8 s");
 
         page.Shown(Kind::Config);
         Check(requests.Count("lookup") == 1 && requests.Last("lookup")->ids.size() == 1, "lookup when the page opens");
         const int64_t looked = now;
-        page.Tick(snap, true, true, looked + 30 * 60000LL);
+        page.Tick(snap, true, looked + 30 * 60000LL);
         page.Shown(Kind::Config);
         Check(requests.Count("lookup") == 1, "no lookup again at 30 min");
-        page.Tick(snap, true, true, now = looked + 30 * 60000LL + 1);
+        page.Tick(snap, true, now = looked + 30 * 60000LL + 1);
         page.Shown(Kind::Config);
         Check(requests.Count("lookup") == 2, "lookup again after 30 min");
         page.Shown(Kind::Config);
@@ -924,9 +934,9 @@ void MessageAndTimerChecks() {
         refused->starred = true;
         refused->outcome.status = Status::Conflict;
         snap.star = refused;
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(HasNotice(page.TakeNotices(), "You can't star your own creation."), "star refusal: HUD notice");
-        page.Tick(snap, true, true, now += 60000);
+        page.Tick(snap, true, now += 60000);
         Check(page.Messages().size() == 1 && page.Messages()[0].problem
                       && page.Messages()[0].text == "You can't star your own creation.",
               "star refusal: kept on the page");
@@ -940,7 +950,7 @@ void MessageAndTimerChecks() {
         revoked.reason = "Breaks servers";
         revocations->files.push_back(revoked);
         snap.revocations = revocations;
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         page.TakeNotices();
         Check(page.Messages().size() == 1 && page.Messages()[0].problem
                       && page.Messages()[0].text.find("Hypixel PvP was revoked by the Nickel team: Breaks servers")
@@ -960,30 +970,352 @@ void MessageAndTimerChecks() {
         limited->outcome.status = Status::RateLimited;
         limited->outcome.retryAfter = 20;
         snap.lists[0] = limited;
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         page.SetSort(Kind::Script, Sort::Recent);
         page.Type(Kind::Script, "auto");
         page.Submit(Kind::Script);
-        page.Tick(snap, true, true, now += 800);
+        page.Tick(snap, true, now += 800);
         page.ClearSearch(Kind::Script);
         Check(requests.Count("list") == lists, "no list while the countdown runs");
-        page.Tick(snap, true, true, now += 10000);
+        page.Tick(snap, true, now += 10000);
         Check(requests.Count("list") == lists, "still none before it ends");
-        page.Tick(snap, true, true, now += 10000);
+        page.Tick(snap, true, now += 10000);
         Check(requests.Count("list") == lists + 1 && requests.Last("list")->query.sort == Sort::Recent
                       && requests.Last("list")->query.text.empty(),
               "the latest sort and search once it ends");
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(requests.Count("list") == lists + 1, "sent once");
 
         // Off and on again: revocations are asked again.
         page.SetRequests(nullptr);
-        page.Tick(snap, false, true, now += 16);
+        page.Tick(snap, false, now += 16);
         page.SetRequests(&requests);
-        page.Tick(snap, true, true, now += 16);
+        page.Tick(snap, true, now += 16);
         Check(requests.Count("revocations") == 3, "revocations again when PUBLIC comes back");
     }
     DeleteTree(root);
+}
+
+std::string FileText(const std::wstring& path) {
+    std::ifstream file(path, std::ios::binary);
+    std::stringstream text;
+    text << file.rdbuf();
+    return text.str();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The Starred tab
+
+void StarredTabChecks() {
+    const std::wstring root = TemporaryRoot();
+    {
+        FolderLibrary library(root + L"\\scripts");
+        PageOptions options;
+        options.root = root;
+        options.library = &library;
+        PublicPage page(options);
+        RecordingRequests requests;
+        Snapshot snap;
+        int64_t now = 1794765600000LL;
+        page.SetRequests(&requests);
+        page.Tick(snap, true, now);
+
+        page.ShowStarred(Kind::Script);
+        Check(requests.Count("starred") == 0, "nothing starred: no lookup");
+        Check(page.StarredState(Kind::Script, snap, true).view == ListView::Empty
+                      && page.StarredState(Kind::Script, snap, true).message.find("not starred") != std::string::npos,
+              "nothing starred: the empty state says how");
+
+        const Card a = MakeCard("7k2m9x4qa1dz", Kind::Script, "Auto GG", 3, "print(1)\n");
+        const Card b = MakeCard("pqrstvwxyz01", Kind::Script, "Chat Filter", 1, "print(2)\n");
+        const Card c = MakeCard("9x8w7v6t5s4r", Kind::Config, "Hypixel PvP", 1, "[fly]\r\nenabled=1\r\n");
+        page.Star(Kind::Script, a.id, true);
+        page.Star(Kind::Script, b.id, true);
+        page.Star(Kind::Config, c.id, true);
+        page.Star(Kind::Script, "abcdefghjkmn", true);
+        page.Shown(Kind::Script);
+        const Recorded* asked = requests.Last("starred");
+        Check(asked != nullptr && asked->ids.size() == 4, "the Starred tab looks up every starred id");
+        Check(requests.Count("list") == 0, "the Starred tab asks no ranking");
+        page.Shown(Kind::Script);
+        Check(requests.Count("starred") == 1, "asked once while nothing new was starred");
+        Check(page.StarredState(Kind::Script, snap, true).view == ListView::Loading, "loading until it answers");
+
+        auto answer = std::make_shared<LookupResult>();
+        answer->ids = asked->ids;
+        for (const std::string& id : asked->ids) {
+            LookupEntry entry;
+            entry.id = id;
+            entry.found = id != "abcdefghjkmn";
+            entry.card = id == a.id ? a : id == b.id ? b : c;
+            entry.missing.id = id;
+            entry.missing.state = MissingState::Removed;
+            answer->entries.push_back(entry);
+        }
+        snap.starred = answer;
+        std::vector<Card> cards = page.StarredCards(Kind::Script, snap);
+        Check(cards.size() == 2 && cards[0].id == b.id && cards[1].id == a.id, "script cards, newest star first");
+        Check(page.StarredCards(Kind::Config, snap).size() == 1, "the config is on the Configs tab");
+        const ListState state = page.StarredState(Kind::Script, snap, true);
+        Check(state.view == ListView::Ready && state.message.find("1 starred script is no longer available") == 0,
+              "ready, with the removed one counted");
+
+        page.Type(Kind::Script, "chat");
+        page.Tick(snap, true, now += 800);
+        Check(page.StarredCards(Kind::Script, snap).size() == 1 && requests.Count("list") == 0,
+              "the search box filters the starred cards without a request");
+        page.Type(Kind::Script, "");
+
+        page.Star(Kind::Script, a.id, false);
+        Check(page.StarredCards(Kind::Script, snap).size() == 1, "an unstarred card leaves the tab");
+        page.Retry(Kind::Script);
+        Check(requests.Count("starred") == 2, "Refresh looks them up again");
+
+        page.SetSort(Kind::Script, Sort::Top);
+        Check(!page.View(Kind::Script).starredTab && requests.Count("list") == 1
+                      && requests.Last("list")->query.sort == Sort::Top,
+              "a ranking leaves the Starred tab and lists");
+    }
+    DeleteTree(root);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Publishing from OTHER -> Scripting and OTHER -> Configs
+
+std::shared_ptr<CheckResult> CheckAnswer(const Recorded& asked, bool ok) {
+    auto answer = std::make_shared<CheckResult>();
+    answer->kind = asked.kind;
+    answer->fileName = asked.fileName;
+    answer->sentSha256 = Sha(asked.bytes);
+    answer->ref = asked.ref;
+    answer->check.ok = ok;
+    answer->check.sha256 = Sha(asked.bytes);
+    answer->check.capabilities = {Capability::Render};
+    if (!ok) {
+        ScanNote note;
+        note.code = "obfuscated";
+        note.message = "Obfuscated code is not allowed.";
+        note.line = 4;
+        answer->check.errors.push_back(note);
+    }
+    return answer;
+}
+
+std::shared_ptr<PublishResult> PublishAnswer(const Recorded& sent, bool update, const std::string& id, int number) {
+    auto answer = std::make_shared<PublishResult>();
+    answer->kind = sent.request.kind;
+    answer->ref = sent.request.ref;
+    answer->update = update;
+    answer->itemId = id;
+    answer->versionNumber = number;
+    answer->state = "published";
+    answer->sentSha256 = Sha(sent.request.bytes);
+    return answer;
+}
+
+void PublishPageChecks() {
+    const std::wstring root = TemporaryRoot();
+    {
+        FolderLibrary library(root + L"\\scripts");
+        InstallIdentity identity(InstallKeyPath(root));
+        PageOptions options;
+        options.root = root;
+        options.library = &library;
+        options.identity = &identity;
+        PublicPage page(options);
+        RecordingRequests requests;
+        Snapshot snap;
+        int64_t now = 1794765600000LL;
+        const std::string script = "-- Auto GG\nprint('gg')\n";
+        WriteText(root + L"\\scripts\\Auto GG.luau", script);
+
+        // Off: nothing is read or sent.
+        Check(!page.BeginPublish(Kind::Script, "Auto GG") && page.Draft().step == PublishStep::Failed
+                      && page.Draft().message.find("Turn PUBLIC on") == 0 && requests.calls.empty(),
+              "publishing needs PUBLIC on");
+        page.SetRequests(&requests);
+        page.Tick(snap, true, now);
+
+        // The check first, on the bytes read through the library.
+        Check(page.OwnedItem(Kind::Script, "Auto GG") == nullptr, "not published yet");
+        Check(page.BeginPublish(Kind::Script, "Auto GG"), "Publish opens the form");
+        const Recorded* asked = requests.Last("check");
+        Check(asked != nullptr && asked->kind == Kind::Script && asked->fileName == "Auto GG.luau"
+                      && asked->bytes == script && asked->ref == "Auto GG",
+              "the check of the script's bytes");
+        Check(page.Draft().step == PublishStep::Checking && !page.Draft().update, "checking a new item");
+        Check(!page.SubmitPublish(PublishFields()).empty() && requests.Count("publish") == 0,
+              "nothing is published before the check passes");
+        snap.check = CheckAnswer(*asked, true);
+        page.Tick(snap, true, now += 16);
+        Check(page.Draft().step == PublishStep::Ready && page.Draft().check.capabilities.size() == 1,
+              "the check passed");
+
+        PublishFields fields;
+        fields.name = "Auto GG";
+        fields.summary = "Says gg after a win.";
+        fields.description = "Line one.\nLine two.";
+        fields.tags = "PvP, chat";
+        Check(page.SubmitPublish(fields).find("author name") != std::string::npos && requests.Count("publish") == 0,
+              "an author name is required");
+        fields.authorName = "  Mash  ";
+        fields.tags = "pvp, hud, chat, fun, util, more";
+        Check(page.SubmitPublish(fields).find("5 tags") != std::string::npos, "at most 5 tags");
+        fields.tags = "PvP, chat";
+        Check(page.SubmitPublish(fields).empty(), "Publish is sent");
+        const Recorded* sent = requests.Last("publish");
+        Check(sent != nullptr && sent->request.name == "Auto GG" && sent->request.summary == "Says gg after a win."
+                      && sent->request.tags.size() == 2 && sent->request.tags[0] == "pvp"
+                      && sent->request.authorName == "Mash" && sent->request.bytes == script
+                      && sent->request.fileName == "Auto GG.luau",
+              "the publish request: fields, tags in lower case, the checked bytes");
+        Check(ReadAuthorName(root) == "Mash", "the author name is remembered in public\\settings.ini");
+        Check(page.Draft().step == PublishStep::Publishing && !page.ClosePublish(),
+              "the form cannot be closed while it publishes");
+
+        // The answer: the mapping script -> item, owned by this install.
+        std::string header;
+        identity.Authorization(&header); // the client's write created the key
+        snap.publish = PublishAnswer(*sent, false, "n3wq7p2x9k4a", 1);
+        page.Tick(snap, true, now += 16);
+        Check(page.Draft().step == PublishStep::Done
+                      && page.Draft().message.find("It is public now") != std::string::npos,
+              "published: public now");
+        Check(HasNotice(page.TakeNotices(), "Published Auto GG"), "a notice");
+        const PublishedRecord* owned = page.OwnedItem(Kind::Script, "auto gg");
+        Check(owned != nullptr && owned->id == "n3wq7p2x9k4a" && owned->version == 1
+                      && Exists(root + L"\\public\\published.json"),
+              "the item is remembered as this install's");
+        std::string fingerprint;
+        identity.Fingerprint(&fingerprint);
+        Check(owned != nullptr && owned->owner == fingerprint
+                      && FileText(root + L"\\public\\published.json").find(header.substr(8)) == std::string::npos,
+              "published.json keeps the fingerprint, never the secret");
+        Check(page.ClosePublish(), "closed");
+
+        // Publish update: the owner's own item, with a changelog, from the file as it is now.
+        const std::string edited = script + "-- v2\n";
+        WriteText(root + L"\\scripts\\Auto GG.luau", edited);
+        Check(page.BeginPublish(Kind::Script, "Auto GG") && page.Draft().update
+                      && page.Draft().itemId == "n3wq7p2x9k4a",
+              "Publish update for the owned item");
+        snap.check = CheckAnswer(*requests.Last("check"), true);
+        page.Tick(snap, true, now += 16);
+        Check(!page.SubmitPublish(fields).empty() && requests.Count("publish") == 1,
+              "an owned item is never published again as a new item");
+        Check(page.SubmitUpdate("  ").find("what changed") != std::string::npos, "a changelog is required");
+        Check(page.SubmitUpdate("Waits a random delay.").empty(), "the update is sent");
+        const Recorded* version = requests.Last("version");
+        Check(version != nullptr && version->id == "n3wq7p2x9k4a"
+                      && version->request.changelog == "Waits a random delay." && version->request.bytes == edited,
+              "the version request: the owned id, the changelog, the new bytes");
+        snap.publish = PublishAnswer(*version, true, "n3wq7p2x9k4a", 2);
+        page.Tick(snap, true, now += 16);
+        Check(page.Draft().step == PublishStep::Done && page.OwnedItem(Kind::Script, "Auto GG")->version == 2,
+              "the update is remembered");
+        page.ClosePublish();
+        page.TakeNotices();
+
+        // A refused check: nothing can be published.
+        WriteText(root + L"\\scripts\\Packed.luau", "local x = 1\n");
+        page.BeginPublish(Kind::Script, "Packed");
+        snap.check = CheckAnswer(*requests.Last("check"), false);
+        page.Tick(snap, true, now += 16);
+        Check(page.Draft().step == PublishStep::Failed && page.Draft().errors.size() == 1
+                      && page.Draft().errors[0].line == 4 && !page.SubmitPublish(fields).empty(),
+              "a refused check shows why and publishes nothing");
+        page.ClosePublish();
+
+        // Configs: the player's file, read as it is.
+        const std::string ini = std::string("[menu]\r\nname=Caf\xe9\r\n[kill_aura]\r\nenabled=1\r\n");
+        CreateDirectoryW((root + L"\\configs").c_str(), nullptr);
+        WriteText(root + L"\\configs\\pvp.ini", ini);
+        Check(page.BeginPublish(Kind::Config, "pvp"), "Publish a config");
+        Check(requests.Last("check")->kind == Kind::Config && requests.Last("check")->fileName == "pvp.ini"
+                      && requests.Last("check")->bytes == ini,
+              "the config's exact bytes are checked");
+        page.ClosePublish();
+        Check(!page.BeginPublish(Kind::Config, "missing") && page.Draft().step == PublishStep::Failed,
+              "a missing config is not published");
+        page.ClosePublish();
+    }
+    {
+        // Another install on the same folder (another key): the item is not its own, so no Publish update.
+        FolderLibrary library(root + L"\\scripts");
+        InstallIdentity other(root + L"\\other\\install.key");
+        std::string header;
+        other.Authorization(&header);
+        PageOptions options;
+        options.root = root;
+        options.library = &library;
+        options.identity = &other;
+        PublicPage page(options);
+        RecordingRequests requests;
+        Snapshot snap;
+        page.SetRequests(&requests);
+        page.Tick(snap, true, 1794765600000LL);
+        Check(page.OwnedItem(Kind::Script, "Auto GG") == nullptr, "another install does not own the item");
+        Check(page.BeginPublish(Kind::Script, "Auto GG") && !page.Draft().update,
+              "another install can only publish it as a new item");
+    }
+    {
+        // No key at all (never wrote): nothing is owned.
+        FolderLibrary library(root + L"\\scripts");
+        InstallIdentity fresh(root + L"\\fresh\\install.key");
+        PageOptions options;
+        options.root = root;
+        options.library = &library;
+        options.identity = &fresh;
+        PublicPage page(options);
+        Check(page.OwnedItem(Kind::Script, "Auto GG") == nullptr && !Exists(root + L"\\fresh\\install.key"),
+              "without a key nothing is owned, and none is created");
+    }
+    DeleteTree(root);
+}
+
+// Reports, and no way to delete, unlist or hide an item.
+void ReportAndFinalChecks() {
+    const std::wstring root = TemporaryRoot();
+    {
+        FolderLibrary library(root + L"\\scripts");
+        PageOptions options;
+        options.root = root;
+        options.library = &library;
+        PublicPage page(options);
+        RecordingRequests requests;
+        Snapshot snap;
+        int64_t now = 1794765600000LL;
+        page.SetRequests(&requests);
+        page.Tick(snap, true, now);
+        const Card card = MakeCard("7k2m9x4qa1dz", Kind::Script, "Auto GG", 3, "print(1)\n");
+        Check(!page.Report(card, "boring", ""), "an unknown category is refused");
+        Check(page.Report(card, "malicious", "Sends my chat away.") && page.ReportSending(), "a report");
+        Check(!page.Report(card, "spam", ""), "one report at a time");
+        const Recorded* report = requests.Last("report");
+        Check(report != nullptr && report->id == card.id && report->category == "malicious"
+                      && report->details == "Sends my chat away.",
+              "the report request");
+        auto answer = std::make_shared<ReportResult>();
+        answer->id = card.id;
+        snap.report = answer;
+        page.Tick(snap, true, now += 16);
+        Check(!page.ReportSending() && HasNotice(page.TakeNotices(), "The report was sent"), "reported");
+    }
+    DeleteTree(root);
+
+    const std::string client = SourceFile("native/public_client.hpp");
+    const std::string pageSource = SourceFile("native/public_page.hpp");
+    const std::string ui = SourceFile("native/public_ui.hpp");
+    Check(!client.empty() && !pageSource.empty() && !ui.empty(), "the PUBLIC sources are read");
+    for (const std::string* source : {&client, &pageSource, &ui}) {
+        Check(source->find("/unlist") == std::string::npos && source->find("Unpublish") == std::string::npos
+                      && source->find("\"PATCH\"") == std::string::npos && source->find("Bearer") == std::string::npos
+                      && source->find("/me/") == std::string::npos,
+              "no unlist, unpublish, item edit, bearer token or account endpoint");
+    }
+    Check(SourceFile("native/public_session.hpp").empty()
+                  && SourceFile("native/menu.cpp").find("public_session") == std::string::npos,
+          "the launcher session reader is gone");
 }
 
 } // namespace
@@ -996,6 +1328,9 @@ int main() {
     ConfigFileChecks();
     PageChecks();
     MessageAndTimerChecks();
+    StarredTabChecks();
+    PublishPageChecks();
+    ReportAndFinalChecks();
     if (failed == 0) {
         std::printf("public_page_checks: all checks passed\n");
         return 0;
