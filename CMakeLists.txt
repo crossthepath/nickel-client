@@ -180,3 +180,12 @@ if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/vendor/imgui/imgui.cpp")
   target_link_libraries(nickel_path_finder_golden_checks PRIVATE minhook windowscodecs ole32)
   add_test(NAME path_finder_golden_checks COMMAND nickel_path_finder_golden_checks)
 endif()
+
+# Script snapshots and the commands of the Scripting tab: states, names, search, file names, module states
+# (native/script_library.hpp)
+if(TARGET nickel_script_host_checks)
+  add_executable(nickel_script_library_checks tests/script_library_checks.cpp)
+  target_include_directories(nickel_script_library_checks PRIVATE native)
+  target_compile_options(nickel_script_library_checks PRIVATE /bigobj)
+  add_test(NAME script_library_checks COMMAND nickel_script_library_checks)
+endif()

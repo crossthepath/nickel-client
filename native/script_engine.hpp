@@ -28,15 +28,15 @@ struct Script{
  std::vector<ScriptModule> mods;std::vector<ScriptCommand> commands;std::deque<std::string> errors;std::deque<double> errorTimes;
  size_t memory=0;double frameMs=0,frameSum=0,frameStart=0;std::vector<ScriptTimer> timers;int nextTimer=1;bool loading=false;double callStart=0,limit=.05;bool expired=false;
  bool userStopped=false;std::map<std::string,int> required;std::vector<std::string> requiring;
+ uint64_t serial=0;   // identity of this script entry (ScriptInfo::serial): a file that disappears and comes back gets a new one
 };
 ScriptHost* scriptHost=nullptr;   // the program running the engine (the menu in the game, a fake in tests)
 void SetScriptHost(ScriptHost* host){scriptHost=host;}
 ScriptHost& Host(){return *scriptHost;}
-std::recursive_mutex scriptGuard;std::vector<std::unique_ptr<Script>> scripts;int scriptSelected=-1;char scriptSearch[64]{};double scriptScanAt=0;
+std::recursive_mutex scriptGuard;std::vector<std::unique_ptr<Script>> scripts;double scriptScanAt=0;uint64_t scriptSerials=0;
 std::wstring ScriptFolder(){wchar_t base[MAX_PATH]{};if(!GetEnvironmentVariableW(L"APPDATA",base,MAX_PATH))return L"";return std::wstring(base)+L"\\Nickel\\scripts";}
 double ScriptNow(){LARGE_INTEGER f{},c{};QueryPerformanceFrequency(&f);QueryPerformanceCounter(&c);return (double)c.QuadPart/(double)f.QuadPart;}
 Script* ScriptOf(lua_State* L){return (Script*)lua_callbacks(L)->userdata;}
-const char* ScriptStateName(int state){static const char* n[]={"Stopped","Running","Stopped after errors","Failed to load"};return n[std::clamp(state,0,3)];}
 
 // ---------------------------------------------------------------- keys (documented names <-> virtual-key codes)
 struct ScriptKey{const char* name;int code;};
@@ -378,20 +378,46 @@ void ScanScripts(){
  if(h==INVALID_HANDLE_VALUE&&GetLastError()==ERROR_PATH_NOT_FOUND)dirsMade=false;
  if(h!=INVALID_HANDLE_VALUE){do{std::wstring n=data.cFileName;if(n.size()>7&&!_wcsicmp(n.c_str()+n.size()-7,L".d.luau"))continue;found.push_back(n);}while(FindNextFileW(h,&data));FindClose(h);}
  std::lock_guard<std::recursive_mutex> lock(scriptGuard);
- // The selection is kept by identity: the list is sorted by name, so indices shift when scripts come and go.
- Script* kept=scriptSelected>=0&&scriptSelected<(int)scripts.size()?scripts[scriptSelected].get():nullptr;bool added=false;
- for(size_t i=0;i<scripts.size();){auto& s=*scripts[i];const std::wstring n=s.file.substr(s.file.find_last_of(L'\\')+1);if(std::find(found.begin(),found.end(),n)==found.end()){if(&s==kept)kept=nullptr;ScriptUnload(s);scripts.erase(scripts.begin()+i);}else ++i;}
+ bool added=false;
+ for(size_t i=0;i<scripts.size();){auto& s=*scripts[i];const std::wstring n=s.file.substr(s.file.find_last_of(L'\\')+1);if(std::find(found.begin(),found.end(),n)==found.end()){ScriptUnload(s);scripts.erase(scripts.begin()+i);}else ++i;}
  // Libraries: any change under lib/ reloads every script.
  static uint64_t libStamp=0;uint64_t lib=0;h=FindFirstFileW((folder+L"\\lib\\*.luau").c_str(),&data);if(h!=INVALID_HANDLE_VALUE){do{lib^=FileStamp(folder+L"\\lib\\"+data.cFileName)*31+data.cFileName[0];}while(FindNextFileW(h,&data));FindClose(h);}
  const bool libChanged=lib!=libStamp;libStamp=lib;
  for(auto& n:found){Script* s=nullptr;for(auto& e:scripts)if(!_wcsicmp(e->file.substr(e->file.find_last_of(L'\\')+1).c_str(),n.c_str()))s=e.get();
   const std::wstring path=folder+L"\\"+n;const uint64_t stamp=FileStamp(path);
-  if(!s){auto fresh=std::make_unique<Script>();fresh->file=path;fresh->name=Utf8(n.substr(0,n.size()-5));fresh->stamp=stamp;scripts.push_back(std::move(fresh));added=true;ScriptLoad(*scripts.back());continue;}
+  if(!s){auto fresh=std::make_unique<Script>();fresh->file=path;fresh->name=Utf8(n.substr(0,n.size()-5));fresh->stamp=stamp;fresh->serial=++scriptSerials;scripts.push_back(std::move(fresh));added=true;ScriptLoad(*scripts.back());continue;}
   if(stamp!=s->stamp||(libChanged&&s->state==1)){s->stamp=stamp;s->userStopped=false;ScriptLoad(*s);}}
  if(added)std::sort(scripts.begin(),scripts.end(),[](const std::unique_ptr<Script>& a,const std::unique_ptr<Script>& b){return _stricmp(a->name.c_str(),b->name.c_str())<0;});   // order only changes when a script is added
- scriptSelected=-1;if(kept)for(size_t i=0;i<scripts.size();++i)if(scripts[i].get()==kept){scriptSelected=(int)i;break;}}
+}
 void StopScript(Script& s){std::lock_guard<std::recursive_mutex> lock(scriptGuard);for(auto& m:s.mods)if(m.index>=0)SetModuleEnabled(Host(),m.index,false);ScriptUnload(s);s.state=0;s.userStopped=true;}
 void StartScript(Script& s){s.userStopped=false;ScriptLoad(s);}
+
+// ---------------------------------------------------------------- script library (script_library.hpp, ScriptsLibrary)
+// The scripts as the Scripting tab and other components see them: snapshots and commands, each under scriptGuard.
+// Start and Stop run the script's Lua and change modules: render thread only, never from inside a script callback.
+Script* ScriptNamed(const std::string& name){for(auto& sp:scripts)if(SameScriptName(sp->name,name))return sp.get();return nullptr;}
+std::wstring ScriptWide(const std::string& text){if(text.empty())return {};const int count=MultiByteToWideChar(CP_UTF8,0,text.data(),(int)text.size(),nullptr,0);std::wstring value(count,L'\0');MultiByteToWideChar(CP_UTF8,0,text.data(),(int)text.size(),value.data(),count);return value;}
+class EngineScriptLibrary final:public ScriptLibrary{
+public:
+ std::vector<ScriptInfo> List() const override{std::lock_guard<std::recursive_mutex> lock(scriptGuard);std::vector<ScriptInfo> out;out.reserve(scripts.size());for(auto& sp:scripts)out.push_back(DescribeScript(*sp,Host()));return out;}
+ std::wstring Folder() const override{return ScriptFolder();}
+ bool ReadSource(const std::string& name,std::string& source) const override{
+  std::wstring file;{std::lock_guard<std::recursive_mutex> lock(scriptGuard);const Script* s=ScriptNamed(name);if(!s)return false;file=s->file;}
+  FILE* f=nullptr;if(_wfopen_s(&f,file.c_str(),L"rb")||!f)return false;source.clear();char buf[8192];size_t n;while((n=fread(buf,1,sizeof(buf),f))>0)source.append(buf,n);fclose(f);return true;}
+ bool Start(const std::string& name) override{std::lock_guard<std::recursive_mutex> lock(scriptGuard);Script* s=ScriptNamed(name);if(!s)return false;StartScript(*s);return true;}
+ bool Stop(const std::string& name) override{std::lock_guard<std::recursive_mutex> lock(scriptGuard);Script* s=ScriptNamed(name);if(!s)return false;StopScript(*s);return true;}
+ // Written beside the target under a name the folder scan ignores and no other call uses (".<name>.<thread>.<n>.write"),
+ // then moved over it; a leading UTF-8 byte order mark is dropped (Luau does not load a file that starts with one).
+ bool WriteSource(const std::string& name,const std::string& source) override{
+  const std::wstring folder=ScriptFolder();if(folder.empty()||!ValidScriptName(name))return false;
+  CreateDirectoryW(folder.substr(0,folder.find_last_of(L'\\')).c_str(),nullptr);CreateDirectoryW(folder.c_str(),nullptr);
+  static std::atomic<unsigned> writes{0};const std::string text=WithoutUtf8Bom(source);
+  const std::wstring stem=ScriptWide(name),target=folder+L"\\"+stem+L".luau",temporary=folder+L"\\."+stem+L"."+std::to_wstring(GetCurrentThreadId())+L"."+std::to_wstring(++writes)+L".write";
+  FILE* f=nullptr;if(_wfopen_s(&f,temporary.c_str(),L"wb")||!f)return false;const bool written=fwrite(text.data(),1,text.size(),f)==text.size();const bool closed=fclose(f)==0;
+  if(written&&closed&&MoveFileExW(temporary.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))return true;
+  DeleteFileW(temporary.c_str());return false;}
+};
+ScriptLibrary& ScriptsLibrary(){static EngineScriptLibrary library;return library;}
 
 // ---------------------------------------------------------------- event dispatch
 // Plain event (no fields) or a table already pushed; `cancel` reads event.cancelled after the call.
