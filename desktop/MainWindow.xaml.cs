@@ -586,7 +586,7 @@ public partial class MainWindow : Window
   var text = T(label, 14.5, SemiBold, "#0d0d0f"); text.Foreground = load.Label; load.Content.Children.Add(text);
   load.Surface.Cursor = LoadIsClickable ? Cursors.Hand : Cursors.Arrow;
   load.Surface.ToolTip = loaded && message != "" ? message : null;
-  var error = failed && !waiting && !loaded ? message : "";
+  var error = MonitorTick.Notice(waiting, loaded, failed, message, monitorError);
   homeNoticeText.Text = error; homeNotice.Visibility = error == "" ? Visibility.Collapsed : Visibility.Visible;
  }
  private void FinishLoaded() { loaded = true; failed = false; message = $"Press {SharedPreferences.MenuKey.Name} in Minecraft to open the menu."; Refresh(); if (preferences.CloseAfterLoading) Close(); }
@@ -629,22 +629,27 @@ public partial class MainWindow : Window
  }
 
  private bool polling;
- /// <summary>Looks for Minecraft on a worker thread once per second, then updates the window on the UI thread.</summary>
+ private string monitorError = "";   // error of the last Minecraft check ("" when it worked)
+ /// <summary>Looks for Minecraft on a worker thread once per second, then updates the window on the UI thread. A check
+ /// that throws never closes the launcher (MonitorTick): its error is shown and the next tick checks again.</summary>
  private async void Monitor_Tick(object? sender, EventArgs e)
  {
   if (polling) return;
   polling = true;
-  bool running; int single;
-  try
+  var error = await MonitorTick.Run(MonitorOnce);
+  polling = false;
+  if (closed) return;
+  var text = error == null ? "" : "Nickel could not check for Minecraft (" + error.Message + "). Retrying.";
+  if (text != monitorError) { monitorError = text; Refresh(); }   // shown under Load while nothing is loading (Refresh)
+ }
+ private async Task MonitorOnce()
+ {
+  var (running, single) = await Task.Run(() =>
   {
-   (running, single) = await Task.Run(() =>
-   {
-    var processes = Process.GetProcessesByName("Minecraft.Windows");
-    try { return (processes.Length > 0, processes.Length == 1 ? processes[0].Id : 0); }
-    finally { foreach (var process in processes) process.Dispose(); }
-   });
-  }
-  finally { polling = false; }
+   var processes = Process.GetProcessesByName("Minecraft.Windows");
+   try { return (processes.Length > 0, processes.Length == 1 ? processes[0].Id : 0); }
+   finally { foreach (var process in processes) process.Dispose(); }
+  });
   if (closed) return;
   if (running != minecraftRunning) { minecraftRunning = running; if (running && failed && connection == null) { failed = false; message = ""; } Refresh(); }
   if (connection != null && !connection.IsAlive) { connection.Dispose(); connection = null; loaded = false; failed = true; message = "Minecraft closed. Start it again to load Nickel."; Refresh(); }
