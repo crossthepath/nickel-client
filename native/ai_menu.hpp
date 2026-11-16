@@ -109,7 +109,17 @@ public:
         status.gameVersion = AiGameVersion();
         game::Context context{};
         status.inWorld = game::Local(&context);
-        return status; // the server address is not sent
+        // The server the player is on (the player asks Nickel AI about it): address and port, or a local world.
+        game::Server server{};
+        if (status.inWorld && game::ReadServer(&server)) {
+            if (server.singleplayer) {
+                status.server = "singleplayer (a local world)";
+            } else if (server.address[0]) {
+                server.address[sizeof(server.address) - 1] = 0;
+                status.server = std::string(server.address) + ":" + std::to_string(server.port);
+            }
+        }
+        return status;
     }
 };
 
