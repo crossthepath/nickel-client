@@ -15,6 +15,7 @@ tools/*
 !tools/build_desktop.ps1
 !tools/sync_catalog.py
 !tools/check_tracked_inputs.py
+!tools/check_script_definitions.py
 !tools/shader_inspect.cpp
 !tools/build_icon_font.py
 !tools/icon_table.py
