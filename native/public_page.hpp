@@ -1152,11 +1152,12 @@ public:
     }
 
     // The starred items of `kind` the lookup says are gone (hidden, removed, deleted or not found), newest star
-    // first: the Starred tab lists them with their state so they can still be unstarred.
+    // first: the Starred tab lists them with their state so they can still be unstarred. None while the search box
+    // has text, like the cards it filters (a gone item has no name to match).
     std::vector<Missing> StarredMissing(Kind kind, const Snapshot& snap) const {
         std::vector<Missing> gone;
         const LookupResult* lookup = snap.starred.get();
-        if (lookup == nullptr || lookup->loading || !lookup->outcome.Ok()) {
+        if (lookup == nullptr || lookup->loading || !lookup->outcome.Ok() || !views_[Slot(kind)].typed.empty()) {
             return gone;
         }
         for (const std::string& id : starred_.Ids(kind)) {

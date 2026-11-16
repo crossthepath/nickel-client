@@ -1101,7 +1101,13 @@ void StarredTabListChecks() {
         page.Tick(snap, true, now += 800);
         Check(page.StarredCards(Kind::Script, snap).size() == 1 && requests.Count("list") == 0,
               "the search box filters the starred cards without a request");
+        Check(page.StarredMissing(Kind::Script, snap).empty(), "a search hides the unavailable rows too");
+        page.Type(Kind::Script, "zzz");
+        Check(page.StarredState(Kind::Script, snap, true).view == ListView::NoMatch
+                      && page.StarredMissing(Kind::Script, snap).empty(),
+              "no match: no card and no unavailable row");
         page.Type(Kind::Script, "");
+        Check(page.StarredMissing(Kind::Script, snap).size() == 1, "an empty search shows the unavailable rows again");
 
         StarLocally(page, requests, Kind::Script, a.id, false);
         Check(page.StarredCards(Kind::Script, snap).size() == 1, "an unstarred card leaves the tab");

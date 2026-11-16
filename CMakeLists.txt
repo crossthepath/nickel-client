@@ -220,8 +220,8 @@ if(WIN32)
   add_test(NAME script_files_checks COMMAND nickel_script_files_checks)
 endif()
 # PUBLIC client core: the model's validation, the community API calls against a server the test starts on 127.0.0.1
-# (reads, and the writes with the install key: publish, publish update, check, stars, reports), the install identity,
-# the local starred and published lists, and the installer on a temporary folder (native/public_model.hpp,
+# (reads, and the writes with the install key: publish, publish update, check, reports), the install identity,
+# the local starred (favourites) and published lists, and the installer on a temporary folder (native/public_model.hpp,
 # native/public_client.hpp, native/public_identity.hpp, native/public_local.hpp, native/public_installer.hpp)
 if(WIN32)
   add_executable(nickel_public_client_checks tests/public_client_checks.cpp)
