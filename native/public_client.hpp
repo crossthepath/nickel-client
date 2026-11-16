@@ -14,10 +14,10 @@
 //   the kept body. When the network fails, a list or the revocation list falls back to the kept body (fromCache).
 // - 429: the Retry-After (or the problem's retry_after) blocks every request of this client until it has elapsed;
 //   requests made meanwhile fail at once with Status::RateLimited, without reaching the server.
-// - No sign-in anywhere. Writes (Check, Publish, PublishVersion, Star, Report) send "Authorization: Install <secret>"
-//   from the InstallIdentity (public_identity.hpp), read on the worker thread; reads never send it. Stars are
-//   favourites: Star(id, true) is PUT /items/{id}/star, Star(id, false) DELETE; the list of what this install starred
-//   is local (public_local.hpp). Publishing is final: there is no call that deletes, unlists or hides an item.
+// - No sign-in anywhere. Writes (Check, Publish, PublishVersion, Report) send "Authorization: Install <secret>"
+//   from the InstallIdentity (public_identity.hpp), read on the worker thread; reads (lists, details, files, lookups,
+//   revocations) never send it and never create the key. Stars are local favourites only (public_local.hpp): there
+//   is no star request. Publishing is final: there is no call that deletes, unlists or hides an item.
 // - Nothing here reads or writes files; installing is public_installer.hpp. Stop() (or the destructor) cancels and
 //   joins the worker: call it from the overlay's unload path, never from DllMain.
 #include <algorithm>
@@ -58,7 +58,7 @@ enum class Status : uint8_t {
     Forbidden,       // 403: this install is blocked from writes
     NotFound,        // 404
     Gone,            // 410: removed or deleted (outcome.problem.goneState, reasonCategory)
-    Conflict,        // 409 (a file already published, starring one's own item)
+    Conflict,        // 409 (a file already published, an item already reported)
     Rejected,        // 422: the file or a field failed the checks (outcome.problem.errors says which)
     ServerError,     // 5xx and any other status
     Cancelled,       // Stop(), or a newer request of the same slot
@@ -180,13 +180,6 @@ struct RevocationsResult {
     int64_t fetchedAt = 0;
 };
 
-struct StarResult {
-    std::string id;
-    bool starred = false; // what was asked
-    Outcome outcome;
-    bool loading = false;
-};
-
 // What a player publishes from OTHER -> Scripting or OTHER -> Configs (POST /items), or the file of a new version
 // (POST /items/{id}/versions: only id, changelog, fileName and bytes are sent).
 struct PublishRequest {
@@ -241,7 +234,6 @@ struct Snapshot {
     std::shared_ptr<const LookupResult> lookup;
     std::shared_ptr<const RevocationsResult> revocations;
     std::shared_ptr<const LookupResult> starred; // the cards of the Starred tabs
-    std::shared_ptr<const StarResult> star;
     std::shared_ptr<const CheckResult> check;
     std::shared_ptr<const PublishResult> publish;
     std::shared_ptr<const ReportResult> report;
@@ -581,7 +573,7 @@ public:
         return StartLookup(&snapshot_.lookup, &lookupGeneration_, std::move(ids));
     }
 
-    // The cards of the items this install starred (the Starred tabs), the same call in its own slot.
+    // The cards of the local favourites (the Starred tabs): the same read-only call, in its own slot.
     bool LookupStarred(std::vector<std::string> ids) {
         return StartLookup(&snapshot_.starred, &starredGeneration_, std::move(ids));
     }
@@ -617,32 +609,6 @@ public:
                 }
                 result->fetchedAt = result->fromCache ? fetched.cachedAt : detail::NowUnixMs();
             }
-            publish(std::move(result));
-        });
-        return token ? true : Refuse(placeholder, publish, Status::Cancelled);
-    }
-
-    // Stars (true) or unstars (false) an item for this install: one star per install and item, starring again
-    // changes nothing. Status::NoIdentity without a usable install key, Status::Conflict for one's own item.
-    bool Star(const std::string& id, bool starred) {
-        auto placeholder = std::make_shared<StarResult>();
-        placeholder->id = id;
-        placeholder->starred = starred;
-        placeholder->loading = true;
-        const uint64_t generation = PublishPlaceholder(&snapshot_.star, &starGeneration_, placeholder);
-        auto publish = [this, generation](std::shared_ptr<StarResult> result) {
-            PublishSlot(&snapshot_.star, &starGeneration_, generation, std::move(result));
-        };
-        if (!usable_ || !ValidId(id)) {
-            return Refuse(placeholder, publish);
-        }
-        auto token = worker_.Post([this, id, starred, publish](net::CancelToken& cancel) {
-            auto result = std::make_shared<StarResult>();
-            result->id = id;
-            result->starred = starred;
-            Fetched fetched = Fetch(cancel, starred ? "PUT" : "DELETE", "/items/" + id + "/star", std::string(), true,
-                    16 * 1024, false);
-            result->outcome = fetched.outcome;
             publish(std::move(result));
         });
         return token ? true : Refuse(placeholder, publish, Status::Cancelled);
@@ -1309,7 +1275,6 @@ private:
     uint64_t lookupGeneration_ = 0;
     uint64_t revocationGeneration_ = 0;
     uint64_t starredGeneration_ = 0;
-    uint64_t starGeneration_ = 0;
     uint64_t checkGeneration_ = 0;
     uint64_t publishGeneration_ = 0;
     uint64_t reportGeneration_ = 0;

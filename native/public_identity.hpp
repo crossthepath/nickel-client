@@ -1,10 +1,11 @@
 #pragma once
-// The anonymous identity of this Nickel install for PUBLIC writes (publish, publish update, stars, reports). There is
+// The anonymous identity of this Nickel install for PUBLIC writes (check, publish, publish update, reports). There is
 // no account and no sign-in anywhere: the client generates a 32-byte random secret once (BCryptGenRandom), keeps it
 // in <Nickel data>\public\install.key as base64url text, and sends "Authorization: Install <base64url secret>" on
 // write requests only. The server stores only SHA-256(secret).
 //
-// - The key is created on the first write that needs it, never by browsing: reading PUBLIC sends no identity.
+// - The key is created on the first write that needs it, never by browsing, installing or starring: reading PUBLIC
+//   sends no identity, and stars are local favourites (public_local.hpp).
 // - A key file that exists but cannot be read as a key is never overwritten (it may be the only proof of ownership of
 //   published items): State() says Damaged and writes are refused until the player deletes the file (seen at the
 //   next State(), Authorization() or Fingerprint(), without a restart).

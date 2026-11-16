@@ -1,8 +1,9 @@
 // PUBLIC client core without the game: the model's validation (native/public_model.hpp), the API calls against a
 // local HTTP server on 127.0.0.1 serving fixture JSON (native/public_client.hpp): reads, and the writes that carry the
-// install key (check, publish, publish update, stars, reports); the install identity (native/public_identity.hpp), the
-// local starred and published lists (native/public_local.hpp), and the installer on a temporary folder with a
-// ScriptLibrary over that folder (native/public_installer.hpp). Nothing here reaches the internet or touches %APPDATA%.
+// install key (check, publish, publish update, reports); stars as local favourites through the page over a real
+// client (no request, no key); the install identity (native/public_identity.hpp), the local starred and published
+// lists (native/public_local.hpp), and the installer on a temporary folder with a ScriptLibrary over that folder
+// (native/public_installer.hpp). Nothing here reaches the internet or touches %APPDATA%.
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -12,6 +13,7 @@
 #include "public_identity.hpp"
 #include "public_installer.hpp"
 #include "public_local.hpp"
+#include "public_page.hpp"
 #include "script_files.hpp"
 
 #include <atomic>
@@ -69,7 +71,7 @@ std::string CardJson(const std::string& id, const char* kind, const std::string&
             + sha
             + "\",\"reviewed\":true,\"reviewed_at\":\"2026-11-12T14:30:00.000Z\"},"
               "\"capabilities\":[\"chat.print\",\"render\",\"future.thing\",\"chat.send\"],"
-              "\"stats\":{\"downloads\":1240,\"favourites\":51,\"stars\":18,\"trending_score\":37.5},"
+              "\"stats\":{\"downloads\":1240,\"trending_score\":37.5},"
               "\"published_at\":\"2026-10-30T09:12:00.000Z\",\"updated_at\":\"2026-11-12T14:30:00.000Z\""
             + extra + "}";
 }
@@ -94,7 +96,7 @@ void ServerShapeChecks() {
         "license":"NOASSERTION","featured":false,
         "latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,
         "sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},
-        "capabilities":[],"stats":{"downloads":0,"favourites":0,"stars":0,"trending_score":0},
+        "capabilities":[],"stats":{"downloads":0,"trending_score":0},
         "published_at":"2026-11-16T04:48:51.716Z","updated_at":"2026-11-16T04:48:51.716Z"}],
         "next_cursor":null,"total_estimate":1})";
     json::Value value;
@@ -111,7 +113,7 @@ void ServerShapeChecks() {
     }
     Check(parsed && page.items.size() == 1 && page.dropped == 0, "the v2 server's list answer is read, item kept");
     {
-        const char* detailAnswer = R"({"id":"sk6eere4a85h","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"favourites":0,"stars":0,"trending_score":0},"published_at":"2026-11-16T04:48:51.716Z","updated_at":"2026-11-16T04:48:51.716Z","description":"The smallest script: a module with a text setting that greets you when enabled.","listed":true,"page_url":"https://nickelclient.com/community#scripts","versions":[{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null,"changelog":""}],"state":"published","state_reason":null})";
+        const char* detailAnswer = R"({"id":"sk6eere4a85h","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"trending_score":0},"published_at":"2026-11-16T04:48:51.716Z","updated_at":"2026-11-16T04:48:51.716Z","description":"The smallest script: a module with a text setting that greets you when enabled.","listed":true,"page_url":"https://nickelclient.com/community#scripts","versions":[{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null,"changelog":""}],"state":"published","state_reason":null})";
         json::Value detailValue;
         Detail detail;
         std::string detailError;
@@ -120,7 +122,7 @@ void ServerShapeChecks() {
             std::printf("server detail refused: %s\n", detailError.c_str());
         }
         Check(detailOk && detail.card.author.displayName == "Nickel", "the v2 server's item detail is read");
-        const char* lookupAnswer = R"({"items":[{"id":"sk6eere4a85h","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"favourites":0,"stars":0,"trending_score":0},"published_at":"2026-11-16T04:48:51.716Z","updated_at":"2026-11-16T04:48:51.716Z"},{"id":"zzzzzzzzzzzz","state":"not_found"}]})";
+        const char* lookupAnswer = R"({"items":[{"id":"sk6eere4a85h","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"trending_score":0},"published_at":"2026-11-16T04:48:51.716Z","updated_at":"2026-11-16T04:48:51.716Z"},{"id":"zzzzzzzzzzzz","state":"not_found"}]})";
         json::Value lookupValue;
         std::vector<LookupEntry> entries;
         std::string lookupError;
@@ -162,8 +164,8 @@ void ModelChecks() {
     std::string error;
     Check(ParseCard(value, &card, &error), "a valid item summary parses");
     Check(card.id == kScriptId && card.kind == Kind::Script && card.name == "Totem Reminder"
-                    && card.latest.number == 3 && card.latest.sha256 == Sha(kScriptBytes) && card.stats.stars == 18
-                    && card.stats.downloads == 1240 && card.tags.size() == 2 && card.latest.reviewed,
+                    && card.latest.number == 3 && card.latest.sha256 == Sha(kScriptBytes)
+                    && card.stats.trendingScore == 37.5 && card.stats.downloads == 1240 && card.tags.size() == 2 && card.latest.reviewed,
             "card fields");
     Check(card.capabilities.size() == 3 && card.capabilities[2] == Capability::ChatSend,
             "unknown capabilities are dropped, known ones kept");
@@ -186,6 +188,24 @@ void ModelChecks() {
         longName += "\xc3\xa9";  // e acute: 60 code points, 120 bytes
     }
     Check(!refused(CardJson(kScriptId, "script", longName, 3, Sha("x"))), "caps count code points, not bytes");
+
+    // Stars are local favourites: ItemSummary.stats is {downloads, trending_score}, with no star count. Other keys
+    // (an older server's stars or favourites) are ignored; stats without downloads is refused.
+    const std::string current = CardJson(kScriptId, "script", "Stats", 1, Sha("x"));
+    Check(current.find("\"stars\"") == std::string::npos && current.find("\"favourites\"") == std::string::npos
+                  && !refused(current),
+            "a card without stars parses");
+    std::string extraStats = current;
+    extraStats.replace(extraStats.find("\"stats\":{"), 9, "\"stats\":{\"stars\":18,\"favourites\":51,\"votes\":2,");
+    Check(json::Parse(extraStats, &value) && ParseCard(value, &card) && card.stats.downloads == 1240
+                  && card.stats.trendingScore == 37.5,
+            "unknown stats keys are ignored");
+    std::string noDownloads = current;
+    noDownloads.erase(noDownloads.find("\"downloads\":1240,"), 17);
+    Check(refused(noDownloads), "stats without downloads is refused");
+    Check(std::string(SortName(Sort::Popular)) == "popular" && std::string(SortName(Sort::Trending)) == "trending"
+                  && std::string(SortName(Sort::Recent)) == "recent",
+            "the sort names of the API: popular, trending, recent");
 
     // No accounts: an item published from the game may carry only its author's display name and no licence.
     std::string anonymous = CardJson(kScriptId, "script", "From the game", 1, Sha("x"));
@@ -574,12 +594,6 @@ private:
         if (writes && !blockedInstall.empty() && install == blockedInstall) {
             return ProblemReply("403 Forbidden", 403, "install_blocked");
         }
-        if (path.size() > 5 && path.compare(path.size() - 5, 5, "/star") == 0) {
-            if (path == std::string("/items/") + kConfigId + "/star") {
-                return ProblemReply("409 Conflict", 409, "conflict");
-            }
-            return Reply("204 No Content", "", "");
-        }
         if (path == "/items/check" && request.method == "POST") {
             std::string bytes;
             if (!DecodeFile(request.body, &bytes)) {
@@ -718,12 +732,35 @@ bool ListDone(const Snapshot& snapshot, Kind kind) {
     return list != nullptr && !list->loading && !list->loadingMore;
 }
 
+// Popular, Trending and Recent are sent as the API names them (sort=popular|trending|recent); there is no "top".
+void SortParameterChecks(TestServer& server) {
+    const Sort sorts[3] = {Sort::Popular, Sort::Trending, Sort::Recent};
+    const char* names[3] = {"popular", "trending", "recent"};
+    bool sent = true;
+    for (int i = 0; i < 3; ++i) {
+        PublicClient client(LoopbackConfig(server));
+        ListQuery query;
+        query.kind = Kind::Config;
+        query.sort = sorts[i];
+        sent = sent && client.List(query)
+               && WaitFor(client, [](const Snapshot& s) { return ListDone(s, Kind::Config); })
+               && server.LastPath("GET /api/community/v1/items?kind=config")
+                          == std::string("GET /api/community/v1/items?kind=config&sort=") + names[i] + "&limit=24";
+    }
+    Check(sent, "the sort parameter of each ranking");
+    bool noTop = true;
+    for (const std::string& seen : server.Seen()) {
+        noTop = noTop && seen.find("sort=top") == std::string::npos;
+    }
+    Check(noTop, "no list asks sort=top");
+}
+
 void ListChecks(TestServer& server) {
     PublicClient client(LoopbackConfig(server));
     Check(client.Usable(), "a loopback base URL is usable under a loopback policy");
     ListQuery query;
     query.kind = Kind::Script;
-    query.sort = Sort::Top;
+    query.sort = Sort::Popular;
     query.text = "  auto  gg ";
     query.tags = {"pvp"};
     query.compat = "1.1.0-beta";
@@ -738,7 +775,7 @@ void ListChecks(TestServer& server) {
                     && list->nextCursor == "c2" && list->totalEstimate == 3 && !list->fromCache,
             "the first page, with the invalid item dropped");
     Check(server.LastPath("GET /api/community/v1/items?")
-                    == "GET /api/community/v1/items?kind=script&sort=top&q=auto%20gg&tag=pvp&compat=1.1.0&limit=24",
+                    == "GET /api/community/v1/items?kind=script&sort=popular&q=auto%20gg&tag=pvp&compat=1.1.0&limit=24",
             "the list query string");
     Check(server.LastHeaders("GET /api/community/v1/items?").find("User-Agent: Nickel-Overlay/test")
                     != std::string::npos,
@@ -1017,7 +1054,7 @@ void PolicyChecks() {
     }
 
     PublicClient noKey(config);
-    Check(!noKey.Star(kScriptId, true) && noKey.Snap().star->outcome.status == Status::Invalid,
+    Check(!noKey.Report(kScriptId, "spam", "") && noKey.Snap().report->outcome.status == Status::Invalid,
           "a write to a host outside the policy is refused first");
 }
 
@@ -1628,38 +1665,101 @@ bool WaitSlot(const PublicClient& client, Done done) {
     return WaitFor(client, [&](const Snapshot& s) { return done(s); });
 }
 
-void StarChecks(TestServer& server, const std::wstring& root) {
+// Stars are local favourites: starring and unstarring from the page, over a real client against the local server,
+// make no request at all and create no install key; reads (lists, details, lookups, revocations) never create it
+// either. Favourites survive a restart, and the Starred tab asks only the read-only lookup, without Authorization.
+void FavouriteChecks(TestServer& server, const std::wstring& root) {
+    const std::wstring home = root + L"\\favourites";
+    const std::wstring keyPath = InstallKeyPath(home);
+    InstallIdentity identity(keyPath);
+    PublicClient client(LoopbackConfig(server), &identity);
+    ClientRequests requests(&client);
+    FolderLibrary library(home + L"\\scripts");
+    PageOptions options;
+    options.root = home;
+    options.library = &library;
+    options.identity = &identity;
+    int64_t now = 1794765600000LL;
     {
-        PublicClient client(LoopbackConfig(server));
-        const int before = server.Hits("PUT");
-        Check(client.Star(kScriptId, true), "a star without an identity is posted");
-        Check(WaitSlot(client, [](const Snapshot& s) { return s.star && !s.star->loading; }), "the star answer");
-        Check(client.Snap().star->outcome.status == Status::NoIdentity && server.Hits("PUT") == before,
-              "without an install key: no request");
+        PublicPage page(options);
+        page.SetRequests(&requests);
+        page.Tick(client.Snap(), true, now);
+        Check(WaitSlot(client, [](const Snapshot& s) { return s.revocations && !s.revocations->loading; }),
+              "the page's revocations answer");
+        page.Shown(Kind::Script);
+        Check(WaitSlot(client, [](const Snapshot& s) { return ListDone(s, Kind::Script); }), "the first list");
+        Check(client.Detail(kScriptId)
+                      && WaitSlot(client, [](const Snapshot& s) { return s.detail && !s.detail->loading; }),
+              "a detail read");
+        page.Tick(client.Snap(), true, now += 16);
+        Check(!Exists(keyPath), "browsing creates no install key");
+
+        const size_t before = server.Seen().size();
+        Check(page.Star(Kind::Script, kScriptId, true) && page.Star(Kind::Config, kConfigId, true)
+                      && page.Star(Kind::Script, kGoneId, true),
+              "starring is accepted at once");
+        Check(page.Star(Kind::Script, kGoneId, false) && !page.IsStarred(Kind::Script, kGoneId), "unstarring");
+        Check(page.IsStarred(Kind::Script, kScriptId) && page.IsStarred(Kind::Config, kConfigId), "starred");
+        for (int i = 0; i < 5; ++i) {
+            page.Tick(client.Snap(), true, now += 16);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        Check(server.Seen().size() == before, "starring and unstarring send no request");
+        Check(!Exists(keyPath) && identity.State() == IdentityState::Missing,
+              "starring neither reads nor creates the install key");
+        Check(page.Installs().Records(Kind::Script).empty() && page.Installs().Records(Kind::Config).empty()
+                      && library.List().empty() && !page.Busy(),
+              "starring downloads, installs and runs nothing");
+        bool noStarRoute = true;
+        for (const std::string& seen : server.Seen()) {
+            noStarRoute = noStarRoute && seen.find("/star") == std::string::npos && seen.compare(0, 4, "PUT ") != 0
+                          && seen.compare(0, 7, "DELETE ") != 0;
+        }
+        Check(noStarRoute, "no star endpoint is ever asked");
+        Check(Exists(StarredPath(home)), "favourites are saved in public\\starred.json");
     }
+    {
+        // A restart: a new page reads the same folder.
+        PublicPage page(options);
+        Check(page.IsStarred(Kind::Script, kScriptId) && page.IsStarred(Kind::Config, kConfigId)
+                      && !page.IsStarred(Kind::Script, kGoneId),
+              "favourites persist across a restart");
+        page.SetRequests(&requests);
+        page.Tick(client.Snap(), true, now += 16);
+        const int lookups = server.Hits("POST /api/community/v1/items/lookup");
+        page.ShowStarred(Kind::Script);
+        Check(WaitSlot(client, [](const Snapshot& s) { return s.starred && !s.starred->loading; }),
+              "the Starred tab's lookup answer");
+        Check(server.Hits("POST /api/community/v1/items/lookup") == lookups + 1
+                      && server.LastHeaders("POST /api/community/v1/items/lookup").find("Authorization")
+                                 == std::string::npos,
+              "the Starred tab is one lookup, without Authorization");
+        json::Value body;
+        Check(json::Parse(server.LastBody("POST /api/community/v1/items/lookup"), &body) && body["ids"].size() == 2,
+              "the lookup asks the starred ids");
+        const Snapshot snap = client.Snap();
+        page.Tick(snap, true, now += 16);
+        const std::vector<Card> cards = page.StarredCards(Kind::Script, snap);
+        Check(cards.size() == 1 && cards[0].id == kScriptId, "the starred script's card");
+        const std::vector<Missing> gone = page.StarredMissing(Kind::Config, snap);
+        Check(gone.size() == 1 && gone[0].id == kConfigId && gone[0].state == MissingState::NotFound
+                      && page.StarredState(Kind::Config, snap, true).view == ListView::Ready,
+              "a starred item that is gone is listed with its state");
+        const size_t before = server.Seen().size();
+        Check(page.Star(Kind::Config, kConfigId, false) && page.StarredMissing(Kind::Config, snap).empty(),
+              "a gone item can still be unstarred");
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        Check(server.Seen().size() == before && !Exists(keyPath), "unstarring a gone item sends nothing");
+    }
+}
+
+// Reads never send the key, even once it exists; the Starred tabs' lookup has its own slot; a blocked install's
+// writes are Forbidden.
+void KeyChecks(TestServer& server, const std::wstring& root) {
     InstallIdentity identity(InstallKeyPath(root));
     PublicClient client(LoopbackConfig(server), &identity);
-    Check(client.Star(kScriptId, true), "a star");
-    Check(WaitSlot(client, [](const Snapshot& s) { return s.star && !s.star->loading; }), "the star answer");
-    Check(client.Snap().star->outcome.Ok() && client.Snap().star->starred, "starred");
     std::string header;
-    identity.Authorization(&header);
-    Check(server.LastHeaders("PUT /api/community/v1/items/7k2m9x4qa1dz/star").find("Authorization: " + header)
-                  != std::string::npos,
-          "the star carries the install key");
-
-    Check(client.Star(kScriptId, false), "an unstar");
-    Check(WaitSlot(client, [](const Snapshot& s) { return s.star && !s.star->loading && !s.star->starred; }),
-          "the unstar answer");
-    Check(client.Snap().star->outcome.Ok() && server.Hits("DELETE /api/community/v1/items/7k2m9x4qa1dz/star") == 1,
-          "unstar is DELETE");
-
-    Check(client.Star(kConfigId, true), "starring one's own item");
-    Check(WaitSlot(client, [](const Snapshot& s) { return s.star && !s.star->loading && s.star->id == kConfigId; }),
-          "the conflict answer");
-    Check(client.Snap().star->outcome.status == Status::Conflict, "409 for one's own item");
-
-    // Reads never send the key.
+    Check(identity.Authorization(&header), "a key for the writes");
     Check(client.Detail(kScriptId), "a read");
     Check(WaitSlot(client, [](const Snapshot& s) { return s.detail && !s.detail->loading; }), "the read answer");
     Check(server.LastHeaders("GET /api/community/v1/items/7k2m9x4qa1dz").find("Authorization") == std::string::npos,
@@ -1669,23 +1769,20 @@ void StarChecks(TestServer& server, const std::wstring& root) {
     Check(server.LastHeaders("POST /api/community/v1/items/lookup").find("Authorization") == std::string::npos,
           "lookups carry no key");
 
-    // The Starred tabs' lookup has its own slot.
     Check(client.LookupStarred({kScriptId, kGoneId}), "the starred lookup");
     Check(WaitSlot(client, [](const Snapshot& s) { return s.starred && !s.starred->loading; }), "its answer");
     const Snapshot snapshot = client.Snap();
     Check(snapshot.starred->outcome.Ok() && snapshot.starred->entries.size() == 2 && snapshot.starred->entries[0].found
                   && !snapshot.starred->entries[1].found && snapshot.lookup->ids.size() == 1,
           "starred cards come in their own slot");
+    Check(server.LastHeaders("POST /api/community/v1/items/lookup").find("Authorization") == std::string::npos,
+          "the starred lookup carries no key");
 
     // A blocked install: 403.
     server.blockedInstall = header;
-    Check(client.Star(kScriptId, true), "a star of a blocked install");
-    Check(WaitSlot(client,
-                   [](const Snapshot& s) {
-                       return s.star && !s.star->loading && s.star->id == kScriptId && s.star->starred;
-                   }),
-          "the 403 answer");
-    Check(client.Snap().star->outcome.status == Status::Forbidden, "a blocked install is Forbidden");
+    Check(client.Report(kScriptId, "spam", ""), "a report of a blocked install");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.report && !s.report->loading; }), "the 403 answer");
+    Check(client.Snap().report->outcome.status == Status::Forbidden, "a blocked install is Forbidden");
     server.blockedInstall.clear();
 }
 
@@ -1821,27 +1918,25 @@ void PublishChecks(TestServer& server, const std::wstring& root) {
     Check(client.Snap().report->outcome.status == Status::Conflict, "409: already reported");
 }
 
-// Publishing is final: the client has no request that deletes, unlists or hides an item.
+// Publishing is final and stars are local: the client has no request that deletes, unlists or hides an item, and
+// none that stars or unstars one.
 void NoDeleteChecks(TestServer& server) {
-    bool onlyStars = true;
+    bool clean = true;
     for (const std::string& seen : server.Seen()) {
-        if (seen.compare(0, 7, "DELETE ") == 0) {
-            onlyStars = onlyStars && seen.size() > 5 && seen.compare(seen.size() - 5, 5, "/star") == 0;
-        }
-        onlyStars = onlyStars && seen.find("unlist") == std::string::npos && seen.find("PATCH") != 0;
+        clean = clean && seen.compare(0, 7, "DELETE ") != 0 && seen.compare(0, 4, "PUT ") != 0
+                && seen.find("/star") == std::string::npos && seen.find("unlist") == std::string::npos
+                && seen.find("PATCH") != 0;
     }
-    Check(onlyStars, "the only DELETE requests are unstars; nothing unlists or edits an item");
+    Check(clean, "no DELETE, PUT or PATCH request: nothing unlists, edits or stars an item on the server");
     std::ifstream file(std::string(NICKEL_SOURCE_DIR) + "/native/public_client.hpp", std::ios::binary);
     std::stringstream text;
     text << file.rdbuf();
     const std::string source = text.str();
-    size_t deletes = 0;
-    for (size_t at = source.find("\"DELETE\""); at != std::string::npos; at = source.find("\"DELETE\"", at + 1)) {
-        ++deletes;
-    }
-    Check(!source.empty() && deletes == 1 && source.find("\"PATCH\"") == std::string::npos
-                  && source.find("/unlist") == std::string::npos && source.find("/me/") == std::string::npos,
-          "public_client.hpp: DELETE only for stars, no PATCH, no unlist, no account endpoint");
+    Check(!source.empty() && source.find("\"DELETE\"") == std::string::npos
+                  && source.find("\"PUT\"") == std::string::npos && source.find("\"PATCH\"") == std::string::npos
+                  && source.find("/star\"") == std::string::npos && source.find("/unlist") == std::string::npos
+                  && source.find("/me/") == std::string::npos,
+          "public_client.hpp: no DELETE, PUT or PATCH, no star or unlist endpoint, no account endpoint");
 }
 
 }  // namespace
@@ -1856,11 +1951,13 @@ int main() {
         return 1;
     }
     ListChecks(server);
+    SortParameterChecks(server);
     CursorChecks(server);
     DetailAndFileChecks(server);
     LookupAndRevocationChecks(server);
     const std::wstring writesRoot = TemporaryRoot();
-    StarChecks(server, writesRoot);
+    FavouriteChecks(server, writesRoot);
+    KeyChecks(server, writesRoot);
     PublishChecks(server, writesRoot);
     NoDeleteChecks(server);
     RateLimitChecks(server);

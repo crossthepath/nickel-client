@@ -1,11 +1,13 @@
 #pragma once
 // What the PUBLIC pages of the menu do, without drawing: the view of each kind (sort, search, selection, the Starred
-// tab), the requests they make, the install / update / uninstall flow, revocations, updates, stars, reports, and
+// tab), the requests they make, the install / update / uninstall flow, revocations, updates, favourites, reports, and
 // publishing from OTHER -> Scripting and OTHER -> Configs. public_ui.hpp draws it with the menu's widgets;
 // tests/public_page_checks.cpp drives it with recorded requests and hand-made snapshots.
 //
-// - No sign-in anywhere: writes carry this install's key (public_identity.hpp). Stars are favourites kept in
-//   root\public\starred.json (public_local.hpp); the Starred tab shows them through a lookup.
+// - No sign-in anywhere: publishing and reports carry this install's key (public_identity.hpp); browsing, installing
+//   and favourites never create it. Stars are local favourites only, kept in root\public\starred.json
+//   (public_local.hpp): starring sends no request and never downloads, installs or runs anything. The Starred tab
+//   shows them through the read-only lookup.
 // - Publishing is final and immediate once the server's automatic check passes: there is no way to delete, unlist or
 //   hide an item from here. The local file stays the author's; edits never change the public copy. Only the install
 //   that published an item (root\public\published.json, by fingerprint) is offered "Publish update".
@@ -54,7 +56,6 @@ public:
     virtual bool Lookup(std::vector<std::string> ids) = 0;
     virtual bool Revocations() = 0;
     virtual bool LookupStarred(std::vector<std::string> ids) = 0;
-    virtual bool Star(const std::string& id, bool starred) = 0;
     virtual bool Check(Kind kind, const std::string& fileName, const std::string& bytes, const std::string& ref) = 0;
     virtual bool Publish(const PublishRequest& request) = 0;
     virtual bool PublishVersion(const std::string& id, const PublishRequest& request) = 0;
@@ -84,8 +85,6 @@ public:
     bool Revocations() override { return client_->Revocations(); }
 
     bool LookupStarred(std::vector<std::string> ids) override { return client_->LookupStarred(std::move(ids)); }
-
-    bool Star(const std::string& id, bool starred) override { return client_->Star(id, starred); }
 
     bool Check(Kind kind, const std::string& fileName, const std::string& bytes, const std::string& ref) override {
         return client_->Check(kind, fileName, bytes, ref);
@@ -358,6 +357,22 @@ struct ListState {
 
 inline std::string KindWord(Kind kind, bool plural) {
     return kind == Kind::Script ? (plural ? "scripts" : "script") : (plural ? "configs" : "config");
+}
+
+// Why a starred item is no longer listed, for its row in the Starred tab.
+inline std::string MissingText(const Missing& missing) {
+    switch (missing.state) {
+        case MissingState::Hidden:
+            return "Hidden by the Nickel team.";
+        case MissingState::Removed:
+            return missing.reasonCategory.empty() ? "Removed by the Nickel team."
+                                                  : "Removed by the Nickel team (" + missing.reasonCategory + ").";
+        case MissingState::Deleted:
+            return "Deleted from PUBLIC.";
+        case MissingState::NotFound:
+        default:
+            return "No longer on PUBLIC.";
+    }
 }
 
 // retryUntil: unix ms until which a 429 or 503 forbids a retry (0: none).
@@ -665,7 +680,7 @@ struct PageOptions {
 
 // What one kind's page shows and asks for.
 struct KindView {
-    Sort sort = Sort::Top;
+    Sort sort = Sort::Popular;
     std::string applied; // the search text of the list shown
     std::string typed;   // the search box
     int64_t typedAt = 0;
@@ -776,7 +791,6 @@ public:
                 lookupAt_ = 0;
                 starredAsked_.clear();
             }
-            starSending_ = false; // the answer of a star sent before PUBLIC was turned off is not awaited
             wasEnabled_ = false;
             return;
         }
@@ -840,45 +854,6 @@ public:
                     }
                 }
                 RefreshStates();
-            }
-        }
-        if (snap.star != seenStar_) {
-            seenStar_ = snap.star;
-            const StarResult* star = seenStar_.get();
-            const bool asked = star != nullptr && star->id == lastStar_.id && star->starred == lastStar_.on;
-            if (asked && !star->loading) {
-                starSending_ = false;
-            }
-            if (star != nullptr && !star->loading && star->outcome.Ok() && asked) {
-                fingerprintKnown_ = false; // the key may have been created by this star
-                fingerprintAt_ = 0;
-                for (int k = 0; k < 2; ++k) {
-                    if (views_[k].selected == star->id && requests_ != nullptr) {
-                        requests_->Detail(star->id); // the star count, as the server now counts it
-                    }
-                }
-            }
-            if (star != nullptr && !star->loading && !star->outcome.Ok() && asked) {
-                starred_.Set(lastStar_.kind, lastStar_.id, !lastStar_.on); // the server refused: undo it
-            }
-            if (star != nullptr && !star->loading && !star->outcome.Ok()) {
-                switch (star->outcome.status) {
-                    case Status::NoIdentity:
-                    case Status::Unauthorized:
-                    case Status::Forbidden:
-                        Notice(WriteRefusal(star->outcome, "star"), true);
-                        break;
-                    case Status::Conflict:
-                        Notice("You can't star your own creation.", true);
-                        break;
-                    case Status::RateLimited:
-                        Notice("Too many requests. Try starring again in a moment.", true);
-                        break;
-                    default:
-                        Notice(std::string("The star could not be saved (") + StatusName(star->outcome.status) + ").",
-                               true);
-                        break;
-                }
             }
         }
         if (snap.report != seenReport_) {
@@ -1119,28 +1094,21 @@ public:
 
     bool Stop(const std::string& name) { return options_.library != nullptr && options_.library->Stop(name); }
 
-    // Stars (on) or unstars an item for this install. The local list changes at once and is undone if the server
-    // refuses it.
+    // Stars (on) or unstars an item: a local favourite, saved in root\public\starred.json at once. No request is
+    // made, the install key is neither read nor created, and nothing is downloaded, installed or run. One's own
+    // creations can be starred too. False when the id is invalid, the list is full or the file could not be saved.
     bool Star(Kind kind, const std::string& id, bool on) {
-        if (requests_ == nullptr || !ValidId(id)) {
+        if (!ValidId(id)) {
             return false;
         }
-        if (starSending_) {
-            return false; // one star at a time: the slot keeps only the newest answer, so an older refusal is never seen
-        }
-        const bool was = starred_.Has(kind, id);
-        starred_.Set(kind, id, on);
-        lastStar_ = LastStar{kind, id, on};
-        if (!requests_->Star(id, on)) {
-            starred_.Set(kind, id, was);
+        if (!starred_.Set(kind, id, on)) {
+            Notice(on ? "Could not add it to your starred " + KindWord(kind, true) + "."
+                      : "Could not remove it from your starred " + KindWord(kind, true) + ".",
+                   true);
             return false;
         }
-        starSending_ = true;
         return true;
     }
-
-    // A star or unstar is on its way: Star refuses another one until it is answered.
-    bool StarSending() const { return starSending_; }
 
     bool IsStarred(Kind kind, const std::string& id) const { return starred_.Has(kind, id); }
 
@@ -1181,6 +1149,25 @@ public:
             *missing = gone;
         }
         return cards;
+    }
+
+    // The starred items of `kind` the lookup says are gone (hidden, removed, deleted or not found), newest star
+    // first: the Starred tab lists them with their state so they can still be unstarred.
+    std::vector<Missing> StarredMissing(Kind kind, const Snapshot& snap) const {
+        std::vector<Missing> gone;
+        const LookupResult* lookup = snap.starred.get();
+        if (lookup == nullptr || lookup->loading || !lookup->outcome.Ok()) {
+            return gone;
+        }
+        for (const std::string& id : starred_.Ids(kind)) {
+            for (const LookupEntry& entry : lookup->entries) {
+                if (entry.id == id && !entry.found) {
+                    gone.push_back(entry.missing);
+                    gone.back().id = id;
+                }
+            }
+        }
+        return gone;
     }
 
     ListState StarredState(Kind kind, const Snapshot& snap, bool enabled) const {
@@ -1228,12 +1215,7 @@ public:
             state.message = "No starred " + KindWord(kind, true) + " match \"" + views_[Slot(kind)].typed + "\".";
             return state;
         }
-        if (cards.empty()) {
-            state.view = ListView::Empty;
-            state.message = "Your starred " + KindWord(kind, true) + " are no longer available.";
-            return state;
-        }
-        state.view = ListView::Ready;
+        state.view = ListView::Ready; // the gone ones are listed below the cards (StarredMissing), to unstar them
         if (missing > 0) {
             state.message = std::to_string(missing) + " starred " + KindWord(kind, missing != 1)
                             + (missing == 1 ? " is" : " are") + " no longer available.";
@@ -1452,12 +1434,6 @@ public:
     int64_t Now() const { return now_; }
 
 private:
-    struct LastStar {
-        Kind kind = Kind::Script;
-        std::string id;
-        bool on = false;
-    };
-
     static size_t Slot(Kind kind) { return static_cast<size_t>(kind); }
 
     static std::string Lower(std::string text) {
@@ -1561,7 +1537,7 @@ private:
         return request;
     }
 
-    // Why a write was refused, for the player. what: "star", "report", "publish".
+    // Why a write was refused, for the player. what: "report", "publish".
     static std::string WriteRefusal(const Outcome& outcome, const char* what) {
         switch (outcome.status) {
             case Status::NoIdentity:
@@ -1771,16 +1747,13 @@ private:
     bool haveLookup_ = false;
     std::shared_ptr<const LookupResult> seenLookup_;
     std::shared_ptr<const RevocationsResult> seenRevocations_;
-    std::shared_ptr<const StarResult> seenStar_;
     std::shared_ptr<const ReportResult> seenReport_;
     std::shared_ptr<const CheckResult> lastCheck_;
     std::shared_ptr<const PublishResult> lastPublish_;
     StarredList starred_;
     PublishedList published_;
-    LastStar lastStar_;
     std::vector<std::string> starredAsked_;
     std::string reportPending_;
-    bool starSending_ = false;
     std::vector<Uncertain> uncertain_;
     PublishDraft draft_;
     std::string fingerprint_;

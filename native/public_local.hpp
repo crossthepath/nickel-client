@@ -1,7 +1,9 @@
 #pragma once
 // What this install remembers about PUBLIC on its own disk, next to install.key (public_identity.hpp):
-// - <root>\public\starred.json: the creations this install starred, ids per kind, newest first. Stars are favourites:
-//   the "Starred" tab of PUBLIC -> Scripts and PUBLIC -> Configs lists them (cards fetched with POST /items/lookup).
+// - <root>\public\starred.json: the creations this player starred, ids per kind, newest first. Stars are local
+//   favourites only: starring writes this file and nothing else (no request, no install key, no public counter, one's
+//   own creations included). The "Starred" tab of PUBLIC -> Scripts and PUBLIC -> Configs lists them (cards fetched
+//   with the read-only POST /items/lookup).
 // - <root>\public\published.json: what this install published from OTHER -> Scripting and OTHER -> Configs: the local
 //   script or config name, the public item id, and the owner (the install's fingerprint, never the secret). Only an
 //   entry whose owner is the current install offers "Publish update"; nothing here can delete, unlist or hide an item
@@ -98,20 +100,27 @@ public:
     // Newest first.
     const std::vector<std::string>& Ids(Kind kind) const { return ids_[Slot(kind)]; }
 
-    // Stars (on) or unstars an id and saves; false when it was refused (an invalid id, the cap) or not saved.
+    // Stars (on) or unstars an id and saves; false when it was refused (an invalid id, the cap) or not saved, and
+    // then the list is left as it was.
     bool Set(Kind kind, const std::string& id, bool on) {
         if (!ValidId(id)) {
             return false;
         }
         std::vector<std::string>& ids = ids_[Slot(kind)];
+        const std::vector<std::string> before = ids;
         ids.erase(std::remove(ids.begin(), ids.end(), id), ids.end());
         if (on) {
             if (ids.size() >= kMaxStarred) {
+                ids = before;
                 return false;
             }
             ids.insert(ids.begin(), id);
         }
-        return Save();
+        if (!Save()) {
+            ids = before;
+            return false;
+        }
+        return true;
     }
 
 private:

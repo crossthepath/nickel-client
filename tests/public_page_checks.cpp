@@ -1,6 +1,7 @@
 // What the PUBLIC pages of the menu do, without ImGui and without the network (native/public_page.hpp): requests are
-// recorded, answers are hand-made snapshots, and installs, stars, the install key and what was published go to a
-// temporary folder through a ScriptLibrary over that folder. Nothing here reaches the internet or %APPDATA%.
+// recorded, answers are hand-made snapshots, and installs, favourites (local stars), the install key and what was
+// published go to a temporary folder through a ScriptLibrary over that folder. Nothing here reaches the internet or
+// %APPDATA%.
 #include <windows.h>
 
 #include "public_page.hpp"
@@ -40,7 +41,6 @@ struct Recorded {
     ListQuery query;
     std::string id;
     int number = 0;
-    bool starred = false;
     std::vector<std::string> ids;
     Kind kind = Kind::Script;
     std::string fileName;
@@ -118,13 +118,6 @@ public:
             r.id = id;
             r.category = category;
             r.details = details;
-        });
-    }
-
-    bool Star(const std::string& id, bool starred) override {
-        return Add("star", [&](Recorded& r) {
-            r.id = id;
-            r.starred = starred;
         });
     }
 
@@ -605,9 +598,9 @@ void PageChecks() {
         page.Shown(Kind::Script);
         Check(requests.Count("list") == 1, "the first list is asked once");
         const Recorded* list = requests.Last("list");
-        Check(list != nullptr && list->query.kind == Kind::Script && list->query.sort == Sort::Top
+        Check(list != nullptr && list->query.kind == Kind::Script && list->query.sort == Sort::Popular
                       && list->query.compat == kRunningNickel && list->query.limit == 24 && list->query.text.empty(),
-              "first list: Top Rated, compatible items, 24");
+              "first list: Popular, compatible items, 24");
         Check(requests.Count("lookup") == 0, "no lookup without installed items");
 
         // Sorts and search (700 ms, from 2 characters; Enter at once).
@@ -829,34 +822,22 @@ void PageChecks() {
         page.OpenSource(config, true);
         Check(requests.Count("source") == 2, "Retry asks again");
 
-        // Stars: favourites of this install, kept in public\starred.json; shown at once, undone when refused.
+        // Stars: local favourites, kept in public\starred.json; no request, no install key, nothing installed.
         Check(!page.IsStarred(Kind::Script, card.id), "not starred at first");
+        const size_t calls = requests.calls.size();
+        const size_t installed = page.Installs().Records(Kind::Script).size();
         Check(page.Star(Kind::Script, card.id, true), "Star");
-        Check(requests.Last("star") != nullptr && requests.Last("star")->starred
-                      && requests.Last("star")->id == card.id,
-              "star request");
         Check(page.IsStarred(Kind::Script, card.id) && Exists(root + L"\\public\\starred.json"),
               "a star shows at once and is saved");
-        auto star = std::make_shared<StarResult>();
-        star->id = card.id;
-        star->starred = true;
-        star->loading = true;
-        snap.star = star;
         page.Tick(snap, true, now += 16);
-        auto refused = std::make_shared<StarResult>(*star);
-        refused->loading = false;
-        refused->outcome.status = Status::NoIdentity;
-        snap.star = refused;
-        page.Tick(snap, true, now += 16);
-        Check(!page.IsStarred(Kind::Script, card.id), "a refused star is undone");
-        Check(HasNotice(page.TakeNotices(), "public\\install.key"), "no usable key: the notice names the key file");
-        page.Star(Kind::Script, card.id, true);
-        auto accepted = std::make_shared<StarResult>(*star);
-        accepted->loading = false;
-        snap.star = accepted;
-        page.Tick(snap, true, now += 16);
-        Check(page.IsStarred(Kind::Script, card.id), "an accepted star stays");
-        page.TakeNotices();
+        Check(requests.calls.size() == calls, "a star makes no request");
+        Check(!Exists(root + L"\\public\\install.key"), "a star creates no install key");
+        Check(page.Installs().Records(Kind::Script).size() == installed && !page.Busy(),
+              "a star downloads and installs nothing");
+        Check(page.Star(Kind::Script, card.id, false) && !page.IsStarred(Kind::Script, card.id), "Unstar");
+        Check(requests.calls.size() == calls && page.TakeNotices().empty(), "an unstar makes no request either");
+        Check(page.Star(Kind::Script, card.id, true) && page.IsStarred(Kind::Script, card.id), "starred again");
+        Check(!page.Star(Kind::Script, "NOT-AN-ID", true), "an invalid id is refused");
 
         // Off again: nothing more is asked, and the first list is asked again when PUBLIC comes back.
         const size_t before = requests.calls.size();
@@ -928,18 +909,18 @@ void MessageAndTimerChecks() {
         page.Shown(Kind::Config);
         Check(requests.Count("lookup") == 2, "once per period");
 
-        // A refused star stays on the page until dismissed, even once the HUD took its notice.
-        auto refused = std::make_shared<StarResult>();
+        // A refused report stays on the page until dismissed, even once the HUD took its notice.
+        Check(page.Report(config, "spam", ""), "a report");
+        auto refused = std::make_shared<ReportResult>();
         refused->id = config.id;
-        refused->starred = true;
         refused->outcome.status = Status::Conflict;
-        snap.star = refused;
+        snap.report = refused;
         page.Tick(snap, true, now += 16);
-        Check(HasNotice(page.TakeNotices(), "You can't star your own creation."), "star refusal: HUD notice");
+        Check(HasNotice(page.TakeNotices(), "You already reported this."), "report refusal: HUD notice");
         page.Tick(snap, true, now += 60000);
         Check(page.Messages().size() == 1 && page.Messages()[0].problem
-                      && page.Messages()[0].text == "You can't star your own creation.",
-              "star refusal: kept on the page");
+                      && page.Messages()[0].text == "You already reported this.",
+              "report refusal: kept on the page");
         page.DismissMessages();
         Check(page.Messages().empty(), "Dismiss clears the messages");
 
@@ -1006,60 +987,53 @@ std::string FileText(const std::wstring& path) {
 // ---------------------------------------------------------------------------------------------------------------
 // The Starred tab
 
-// Stars `id` and hands the page the server's answer.
-void StarAnswered(PublicPage& page,
-                  RecordingRequests& requests,
-                  Snapshot& snap,
-                  int64_t& now,
-                  Kind kind,
-                  const std::string& id,
-                  bool on,
-                  Status status = Status::Ok) {
-    Check(page.Star(kind, id, on) && requests.Last("star")->id == id, "the star is sent");
-    auto answer = std::make_shared<StarResult>();
-    answer->id = id;
-    answer->starred = on;
-    answer->outcome.status = status;
-    snap.star = answer;
-    page.Tick(snap, true, now += 16);
+// Stars `id` locally: no request is recorded.
+void StarLocally(PublicPage& page, RecordingRequests& requests, Kind kind, const std::string& id, bool on) {
+    const size_t calls = requests.calls.size();
+    Check(page.Star(kind, id, on) && page.IsStarred(kind, id) == on && requests.calls.size() == calls,
+          "a star is saved locally, without a request");
 }
 
+// Stars are local favourites: any number in a row, while PUBLIC is on or off, kept across a restart, never a
+// request, never the install key.
 void StarredTabChecks() {
     const std::wstring root = TemporaryRoot();
     {
-        // One star at a time: the client keeps only the newest star answer, so a refusal of an older one would be
-        // lost and never undone.
         FolderLibrary library(root + L"\\scripts");
+        InstallIdentity identity(InstallKeyPath(root));
         PageOptions options;
         options.root = root;
         options.library = &library;
-        PublicPage page(options);
+        options.identity = &identity;
         RecordingRequests requests;
         Snapshot snap;
         int64_t now = 1794765600000LL;
-        page.SetRequests(&requests);
-        page.Tick(snap, true, now);
-        const std::string own = "wnytem123456";
-        const std::string other = "thertem12345";
-        Check(page.Star(Kind::Script, own, true) && page.StarSending(), "a star is on its way");
-        Check(!page.Star(Kind::Script, other, true) && !page.IsStarred(Kind::Script, other)
-                      && requests.Count("star") == 1,
-              "another star waits for the answer");
-        auto refused = std::make_shared<StarResult>();
-        refused->id = own;
-        refused->starred = true;
-        refused->outcome.status = Status::Conflict;
-        snap.star = refused;
-        page.Tick(snap, true, now += 16);
-        Check(!page.StarSending() && !page.IsStarred(Kind::Script, own), "the refused star is undone");
-        page.TakeNotices();
-        StarAnswered(page, requests, snap, now, Kind::Script, other, true);
-        Check(page.IsStarred(Kind::Script, other) && !page.StarSending(), "then the next star goes");
-        Check(page.Star(Kind::Script, own, true) && page.StarSending(), "in flight again");
-        page.Tick(snap, false, now += 16);
-        Check(!page.StarSending(), "turning PUBLIC off stops waiting for it");
-        StarAnswered(page, requests, snap, now, Kind::Script, other, false);
-        Check(!page.IsStarred(Kind::Script, other), "unstarred");
+        const std::string first = "wnytem123456";
+        const std::string second = "thertem12345";
+        {
+            PublicPage page(options);
+            page.SetRequests(&requests);
+            page.Tick(snap, true, now);
+            const size_t calls = requests.calls.size();
+            StarLocally(page, requests, Kind::Script, first, true);
+            StarLocally(page, requests, Kind::Script, second, true);
+            StarLocally(page, requests, Kind::Config, second, true);
+            page.Tick(snap, false, now += 16);
+            page.SetRequests(nullptr);
+            StarLocally(page, requests, Kind::Script, second, false);
+            Check(page.Starred().Ids(Kind::Script).size() == 1 && page.Starred().Ids(Kind::Config).size() == 1,
+                  "favourites are kept per kind, and change while PUBLIC is off too");
+            Check(requests.calls.size() == calls && page.TakeNotices().empty() && page.Messages().empty(),
+                  "no request and no message for stars");
+            Check(!Exists(InstallKeyPath(root)) && identity.State() == IdentityState::Missing,
+                  "stars never create the install key");
+        }
+        {
+            PublicPage restarted(options);
+            Check(restarted.IsStarred(Kind::Script, first) && !restarted.IsStarred(Kind::Script, second)
+                          && restarted.IsStarred(Kind::Config, second),
+                  "favourites persist across a restart");
+        }
     }
     DeleteTree(root);
 }
@@ -1087,10 +1061,10 @@ void StarredTabListChecks() {
         const Card a = MakeCard("7k2m9x4qa1dz", Kind::Script, "Auto GG", 3, "print(1)\n");
         const Card b = MakeCard("pqrstvwxyz01", Kind::Script, "Chat Filter", 1, "print(2)\n");
         const Card c = MakeCard("9x8w7v6t5s4r", Kind::Config, "Hypixel PvP", 1, "[fly]\r\nenabled=1\r\n");
-        StarAnswered(page, requests, snap, now, Kind::Script, a.id, true);
-        StarAnswered(page, requests, snap, now, Kind::Script, b.id, true);
-        StarAnswered(page, requests, snap, now, Kind::Config, c.id, true);
-        StarAnswered(page, requests, snap, now, Kind::Script, "abcdefghjkmn", true);
+        StarLocally(page, requests, Kind::Script, a.id, true);
+        StarLocally(page, requests, Kind::Script, b.id, true);
+        StarLocally(page, requests, Kind::Config, c.id, true);
+        StarLocally(page, requests, Kind::Script, "abcdefghjkmn", true);
         page.Shown(Kind::Script);
         const Recorded* asked = requests.Last("starred");
         Check(asked != nullptr && asked->ids.size() == 4, "the Starred tab looks up every starred id");
@@ -1117,6 +1091,11 @@ void StarredTabListChecks() {
         const ListState state = page.StarredState(Kind::Script, snap, true);
         Check(state.view == ListView::Ready && state.message.find("1 starred script is no longer available") == 0,
               "ready, with the removed one counted");
+        const std::vector<Missing> gone = page.StarredMissing(Kind::Script, snap);
+        Check(gone.size() == 1 && gone[0].id == "abcdefghjkmn" && gone[0].state == MissingState::Removed
+                      && MissingText(gone[0]) == "Removed by the Nickel team."
+                      && page.StarredMissing(Kind::Config, snap).empty(),
+              "the removed one is listed with its state");
 
         page.Type(Kind::Script, "chat");
         page.Tick(snap, true, now += 800);
@@ -1124,14 +1103,23 @@ void StarredTabListChecks() {
               "the search box filters the starred cards without a request");
         page.Type(Kind::Script, "");
 
-        page.Star(Kind::Script, a.id, false);
+        StarLocally(page, requests, Kind::Script, a.id, false);
         Check(page.StarredCards(Kind::Script, snap).size() == 1, "an unstarred card leaves the tab");
+        StarLocally(page, requests, Kind::Script, "abcdefghjkmn", false);
+        Check(page.StarredMissing(Kind::Script, snap).empty()
+                      && page.StarredState(Kind::Script, snap, true).message.empty(),
+              "a removed item can still be unstarred");
+        StarLocally(page, requests, Kind::Script, b.id, false);
+        StarLocally(page, requests, Kind::Script, "abcdefghjkmn", true);
+        Check(page.StarredCards(Kind::Script, snap).empty() && page.StarredMissing(Kind::Script, snap).size() == 1
+                      && page.StarredState(Kind::Script, snap, true).view == ListView::Ready,
+              "when every starred item is gone, they are still listed to be unstarred");
         page.Retry(Kind::Script);
         Check(requests.Count("starred") == 2, "Refresh looks them up again");
 
-        page.SetSort(Kind::Script, Sort::Top);
+        page.SetSort(Kind::Script, Sort::Popular);
         Check(!page.View(Kind::Script).starredTab && requests.Count("list") == 1
-                      && requests.Last("list")->query.sort == Sort::Top,
+                      && requests.Last("list")->query.sort == Sort::Popular,
               "a ranking leaves the Starred tab and lists");
     }
     DeleteTree(root);
@@ -1249,6 +1237,10 @@ void PublishPageChecks() {
         Check(owned != nullptr && owned->owner == fingerprint
                       && FileText(root + L"\\public\\published.json").find(header.substr(8)) == std::string::npos,
               "published.json keeps the fingerprint, never the secret");
+        const size_t beforeStar = requests.calls.size();
+        Check(page.Star(Kind::Script, "n3wq7p2x9k4a", true) && page.IsStarred(Kind::Script, "n3wq7p2x9k4a")
+                      && requests.calls.size() == beforeStar && page.TakeNotices().empty(),
+              "one's own publication can be starred, locally");
         Check(page.ClosePublish(), "closed");
 
         // Publish update: the owner's own item, with a changelog, from the file as it is now.

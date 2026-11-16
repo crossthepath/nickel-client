@@ -1,12 +1,13 @@
 // PUBLIC pages of the menu: the sidebar group PUBLIC with Scripts (tab 11) and Configs (tab 12), shared by players on
-// nickelclient.com. Each page has the tabs Top Rated / Trending / Recent / Starred, a search box, a grid of cards
-// (name, author, stars, downloads, summary, installed / held / update pills) with Load more, and the details side panel
+// nickelclient.com. Each page has the tabs Popular / Trending / Recent / Starred, a search box, a grid of cards
+// (name, author, downloads, summary, installed / held / update pills) with Load more, and the details side panel
 // (description, version, capabilities of scripts with the sensitive ones in red, the settings a config changes,
 // Install / Update / Start / Uninstall, Star, Report). Scripts are always shown as source before they are installed,
 // and they are installed held: only Start (ScriptLibrary::Start, render thread) runs them.
 //
-// No sign-in anywhere: stars, reports and publishing carry this install's anonymous key (public_identity.hpp). Stars
-// are favourites listed in the Starred tab. OTHER -> Scripting and OTHER -> Configs get a Publish button
+// No sign-in anywhere: reports and publishing carry this install's anonymous key (public_identity.hpp). Stars are
+// local favourites (no request, no key, no public count) listed in the Starred tab. OTHER -> Scripting and
+// OTHER -> Configs get a Publish button
 // (DrawPublishButton) that opens the publish form in the main panel (DrawPublishForm): the automatic check first, a
 // clear warning that publishing is final, then Publish, or Publish update with a changelog for an item this install
 // published. Nothing here can delete, unlist or hide a published item.
@@ -69,8 +70,6 @@ public:
 
     bool LookupStarred(std::vector<std::string>) override { return true; }
 
-    bool Star(const std::string&, bool) override { return true; }
-
     bool Check(pub::Kind, const std::string&, const std::string&, const std::string&) override { return true; }
 
     bool Publish(const pub::PublishRequest&) override { return true; }
@@ -126,7 +125,7 @@ pub::Card ReviewCard(const char* id,
                      const char* name,
                      const char* summary,
                      const char* author,
-                     uint64_t stars,
+                     bool reviewed,
                      uint64_t downloads,
                      const char* tag) {
     pub::Card card;
@@ -144,9 +143,8 @@ pub::Card ReviewCard(const char* id,
     card.latest.label = "1.2.0";
     card.latest.size = 4210;
     card.latest.sha256 = std::string(64, 'a');
-    card.latest.reviewed = stars > 100;
+    card.latest.reviewed = reviewed;
     card.latest.reviewedAt = 1794765600000LL;
-    card.stats.stars = stars;
     card.stats.downloads = downloads;
     card.updatedAt = 1794765600000LL - 7200000;
     card.publishedAt = 1794765600000LL - 864000000;
@@ -163,7 +161,7 @@ pub::Snapshot PublicReviewSnapshot(int mode) {
     pub::Snapshot snap;
     auto scriptList = std::make_shared<pub::ListResult>();
     scriptList->query.kind = pub::Kind::Script;
-    scriptList->query.sort = pub::Sort::Top;
+    scriptList->query.sort = pub::Sort::Popular;
     const char* const names[7] = {"Auto GG",
                                   "Totem Reminder",
                                   "Combo Counter Plus",
@@ -191,7 +189,7 @@ pub::Snapshot PublicReviewSnapshot(int mode) {
                                                names[i],
                                                summaries[i],
                                                i == 0 ? "nickel" : "mash",
-                                               1240 / (i + 1),
+                                               true,
                                                12412 / (i + 1),
                                                i % 2 ? "hud" : "pvp"));
     }
@@ -210,7 +208,7 @@ pub::Snapshot PublicReviewSnapshot(int mode) {
                                         "Hypixel PvP",
                                         "Reach, velocity and a clean HUD.",
                                         "mash",
-                                        88,
+                                        false,
                                         3021,
                                         "pvp"));
     snap.lists[1] = configs;
@@ -625,14 +623,15 @@ void DrawPublicCard(ImDrawList* d,
         Label(d, regular, 12 * s, R(12, 56 + 16 * (float)i), lines[i].c_str(), Rgba(148, 148, 160, fade));
     }
     const float row = h - 24;
-    DrawStar(d, R(18, row + 6), 5.5f * s, starred ? Acc(fade) : Rgba(148, 148, 160, fade), starred);
-    const std::string stars = pub::FormatCount(card.stats.stars);
-    Label(d, semibold, 11.5f * s, R(27, row), stars.c_str(), Rgba(224, 224, 230, fade));
-    float x = 27 + TextWidth(semibold, 11.5f, stars.c_str()) + 12;
+    float x = 12;
     DrawDownload(d, R(x, row), 11 * s, Rgba(148, 148, 160, fade));
     const std::string downloads = pub::FormatCount(card.stats.downloads);
     Label(d, semibold, 11.5f * s, R(x + 15, row), downloads.c_str(), Rgba(224, 224, 230, fade));
     x += 15 + TextWidth(semibold, 11.5f, downloads.c_str()) + 12;
+    if (starred) { // a local favourite: there is no public star count
+        DrawStar(d, R(x + 5, row + 6), 5.5f * s, Acc(fade), true);
+        x += 18;
+    }
     const std::string version = pub::VersionText(card.latest);
     float tagLeft = w - 12;
     if (!card.tags.empty()) {
@@ -903,8 +902,8 @@ void DrawPublic(ImVec2 origin, float s, float opacity) {
             d->AddCircle(
                     P(left + 17 * U - 1.2f, top + 16 * U - 1.2f), 5 * s, Rgba(120, 120, 132, opacity), 0, 1.5f * s);
         }
-        const char* sorts[3] = {"Top Rated", "Trending", "Recent"};
-        const pub::Sort values[3] = {pub::Sort::Top, pub::Sort::Trending, pub::Sort::Recent};
+        const char* sorts[3] = {"Popular", "Trending", "Recent"};
+        const pub::Sort values[3] = {pub::Sort::Popular, pub::Sort::Trending, pub::Sort::Recent};
         float x = left + searchW + 8 * U;
         for (int i = 0; i < 3; ++i) {
             const bool active = !view.starredTab && view.sort == values[i];
@@ -1103,6 +1102,37 @@ void DrawPublic(ImVec2 origin, float s, float opacity) {
         }
     }
     float end = rows * pitch;
+    if (view.starredTab) {
+        // starred items that are gone (hidden, removed, deleted): their state, and Unstar to drop them
+        for (const pub::Missing& gone : page.StarredMissing(kind, m.snap)) {
+            const ImVec2 at(base.x, base.y + end * s);
+            const ImVec2 hi(at.x + areaW * s, at.y + 40 * s);
+            g->AddRectFilled(at, hi, Rgba(15, 15, 20, opacity), 0);
+            g->AddRect(at, hi, Rgba(26, 26, 33, opacity), 0, 0, 1 * s);
+            DrawStar(g, ImVec2(at.x + 18 * s, at.y + 20 * s), 5.5f * s, Acc(opacity), true);
+            const std::string text =
+                    "Unavailable " + pub::KindWord(kind, false) + "  \xc2\xb7  " + pub::MissingText(gone);
+            Label(g,
+                  regular,
+                  12 * s,
+                  ImVec2(at.x + 32 * s, at.y + 13 * s),
+                  Fit(regular, 12, text, areaW - 32 - 100).c_str(),
+                  Rgba(148, 148, 160, opacity));
+            if (UiButton(g,
+                         "pub-unstar-" + gone.id,
+                         "Unstar",
+                         ImVec2(at.x + (areaW - 88) * s, at.y + 8 * s),
+                         80,
+                         24,
+                         0,
+                         !m.review,
+                         opacity,
+                         s)) {
+                page.Star(kind, gone.id, false);
+            }
+            end += 48;
+        }
+    }
     if (!view.starredTab && list != nullptr && !list->nextCursor.empty() && !list->fromCache) {
         const bool more = list->loadingMore;
         const ImVec2 at(base.x + (areaW - 120 * U) / 2 * s, base.y + (end + 4) * s);
@@ -1233,10 +1263,8 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
     }
     {
         const float at = take(16, 10);
-        const bool starred = page.IsStarred(kind, card.id);
-        DrawStar(d, P(x0 + 6, at + 7), 6 * s, starred ? Acc(a) : Rgba(148, 148, 160, a), starred);
-        const std::string line = pub::FormatCount(card.stats.stars) + (card.stats.stars == 1 ? " star" : " stars")
-                                 + "  \xc2\xb7  " + pub::FormatCount(card.stats.downloads)
+        DrawDownload(d, P(x0, at + 1), 12 * s, Rgba(148, 148, 160, a));
+        const std::string line = pub::FormatCount(card.stats.downloads)
                                  + (card.stats.downloads == 1 ? " download" : " downloads");
         Label(d, regular, 12 * U * s, P(x0 + 17, at), line.c_str(), Rgba(214, 214, 222, a));
     }
@@ -1425,15 +1453,15 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
     if (mine && pending.step == pub::Step::Failed) {
         note(pending.message, Rgba(246, 160, 171, a));
     }
-    // Star (a favourite of this install, listed in the Starred tab) and Report (anonymous, read by the moderators)
+    // Star (a local favourite, listed in the Starred tab: nothing is sent) and Report (anonymous, read by the
+    // moderators)
     {
         const bool starred = page.IsStarred(kind, card.id);
-        const bool waiting = page.StarSending(); // one star at a time, on any card
         const bool reporting = m.reportFor == card.id;
         const int pressed = two("pub-star",
                                 starred ? "Starred" : "Star",
                                 starred ? 1 : 0,
-                                !waiting && !m.review,
+                                !m.review,
                                 "pub-report",
                                 reporting ? "Cancel report" : "Report",
                                 reporting ? 0 : 3,

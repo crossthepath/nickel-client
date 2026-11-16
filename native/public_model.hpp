@@ -12,8 +12,8 @@
 // Unknown fields are ignored, and unknown enum values of open lists (capabilities, categories) are dropped, as the API
 // asks of clients (api.md, section 1).
 //
-// Stars are favourites: one star per install and item, given from the in-game menu only; stats.stars counts them and
-// Top Rated sorts on it. There are no accounts: authors are display names stored per item at publish time.
+// Stars are local favourites only (public_local.hpp): the API has no star, no vote and no public star count. There
+// are no accounts: authors are display names stored per item at publish time.
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -71,14 +71,14 @@ inline bool ParseKind(std::string_view text, Kind* out) {
     return false;
 }
 
-// The three rankings of the PUBLIC pages: Trending (time-decayed stars and downloads), Top Rated (most stars),
-// Recent (newest items).
-enum class Sort : uint8_t { Trending, Top, Recent };
+// The three rankings of the PUBLIC pages, as the API names them: Popular (most downloaded), Trending (recent
+// downloads, time-decayed), Recent (newest published). The Starred tab is local (public_local.hpp), not a ranking.
+enum class Sort : uint8_t { Trending, Popular, Recent };
 
 inline const char* SortName(Sort sort) {
     switch (sort) {
-        case Sort::Top:
-            return "top";
+        case Sort::Popular:
+            return "popular";
         case Sort::Recent:
             return "recent";
         case Sort::Trending:
@@ -201,11 +201,10 @@ struct VersionRef {
     std::string changelog;       // ItemDetail.versions only
 };
 
+// ItemSummary.stats: { downloads, trending_score }. Other keys are ignored.
 struct Stats {
     uint64_t downloads = 0;
-    uint64_t favourites = 0;
-    uint64_t stars = 0;          // counted stars, one per eligible account
-    double trendingScore = 0;
+    double trendingScore = 0;    // the server's time-decayed recent downloads (Trending sorts on it)
 };
 
 struct Card {
@@ -863,10 +862,8 @@ inline bool ParseCard(const json::Value& value, Card* out, std::string* error = 
         return read.Fail("stats", "missing or not an object");
     }
     const detail::Reader stat{*stats, error, "stats."};
-    int64_t downloads = 0, favourites = 0, stars = 0;
-    if (!stat.Int("downloads", &downloads, true, 0, detail::kMaxCount)
-        || !stat.Int("favourites", &favourites, false, 0, detail::kMaxCount)
-        || !stat.Int("stars", &stars, true, 0, detail::kMaxCount)) {
+    int64_t downloads = 0;
+    if (!stat.Int("downloads", &downloads, true, 0, detail::kMaxCount)) {
         return false;
     }
     if (const json::Value* score = stats->Find("trending_score")) {
@@ -876,8 +873,6 @@ inline bool ParseCard(const json::Value& value, Card* out, std::string* error = 
         card.stats.trendingScore = score->AsDouble();
     }
     card.stats.downloads = static_cast<uint64_t>(downloads);
-    card.stats.favourites = static_cast<uint64_t>(favourites);
-    card.stats.stars = static_cast<uint64_t>(stars);
     *out = std::move(card);
     return true;
 }
