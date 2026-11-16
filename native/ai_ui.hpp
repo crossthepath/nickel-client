@@ -31,8 +31,10 @@
 #include <ctime>
 #include <deque>
 #include <list>
+#include <map>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "ai_markdown.hpp"
@@ -575,6 +577,7 @@ public:
                 other.diff = card.isScriptWrite ? LineDiff(card.currentSource, card.newSource) : std::vector<DiffLine>{};
                 other.card = std::move(card);
                 other.armedAt = now_ + kCardArmSeconds;
+                other.shownAt = now_; // new content: the full time to answer it
             } else {
                 if (refusal.content.empty()) {
                     refusal = MakeToolError(other.use.id, "refused", "Nickel refused this call.");
@@ -1298,22 +1301,30 @@ const nickel::ai::md::Layout& AiMarkdownLayout(const std::string& text, float si
         std::string text;
         float size, width;
         md::Layout layout;
+        const void* source = nullptr; // where the caller's text lived (the shared message text), for the index
     };
+    // Index: the caller's text buffer (a message's text is shared and stays at one address), its size and the metrics.
+    // A hit is checked against the kept text, so a buffer reused by another message is never mistaken for it.
+    using Key = std::tuple<const void*, size_t, float, float>;
     constexpr size_t kKept = 256;
     static std::list<Entry> kept; // most recently used first
+    static std::map<Key, std::list<Entry>::iterator> index;
     static Entry live;            // the streaming answer
     static double liveAt = -1;
     const double now = ImGui::GetTime();
     if (streaming && live.size == size && live.width == width && live.text.size() <= text.size()
-        && now - liveAt < 0.1 && text.compare(0, live.text.size(), live.text) == 0) {
-        return live.layout;
+        && (now - liveAt < 0.1 || live.text.size() == text.size()) && text.compare(0, live.text.size(), live.text) == 0) {
+        return live.layout; // also while a stalled stream sends nothing new
     }
+    const Key key{text.data(), text.size(), size, width};
     if (!streaming) {
-        for (auto it = kept.begin(); it != kept.end(); ++it) {
-            if (it->size == size && it->width == width && it->text == text) {
-                kept.splice(kept.begin(), kept, it);
+        if (auto found = index.find(key); found != index.end()) {
+            if (found->second->text == text) {
+                kept.splice(kept.begin(), kept, found->second);
                 return kept.front().layout;
             }
+            kept.erase(found->second); // that buffer now holds another text
+            index.erase(found);
         }
     }
     const float px = size * FontEmFactor;
@@ -1333,8 +1344,11 @@ const nickel::ai::md::Layout& AiMarkdownLayout(const std::string& text, float si
         liveAt = now;
         return live.layout;
     }
-    kept.push_front({text, size, width, md::LayOut(md::Parse(text), m, measure)});
+    kept.push_front({text, size, width, md::LayOut(md::Parse(text), m, measure), text.data()});
+    index[key] = kept.begin();
     if (kept.size() > kKept) {
+        const Entry& oldest = kept.back();
+        index.erase(Key{oldest.source, oldest.text.size(), oldest.size, oldest.width});
         kept.pop_back();
     }
     return kept.front().layout;
