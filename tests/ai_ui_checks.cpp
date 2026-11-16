@@ -1140,6 +1140,12 @@ float FakeWidth(const std::string& text, bool bold) {
 
 // Hostile Markdown stays linear: marks without their closing mark are searched for once, a huge word is measured
 // once per character.
+void MarkdownFontSafe() {
+    Check(md::FontSafe("client â server, a â¥ b â") == "client -> server, a >= b ok",
+          "font-safe: arrows, comparisons and check marks the fonts lack are written with plain characters");
+    Check(md::FontSafe("cafÃ© Ã  cÃ´tÃ©") == "cafÃ© Ã  cÃ´tÃ©", "font-safe: accents are kept");
+}
+
 void MarkdownCost() {
     std::string stars, brackets;
     for (int i = 0; i < 20000; ++i) {
@@ -1239,6 +1245,7 @@ int main() {
     MarkdownBlocks();
     MarkdownLayout();
     MarkdownCost();
+    MarkdownFontSafe();
     CardsDescribedAgain();
     BackgroundAndNotices();
     std::printf("%s (%d failed)\n", failed == 0 ? "all ai ui checks passed" : "ai ui checks failed", failed);

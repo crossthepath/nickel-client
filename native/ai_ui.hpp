@@ -1428,11 +1428,11 @@ const nickel::ai::md::Layout& AiMarkdownLayout(const std::string& text, float si
     m.indentStep = 14 * s;
     m.markerW = 16 * s;
     if (streaming) {
-        live = {text, size, width, md::LayOut(md::Parse(text), m, measure)};
+        live = {text, size, width, md::LayOut(md::Parse(md::FontSafe(text)), m, measure)};
         liveAt = now;
         return live.layout;
     }
-    kept.push_front({text, size, width, md::LayOut(md::Parse(text), m, measure), text.data()});
+    kept.push_front({text, size, width, md::LayOut(md::Parse(md::FontSafe(text)), m, measure), text.data()});
     index[key] = kept.begin();
     if (kept.size() > kKept) {
         const Entry& oldest = kept.back();
