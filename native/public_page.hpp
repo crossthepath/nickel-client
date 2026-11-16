@@ -42,7 +42,7 @@ namespace nickel::pub {
 
 // The Nickel version items must support (ListQuery::compat and the Install check). Kept equal to the launcher's
 // <Version> in desktop/Nickel.Desktop.csproj by tests/public_page_checks.cpp.
-constexpr const char* kRunningNickel = "1.1.0-beta";
+constexpr const char* kRunningNickel = "1.2.0-beta";
 
 // The requests the page makes: PublicClient in the game (ClientRequests), a recorder in tests.
 class PageRequests {
