@@ -12,7 +12,7 @@
 // clear warning that publishing is final, then Publish, or Publish update with a changelog for an item this install
 // published. Nothing here can delete, unlist or hide a published item.
 //
-// PUBLIC is off by default (Settings > Connection > Online community (PUBLIC)). While it is off the pages show how
+// PUBLIC is on by default (Settings > Connection > Online community (PUBLIC)). While it is off the pages show how
 // to turn it on, and nothing is created, read or requested: the PublicClient and its worker thread only exist once
 // the player turned PUBLIC on.
 //

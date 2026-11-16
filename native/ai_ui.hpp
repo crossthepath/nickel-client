@@ -10,7 +10,7 @@
 //   (it reuses Label, Hit, Animate and the theme).
 //
 // Rules the page enforces (docs/design/nickel-ai/permissions-and-safety.md, protocol in ai_types.hpp):
-// - Nickel AI is off by default (Settings > Connection > Nickel AI (assistant)). While it is off nothing is created:
+// - Nickel AI is on by default (Settings > Connection > Nickel AI (assistant)). While it is off nothing is created:
 //   no client, no worker, no install key, no request, and no bubble. While it is on, the client exists only from the
 //   first time the player opens the chat window.
 // - Read tools run at once; every action tool (settings, modules, scripts) waits for the player's Allow on a card drawn
@@ -1167,15 +1167,16 @@ inline ServicesFactory& Factory() {
 #if defined(NICKEL_AI_UI_DRAW) && !defined(NICKEL_AI_UI_DRAWN)
 #define NICKEL_AI_UI_DRAWN
 
-// Settings > Connection > Nickel AI (assistant). Off by default; kept in root\ai\settings.ini, not in the preferences
+// Settings > Connection > Nickel AI (assistant). On by default (a player who turns it off keeps enabled=0); kept in
+// root\ai\settings.ini, not in the preferences
 // ini, so loading or sharing a config cannot turn it on.
 MenuOption aiAssistantOption = {"nickel-ai",
                                 "Nickel AI (assistant)",
                                 "Answers questions about Nickel and can change modules or write scripts after you "
                                 "allow each change. Sends your messages to nickelclient.com. While off, nothing is "
                                 "sent.",
-                                false,
-                                false};
+                                true,
+                                true};
 
 MenuOption& AiOption() {
     return aiAssistantOption;
@@ -1253,7 +1254,7 @@ void AiTick() {
     }
     if (!m.settingRead) {
         m.settingRead = true;
-        AiOption().value = GetPrivateProfileIntW(L"ai", L"enabled", 0, AiSettingPath().c_str()) == 1;
+        AiOption().value = GetPrivateProfileIntW(L"ai", L"enabled", 1, AiSettingPath().c_str()) == 1;
         wchar_t place[64] = {};
         GetPrivateProfileStringW(L"ai", L"bubble", L"", place, 64, AiSettingPath().c_str());
         m.placed = nickel::ai::ReadBubblePlace(Utf8(place), &m.placeX, &m.placeY);

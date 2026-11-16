@@ -533,13 +533,14 @@ inline std::vector<std::string> SourceLines(std::string_view text, size_t maxLin
 
 // The "Online community (PUBLIC)" setting lives in its own file, root\public\settings.ini, not in the preferences
 // ini: configs are copies of that ini (Save, Import, Load), so a config loaded or shared could otherwise turn PUBLIC
-// on or off. Only the Settings toggle and the page's Turn on button change it.
+// on or off. Only the Settings toggle and the page's Turn on button change it. On by default: without the file (a new
+// install, or a player who never changed it) PUBLIC is on; a player who turned it off keeps community=0.
 inline std::wstring CommunitySettingPath(const std::wstring& root) {
     return root + L"\\public\\settings.ini";
 }
 
 inline bool ReadCommunitySetting(const std::wstring& root) {
-    return GetPrivateProfileIntW(L"public", L"community", 0, CommunitySettingPath(root).c_str()) == 1;
+    return GetPrivateProfileIntW(L"public", L"community", 1, CommunitySettingPath(root).c_str()) == 1;
 }
 
 // WritePrivateProfileStringW keeps a file in the ANSI code page unless it starts with a UTF-16LE BOM, which would
