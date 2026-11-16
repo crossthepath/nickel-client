@@ -55,7 +55,9 @@
         "native/script_host.hpp",
         "native/module_registry.hpp",
         "native/script_canvas.hpp",
-        "native/script_draw.hpp"
+        "native/script_draw.hpp",
+        "native/script_compile.hpp",
+        "native/script_files.hpp"
       ],
       "identifiers": [
         "modules",
@@ -133,7 +135,13 @@
         "ScanScripts",
         "ScriptLoad",
         "ScriptUnload",
-        "ScriptNamed"
+        "ScriptNamed",
+        "ScriptHeld",
+        "ScriptHeldNames",
+        "SaveHeldList",
+        "DecideScan",
+        "scriptFiles",
+        "ScriptFilesStore"
       ],
       "baseline": {
         "scripts": 0,
@@ -147,7 +155,13 @@
         "ScanScripts": 0,
         "ScriptLoad": 0,
         "ScriptUnload": 0,
-        "ScriptNamed": 0
+        "ScriptNamed": 0,
+        "ScriptHeld": 0,
+        "ScriptHeldNames": 0,
+        "SaveHeldList": 0,
+        "DecideScan": 0,
+        "scriptFiles": 0,
+        "ScriptFilesStore": 0
       }
     }
   ]

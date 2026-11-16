@@ -28,23 +28,25 @@ rule on a test double.
 
 | Call | Effect |
 | --- | --- |
-| `Start(name)` | Loads the file again and runs it: the Start and Reload buttons. A script that was stopped, stopped after errors or failed to load runs again. Its modules keep their saved state and key. |
-| `Stop(name)` | Turns the script's modules off and unloads it. It stays stopped until it is started again or its file is saved. |
-| `ReadSource(name, source)` | Reads the file as it is on disk. |
-| `WriteSource(name, source)` | Creates or replaces `<folder>\<name>.luau`. The source is first written to a temporary file of its own (`.<name>.<thread>.<count>.write`), which the folder scan ignores and no other call uses, then moved over the target, so the engine never loads a half-written file. A leading UTF-8 byte order mark is dropped, because Luau does not load a file that starts with one. The engine picks the new file up at its next folder scan, within about a second, exactly as when the user saves a file. Names are checked with `ValidScriptName`: 1 to 64 bytes of well-formed UTF-8, no reserved character, no Windows device name (including `COM` and `LPT` followed by a superscript 1, 2 or 3). A malformed name would turn into U+FFFD in the file name, so the script could not be found by its name. |
+| `Start(name)` | Loads the file again and runs it: the Start and Reload buttons. A script that was stopped, stopped after errors or failed to load runs again. Its modules keep their saved state and key. A held script is released first. |
+| `Stop(name)` | Turns the script's modules off and unloads it. It stays stopped until it is started again or its file is saved. Not persisted. |
+| `ReadSource(name, source)` | Reads the file as it is on disk, with its revision (SHA-256 of its bytes). |
+| `Compile(source)` | Luau compile errors with their line, without a VM (part 4a). |
+| `WriteSource(name, source, expectedSha256)`, `RestoreBackup`, `Remove`, `Hold`, `HasBackup` | The write contract and held scripts (part 4b): see `script-management-next.md`. The file is written to a temporary file of its own (`.<name>.<thread>.<count>.write`), which the folder scan ignores, then moved over the target. A leading UTF-8 byte order mark is dropped, because Luau does not load a file that starts with one. A file written through the library is held: it does not run until `Start`. New names are checked with `ValidScriptName`: 1 to 64 bytes of well-formed UTF-8, no reserved character, no Windows device name (including `COM` and `LPT` followed by a superscript 1, 2 or 3). |
 | `Folder()` | The scripts folder: `%APPDATA%\Nickel\scripts`. |
 
 Threads:
 
-- `List`, `Folder`, `ReadSource` and `WriteSource` may be called from any thread. The engine takes `scriptGuard` where
-  it reads its script list, and runs no Lua for these calls.
+- Every call except `Start` and `Stop` may be made from any thread. The engine takes `scriptGuard` where it reads its
+  script list or changes the held list, and the file calls take `scriptFiles`; no Lua runs for these calls.
 - `Start` and `Stop` run the script's Lua (its main chunk, and its modules' enable and disable handlers), and they
   change the menu's modules. Call them on the render thread only, and never from inside a script callback. A
   component that works on another thread, such as an assistant waiting for a model, writes the file with
-  `WriteSource` and lets the folder scan reload it, or hands `Start` and `Stop` over to the render thread.
+  `WriteSource` (the script is then held) and hands `Start` and `Stop` over to the render thread.
 
 The engine's implementation is `EngineScriptLibrary` in `script_engine.hpp`, and `ScriptsLibrary()` in
-`script_engine_api.hpp` hands it out.
+`script_engine_api.hpp` hands it out. Its file half (revisions, writes, backups, the held list) is in
+`script_files.hpp`, tested on a temporary folder by `tests/script_files_checks.cpp`.
 
 Helpers shared by every caller:
 
@@ -53,6 +55,7 @@ Helpers shared by every caller:
 - `MatchingScripts` is the tab's search, which ignores case.
 - `ToggleScript` is the row button: it stops a running script and starts any other.
 - `WellFormedUtf8`, `ValidScriptName` and `WithoutUtf8Bom` check and clean what `WriteSource` receives.
+  `HeldListName`, looser, is what the held list keeps: any name a script file can have.
 
 ## The Scripting tab
 
@@ -76,13 +79,14 @@ loading functions (`ScriptFolder`, `StartScript`, `StopScript`, `ScanScripts`, `
 
 ## What PUBLIC and Nickel AI will call
 
-- **PUBLIC, installing a community script**: `ValidScriptName(name)`, then `WriteSource(name, source)`. After about a
-  second, `List()` shows whether it runs, plus any errors. Updating the script is the same `WriteSource` call.
-  Uninstalling needs a `Remove(name)` command, which does not exist yet. It should delete only files inside
-  `Folder()`, and it is left until PUBLIC needs it.
-- **Nickel AI, writing or fixing a script**: `ReadSource` for the current code, `List()` for its `errors` and
-  `state`, `WriteSource` for the corrected code, then `List()` again to check the result. `Start` and `Stop` act as
-  the buttons do. The script's modules are changed through `ModuleRegistry`, as for any other module.
+- **PUBLIC, installing a community script**: `WriteSource(name, source, "")`; the script is held, and `List()` shows
+  its compile errors within about a second. An update passes the installed revision (a `Conflict` means the player
+  edited it); uninstalling is `Remove(name, revision)`; revocation is `Hold(name)`.
+- **Nickel AI, writing or fixing a script**: `ReadSource` for the current code and revision, `Compile` to validate,
+  `WriteSource` with that revision for the corrected code, then `List()` to check the result. Saving never runs the
+  script; `Start` and `Stop` act as the buttons do, on the render thread. The script's modules are changed through
+  `ModuleRegistry`, as for any other module.
+- Details, thread rules and risks: `script-management-next.md`.
 - Neither caller needs the menu. In the game they get the library from `ScriptsLibrary()`. In tests they implement
   `ScriptLibrary` with a fake.
 

@@ -24,6 +24,8 @@
 #include "script_host.hpp"
 #include "script_modules.hpp"
 #include "script_library.hpp"
+#include "script_compile.hpp"
+#include "script_files.hpp"
 #include "imgui_script_canvas.hpp"
 #include "script_draw.hpp"
 #include "game_read.hpp"
