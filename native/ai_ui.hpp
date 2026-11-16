@@ -22,6 +22,7 @@
 #define NICKEL_AI_UI_LOGIC
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
@@ -176,6 +177,13 @@ inline std::vector<DiffLine> LineDiff(const std::string& before, const std::stri
     return out;
 }
 
+// Bytes of a tool result's content once written as a JSON string in the POST body, which is what the service compares
+// with kMaxToolResultBytes (quotes, backslashes and control characters count as their escapes). Never less than the
+// service's count: invalid UTF-8 becomes a 6-byte \ufffd here and 3 bytes there.
+inline size_t ResultWireSize(const std::string& content) {
+    return json::Serialize(json::Value::MakeString(content)).size();
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Fixed texts (the panel never shows the model's text as a status, only as the assistant's message)
 
@@ -279,6 +287,10 @@ inline std::string ToolActivity(const std::string& tool) {
 // ---------------------------------------------------------------------------------------------------------------
 // The page
 
+// A card ignores Allow / Decline for this long after it appears or moves on screen, so the second click of a
+// double-click (or a click meant for the card that just went away) cannot answer a card the player has not seen.
+constexpr double kCardArmSeconds = 0.4;
+
 // One tool_use of the current step and what became of it.
 struct PendingCall {
     ToolUse use;
@@ -287,7 +299,12 @@ struct PendingCall {
     bool decided = false; // `result` is final
     ToolResult result;
     ConfirmCard card;
+    std::vector<DiffLine> diff; // write_script: computed once when the card opens, drawn every frame
     double shownAt = 0;
+    double armedAt = 0;   // Allow / Decline count from this time on
+    bool placed = false;  // PlaceCard was called at least once
+    float placedX = 0;
+    float placedY = 0;
 };
 
 // A line in the chat about a confirmed or refused change, placed after the message it followed.
@@ -325,6 +342,7 @@ public:
         Refresh();
         if (snap_.state != TurnState::AwaitingToolResults) {
             calls_.clear(); // cancelled or failed: nothing left to answer
+            sendFailed_ = false;
             return;
         }
         if (snap_.toolRound != handledRound_) {
@@ -337,6 +355,8 @@ public:
                 calls_.push_back(std::move(call));
             }
             sent_ = false;
+            sendFailed_ = false;
+            retrySendAt_ = 0;
         }
         if (!visible || sent_) {
             return;
@@ -361,13 +381,20 @@ public:
                     if (card.title.empty()) {
                         card.title = ToolActivity(call.use.name);
                     }
+                    if (card.isScriptWrite) {
+                        call.diff = LineDiff(card.currentSource, card.newSource);
+                    }
                     call.card = std::move(card);
                     call.carded = true;
                     call.shownAt = now;
+                    call.armedAt = now + kCardArmSeconds;
                 } else {
-                    refusal.toolUseId = call.use.id;
+                    // checked like any other result: an empty or oversized refusal must not spoil the whole post
+                    if (refusal.content.empty()) {
+                        refusal = MakeToolError(call.use.id, "refused", "Nickel refused this call.");
+                    }
                     refusal.isError = true;
-                    call.result = refusal;
+                    call.result = Checked(call.use.id, std::move(refusal));
                     call.decided = true;
                 }
             } else if (now - call.shownAt >= kConfirmTimeoutSeconds) {
@@ -377,7 +404,9 @@ public:
                 Note(ChatNote::Kind::Declined, "Not answered: " + call.card.title);
             }
         }
-        FlushIfDone();
+        if (!sent_ && now >= retrySendAt_) {
+            FlushIfDone(); // also retries a post the client refused
+        }
     }
 
     // Why the draft cannot be sent now; empty when it can.
@@ -431,6 +460,7 @@ public:
         }
         client_->Cancel();
         calls_.clear();
+        sendFailed_ = false;
         Refresh();
     }
 
@@ -442,10 +472,30 @@ public:
         calls_.clear();
         notes_.clear();
         handledRound_ = 0;
+        sendFailed_ = false;
         Refresh();
     }
 
-    // The player's answer to a card. False when there is no open card with this id.
+    // Where the panel drew a card this frame (screen pixels). A card that moved arms again for kCardArmSeconds.
+    void PlaceCard(const std::string& toolUseId, float x, float y) {
+        for (auto& call : calls_) {
+            if (call.use.id != toolUseId || !call.carded || call.decided) {
+                continue;
+            }
+            const bool moved = std::abs(call.placedX - x) > 0.5f || std::abs(call.placedY - y) > 0.5f;
+            if (!call.placed || moved) {
+                call.armedAt = std::max(call.armedAt, now_ + kCardArmSeconds);
+            }
+            call.placed = true;
+            call.placedX = x;
+            call.placedY = y;
+        }
+    }
+
+    // False while a card is still arming: its buttons do nothing yet.
+    bool Armed(const PendingCall& call) const { return now_ >= call.armedAt; }
+
+    // The player's answer to a card. False when there is no open, armed card with this id.
     bool Allow(const std::string& toolUseId) {
         PendingCall* call = OpenCall(toolUseId);
         if (call == nullptr) {
@@ -513,6 +563,9 @@ public:
                            ? Activity::Writing
                            : Activity::Thinking;
             case TurnState::AwaitingToolResults:
+                if (sendFailed_) {
+                    return Activity::Error;
+                }
                 return OpenCards().empty() ? Activity::UsingTools : Activity::WaitingForPlayer;
             default:
                 return Activity::Idle;
@@ -565,6 +618,9 @@ public:
         if (snap_.state == TurnState::Idle) {
             return StopText(snap_.lastStop);
         }
+        if (snap_.state == TurnState::AwaitingToolResults && sendFailed_) {
+            return "Nickel AI could not send the results of its tools. Retrying; press Stop to give up.";
+        }
         return "";
     }
 
@@ -605,17 +661,18 @@ private:
             return nullptr;
         }
         for (auto& call : calls_) {
-            if (call.use.id == id && call.carded && !call.decided) {
+            if (call.use.id == id && call.carded && !call.decided && Armed(call)) {
                 return &call;
             }
         }
         return nullptr;
     }
 
-    // A result above the protocol's 16 KB is replaced by an error rather than cut into invalid JSON.
+    // A result above the protocol's 16 KB is replaced by an error rather than cut into invalid JSON. The size is the
+    // one the service measures: the content as a JSON string (quotes and escapes included).
     static ToolResult Checked(const std::string& id, ToolResult result) {
         result.toolUseId = id;
-        if (result.content.size() > kMaxToolResultBytes) {
+        if (ResultWireSize(result.content) > kMaxToolResultBytes) {
             return MakeToolError(id, "result_too_large", "The result was larger than 16 KB.");
         }
         if (result.content.empty()) {
@@ -643,8 +700,11 @@ private:
         for (const auto& call : calls_) {
             results.push_back(call.result);
         }
-        sent_ = true;
-        client_->SendToolResults(results);
+        // A refused post (the client's state moved on, its worker is gone) is kept and tried again each second;
+        // the page says so instead of waiting silently.
+        sent_ = client_->SendToolResults(results);
+        sendFailed_ = !sent_;
+        retrySendAt_ = sent_ ? 0 : now_ + 1;
         Refresh();
     }
 
@@ -656,6 +716,8 @@ private:
     uint64_t handledRound_ = 0;
     uint64_t errorRevision_ = 0;
     bool sent_ = false;
+    bool sendFailed_ = false;
+    double retrySendAt_ = 0;
     bool afterTools_ = false;
     size_t markCount_ = 0;
     size_t markText_ = 0;
@@ -822,10 +884,12 @@ void AiArrow(ImDrawList* d, ImVec2 at, float s, ImU32 c) {
     d->AddLine(ImVec2(at.x + 6 * s, at.y + 3.5f * s), ImVec2(at.x + 10 * s, at.y), c, 1.4f * s);
 }
 
-// The source diff of a script write in a small scrolling box; returns its height in pixels.
-float DrawAiDiff(const nickel::ai::ConfirmCard& card, const std::string& id, ImVec2 at, float width, float s, float a) {
+// The source diff of a script write in a small scrolling box (computed once by the page when the card opened);
+// returns its height in pixels.
+float DrawAiDiff(const nickel::ai::PendingCall& call, ImVec2 at, float width, float s, float a) {
     namespace ai = nickel::ai;
-    const auto diff = ai::LineDiff(card.currentSource, card.newSource);
+    const std::vector<ai::DiffLine>& diff = call.diff;
+    const std::string& id = call.use.id;
     const size_t shown = std::min<size_t>(diff.size(), 400);
     const float lineH = 15 * s;
     const float contentH = shown * lineH + 8 * s;
@@ -899,7 +963,7 @@ float DrawAiCard(ImDrawList* d, nickel::ai::ChatPage& page, const nickel::ai::Pe
         const std::string what = (card.newScript ? "New script " : "Replaces script ") + card.scriptName
                                  + ". It is saved held: it will not run until you start it.";
         y += AiText(d, regular, 12.5f * s, ImVec2(x0, y), what, soft, inner) + 6 * s;
-        y += DrawAiDiff(card, call.use.id, ImVec2(x0, y), inner, s, a);
+        y += DrawAiDiff(call, ImVec2(x0, y), inner, s, a);
         if (!card.compileErrors.empty()) {
             std::string errors = "Does not compile yet:";
             for (size_t i = 0; i < card.compileErrors.size() && i < 3; ++i) {
@@ -920,11 +984,14 @@ float DrawAiCard(ImDrawList* d, nickel::ai::ChatPage& page, const nickel::ai::Pe
     std::snprintf(timer, sizeof(timer), "Declines itself in %d:%02d", left / 60, left % 60);
     Label(d, regular, 12 * s, ImVec2(x0, y + (bh * s - 14 * s) / 2), timer, Rgba(120, 120, 132, a));
     const std::string id = call.use.id;
+    // a card that just appeared or moved (the one above it was answered, the chat scrolled) is not clickable yet
+    page.PlaceCard(id, p.x, p.y);
+    const bool armed = page.Armed(call);
     const ImVec2 allowAt(p.x + w - pad - bw * s, y);
     const ImVec2 declineAt(allowAt.x - bw * s - 8 * s, y);
     const char* yes = card.isScriptWrite ? "Save" : "Allow";
-    const bool allow = UiButton(d, "ai-allow" + id, yes, allowAt, bw, bh, 1, true, a, s);
-    const bool decline = UiButton(d, "ai-decline" + id, "Decline", declineAt, bw, bh, 0, true, a, s);
+    const bool allow = UiButton(d, "ai-allow" + id, yes, allowAt, bw, bh, 1, armed, a, s);
+    const bool decline = UiButton(d, "ai-decline" + id, "Decline", declineAt, bw, bh, 0, armed, a, s);
     y += bh * s + pad;
     d->ChannelsSetCurrent(0);
     d->AddRectFilled(p, ImVec2(p.x + w, y), Rgba(20, 20, 27, a));

@@ -39,6 +39,10 @@ public:
     }
 
     bool SendToolResults(const std::vector<ToolResult>& results) override {
+        ++attempts;
+        if (refusePosts) {
+            return false; // the state does not move: the page must not believe it was sent
+        }
         posts.push_back(results);
         snap.state = TurnState::Sending;
         snap.toolUses.clear();
@@ -105,6 +109,8 @@ public:
     std::vector<std::string> started;
     std::vector<std::vector<ToolResult>> posts;
     int cancels = 0;
+    int attempts = 0;
+    bool refusePosts = false;
 
 private:
     void Bump() { ++snap.revision; }
@@ -117,7 +123,14 @@ public:
         ++describes;
         const std::string module = use.input["module_id"].AsString();
         if ((use.name == "set_setting" || use.name == "set_module_enabled") && module != "kill_aura") {
-            *refusal = MakeToolError(use.id, "not_found", "No module " + module + ".");
+            if (emptyRefusal) {
+                refusal->content.clear(); // a runner that only says no
+            } else if (hugeRefusal) {
+                const std::string message(kMaxToolResultBytes, 'm');
+                refusal->content = "{\"error\":\"not_found\",\"message\":\"" + message + "\"}";
+            } else {
+                *refusal = MakeToolError(use.id, "not_found", "No module " + module + ".");
+            }
             return false;
         }
         if (use.name == "set_setting") {
@@ -144,6 +157,13 @@ public:
         ToolResult result;
         if (use.name == "get_module" && big) {
             result.content = "{\"x\":\"" + std::string(kMaxToolResultBytes, 'a') + "\"}";
+        } else if (use.name == "read_script" && quoted) {
+            // about 10 KB of JSON text, but each \" doubles once it is a JSON string in the POST body
+            result.content = "{\"source\":\"";
+            for (int i = 0; i < 5000; ++i) {
+                result.content += "\\\"";
+            }
+            result.content += "\"}";
         } else if (use.name == "set_module_enabled" && failRun) {
             return MakeToolError(use.id, "failed", "could not");
         } else {
@@ -154,7 +174,10 @@ public:
 
     int describes = 0;
     bool big = false;
+    bool quoted = false;
     bool failRun = false;
+    bool emptyRefusal = false;
+    bool hugeRefusal = false;
     std::vector<std::string> ran;
 };
 
@@ -345,6 +368,7 @@ void Confirmations() {
           "the activity says the player must answer");
     Check(client.posts.empty(), "no result is posted while a card is open");
     Check(!page.Allow("a3") && !page.Allow("nope"), "only an open card can be allowed");
+    page.Tick(2 + kCardArmSeconds, kNoon, true);
     Check(page.Decline("a1") && client.posts.empty(), "declining one card still waits for the other");
     Check(page.Allow("a2"), "allow the other");
     Check(tools.ran.size() == 2 && tools.ran[1] == "set_module_enabled", "only the allowed action ran");
@@ -368,6 +392,7 @@ void Confirmations() {
     tools.failRun = true;
     client.Tools({Use("c1", "set_module_enabled", "{\"module_id\":\"kill_aura\",\"enabled\":true}")});
     page.Tick(4, kNoon, true);
+    page.Tick(5, kNoon, true);
     page.Allow("c1");
     Check(client.posts.size() == 3 && client.posts[2][0].isError && page.Notes().back().kind == ChatNote::Kind::Failed,
           "a failed action is reported to the model and in the chat");
@@ -404,6 +429,10 @@ void ScriptCard() {
     const auto diff = LineDiff(cards[0]->card.currentSource, cards[0]->card.newSource);
     Check(diff.size() == 3 && diff[0].kind == DiffLine::Kind::Removed && diff[1].kind == DiffLine::Kind::Added,
           "its diff compares the file with the new source");
+    Check(cards[0]->diff.size() == diff.size() && cards[0]->diff[0].kind == DiffLine::Kind::Removed
+              && cards[0]->diff[1].text == "local a = 2",
+          "the diff is computed once when the card opens, not by the drawing");
+    page.Tick(2, kNoon, true);
     page.Allow("w1");
     Check(page.Notes().back().text == "Saved (held): Write script auto_gg", "a saved script is noted as held");
 }
@@ -445,6 +474,109 @@ void CancelAndNewChat() {
     Check(page.CurrentActivity() == Activity::Writing, "then writing");
 }
 
+// The second click of a double-click lands on the card that moved under the cursor: it must not answer it.
+void CardArming() {
+    FakeClient client;
+    FakeTools tools;
+    ChatPage page(&client, &tools);
+    page.Tick(0, kNoon, true);
+    page.Send("x");
+    client.Tools({Use("d1", "set_setting", "{\"module_id\":\"kill_aura\",\"setting\":\"range\",\"value\":4.5}"),
+                  Use("d2", "set_module_enabled", "{\"module_id\":\"kill_aura\",\"enabled\":true}")});
+    page.Tick(1, kNoon, true);
+    page.PlaceCard("d1", 0, 100);
+    page.PlaceCard("d2", 0, 300);
+    Check(!page.Armed(*page.OpenCards()[0]) && !page.Allow("d1") && !page.Decline("d1") && tools.ran.empty(),
+          "a card that just appeared ignores clicks");
+    page.Tick(1 + kCardArmSeconds - 0.05, kNoon, true);
+    Check(!page.Allow("d1") && tools.ran.empty(), "still arming just before the delay");
+    page.Tick(1 + kCardArmSeconds, kNoon, true);
+    page.PlaceCard("d1", 0, 100);
+    page.PlaceCard("d2", 0, 300);
+    Check(page.Armed(*page.OpenCards()[0]), "a card that stayed in place arms after the delay");
+    Check(page.Allow("d1") && tools.ran.size() == 1, "then Allow works");
+    // next frame: card 2 moved up to card 1's place; the double-click's second click arrives 0.2 s later
+    page.Tick(1.6, kNoon, true);
+    page.PlaceCard("d2", 0, 100);
+    page.Tick(1.8, kNoon, true);
+    page.PlaceCard("d2", 0, 100);
+    Check(!page.Allow("d2") && !page.Decline("d2") && tools.ran.size() == 1 && client.posts.empty(),
+          "the card that moved under the cursor ignores the second click");
+    page.Tick(1.6 + kCardArmSeconds, kNoon, true);
+    page.PlaceCard("d2", 0, 100);
+    Check(page.Allow("d2") && tools.ran.size() == 2 && client.posts.size() == 1,
+          "it answers once it has stayed in place for the delay");
+}
+
+// The service measures a result as a JSON string: quotes and escapes count twice or more.
+void ResultSizeAsTheServiceCounts() {
+    Check(ResultWireSize("a\"b") == 6 && ResultWireSize("{}") == 4 && ResultWireSize("x\ny") == 6,
+          "the wire size counts the quotes and escapes");
+    Check(ResultWireSize(std::string(kMaxToolResultBytes - 2, 'a')) == kMaxToolResultBytes,
+          "16 KB of plain text including its two quotes is the limit");
+    FakeClient client;
+    FakeTools tools;
+    tools.quoted = true;
+    ChatPage page(&client, &tools);
+    page.Tick(0, kNoon, true);
+    page.Send("read it");
+    client.Tools({Use("q1", "read_script", "{\"name\":\"auto_gg\"}"), Use("q2", "list_scripts", "{}")});
+    page.Tick(1, kNoon, true);
+    Check(client.posts.size() == 1 && client.posts[0][0].isError
+              && ErrorCode(client.posts[0][0]) == "result_too_large" && !client.posts[0][1].isError,
+          "10 KB of raw text that escapes past 16 KB becomes result_too_large, the other result still goes");
+    for (const auto& result : client.posts[0]) {
+        Check(ResultWireSize(result.content) <= kMaxToolResultBytes, "every posted result fits the service's limit");
+    }
+}
+
+void RefusedPost() {
+    FakeClient client;
+    FakeTools tools;
+    ChatPage page(&client, &tools);
+    page.Tick(0, kNoon, true);
+    page.Send("x");
+    client.refusePosts = true;
+    client.Tools({Use("p1", "list_scripts", "{}")});
+    page.Tick(1, kNoon, true);
+    Check(client.attempts == 1 && client.posts.empty() && page.CurrentActivity() == Activity::Error
+              && !page.ErrorLine().empty(),
+          "a post the client refused is shown as an error, not as tools still running");
+    page.Tick(1.5, kNoon, true);
+    Check(client.attempts == 1 && tools.ran.size() == 1,
+          "it is not retried every frame, and the tool does not run again");
+    client.refusePosts = false;
+    page.Tick(2, kNoon, true);
+    Check(client.attempts == 2 && client.posts.size() == 1 && client.posts[0][0].toolUseId == "p1"
+              && page.ErrorLine().empty(),
+          "it is retried after a second with the same results");
+    page.Tick(3, kNoon, true);
+    Check(client.attempts == 2, "and sent only once");
+}
+
+void RefusalIsChecked() {
+    FakeClient client;
+    FakeTools tools;
+    tools.emptyRefusal = true;
+    ChatPage page(&client, &tools);
+    page.Tick(0, kNoon, true);
+    page.Send("x");
+    client.Tools({Use("e1", "set_module_enabled", "{\"module_id\":\"ghost\",\"enabled\":true}"),
+                  Use("e2", "list_scripts", "{}")});
+    page.Tick(1, kNoon, true);
+    Check(client.posts.size() == 1 && client.posts[0][0].isError && ErrorCode(client.posts[0][0]) == "refused"
+              && client.posts[0][0].toolUseId == "e1",
+          "an empty refusal becomes a JSON \"refused\" error");
+    tools.emptyRefusal = false;
+    tools.hugeRefusal = true;
+    client.Tools({Use("h1", "set_setting", "{\"module_id\":\"ghost\",\"setting\":\"x\",\"value\":1}"),
+                  Use("h2", "list_scripts", "{}")});
+    page.Tick(2, kNoon, true);
+    Check(client.posts.size() == 2 && client.posts[1][0].isError && ErrorCode(client.posts[1][0]) == "result_too_large"
+              && !client.posts[1][1].isError,
+          "an oversized refusal is capped like any result and does not spoil the step");
+}
+
 } // namespace
 
 int main() {
@@ -458,6 +590,10 @@ int main() {
     Timeout();
     ScriptCard();
     CancelAndNewChat();
+    CardArming();
+    ResultSizeAsTheServiceCounts();
+    RefusedPost();
+    RefusalIsChecked();
     std::printf("%s (%d failed)\n", failed == 0 ? "all ai ui checks passed" : "ai ui checks failed", failed);
     return failed == 0 ? 0 : 1;
 }
