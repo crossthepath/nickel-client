@@ -1295,6 +1295,11 @@ struct AiMenu {
     std::string inputBefore;                   // the input at the last edit, to move the breaks with the edit
     std::vector<int> softBreaks;               // byte offsets of those breaks (a space when the message is sent)
     float inputWrap = 0;                       // the field's text width in pixels
+    // The copy menu of a message (right click on a bubble): its text and where it opened.
+    bool copyOpen = false;
+    std::string copyText;
+    ImVec2 copyAt;
+    double copyOpenedAt = 0;
 };
 
 // Never destroyed, like PUBLIC's client: the overlay has no unload path, and a destructor at process exit would join the
@@ -2052,6 +2057,13 @@ void DrawAiWindow(const nickel::ai::BubbleLayout& place, float s, float opacity,
                 const float x = player ? x0 + cw - lane - bw : x0 + lane;
                 const ImU32 fill = player ? AccDeep(opacity) : Rgba(28, 28, 36, opacity);
                 d->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + h), fill, round);
+                if (ImGui::IsMouseHoveringRect(ImVec2(x, y), ImVec2(x + bw, y + h))
+                    && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                    m.copyOpen = true; // the copy menu (AiDrawCopyMenu)
+                    m.copyText = text;
+                    m.copyAt = ImGui::GetIO().MousePos;
+                    m.copyOpenedAt = ImGui::GetTime();
+                }
                 const ImU32 ink = player ? Rgba(255, 255, 255, opacity) : Rgba(228, 228, 235, opacity);
                 if (laid) {
                     DrawAiMarkdown(d, *laid, ImVec2(x + padX, y + (h - box.y) / 2), textSize, bubbleMax - 2 * padX, ink,
@@ -2166,6 +2178,62 @@ void AiDrawToast(float menuOpacity) {
     Label(d, regular, 12.f * s, ImVec2(lo.x + 34 * s, lo.y + 27 * s), hint, Rgba(148, 148, 160, a));
 }
 
+// The code blocks of a message (between ``` fences), joined; empty when there is none.
+std::string AiCodeBlocks(const std::string& text) {
+    std::string out;
+    size_t at = 0;
+    while ((at = text.find("```", at)) != std::string::npos) {
+        size_t start = text.find('\n', at);
+        if (start == std::string::npos) break;
+        const size_t end = text.find("```", start + 1);
+        if (end == std::string::npos) break;
+        if (!out.empty()) out += "\n";
+        out += text.substr(start + 1, end - start - 1);
+        at = end + 3;
+    }
+    return out;
+}
+
+// The copy menu of a message, drawn over everything: Copy message, Copy code (when the message has code). A click
+// outside or Escape closes it.
+void AiDrawCopyMenu(float s) {
+    AiMenu& m = Ai();
+    if (!m.copyOpen) {
+        return;
+    }
+    const std::string code = AiCodeBlocks(m.copyText);
+    const char* labels[2] = {"Copy message", "Copy code"};
+    const int count = code.empty() ? 1 : 2;
+    const float rowH = 30 * s, w = 150 * s, pad = 5 * s;
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+    ImVec2 lo = m.copyAt;
+    lo.x = std::min(lo.x, screen.x - w - 4 * s);
+    lo.y = std::min(lo.y, screen.y - (rowH * count + 2 * pad) - 4 * s);
+    const ImVec2 hi(lo.x + w, lo.y + rowH * count + 2 * pad);
+    ImDrawList* d = ImGui::GetForegroundDrawList();
+    d->AddRectFilled(ImVec2(lo.x, lo.y + 3 * s), ImVec2(hi.x, hi.y + 3 * s), Rgba(0, 0, 0, .35f), 12 * s);
+    d->AddRectFilled(lo, hi, Rgba(15, 15, 20, .98f), 12 * s);
+    d->AddRect(lo, hi, Rgba(38, 38, 48, 1), 12 * s, 0, 1 * s);
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const bool fresh = ImGui::GetTime() - m.copyOpenedAt < .05;
+    for (int i = 0; i < count; ++i) {
+        const ImVec2 a(lo.x + pad, lo.y + pad + i * rowH), b(hi.x - pad, a.y + rowH);
+        const bool over = mouse.x >= a.x && mouse.x < b.x && mouse.y >= a.y && mouse.y < b.y;
+        if (over) d->AddRectFilled(a, b, Rgba(28, 28, 36, 1), 8 * s);
+        Label(d, regular, 13.f * s, ImVec2(a.x + 10 * s, a.y + 7 * s), labels[i], over ? Acc(1) : Rgba(228, 228, 235, 1));
+        if (over && !fresh && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            ImGui::SetClipboardText(i == 0 ? m.copyText.c_str() : code.c_str());
+            m.copyOpen = false;
+            return;
+        }
+    }
+    const bool inside = mouse.x >= lo.x && mouse.x < hi.x && mouse.y >= lo.y && mouse.y < hi.y;
+    if ((!fresh && !inside && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)))
+        || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        m.copyOpen = false;
+    }
+}
+
 // Called by DrawMenu after the menu and its side panels while Nickel AI is on: the page's tick, the chat window when it
 // is open, then the bubble. The page (client, worker, install key) is created the first time the window opens.
 void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity, ImTextureID logo) {
@@ -2189,6 +2257,9 @@ void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity,
     m.windowVisible = m.bubble.WindowOpen() && opened.load() && opacity > .05f;
     if (m.bubble.WindowOpen() && m.page) {
         DrawAiWindow(place, s, opacity, logo);
+        AiDrawCopyMenu(s);
+    } else {
+        m.copyOpen = false;
     }
     // the bubble in its own small window (a few pixels larger for the ring), above the menu
     const ai::UiRect& b = place.bubble;
