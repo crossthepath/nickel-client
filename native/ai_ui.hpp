@@ -219,14 +219,19 @@ inline int64_t ParseUtc(const std::string& text) {
 }
 
 // "Resets at 00:00 UTC." from the quota's reset_at; empty when it cannot be read.
-inline std::string ResetText(const std::string& resetAt) {
-    int hour = 0, minute = 0;
-    if (ParseUtc(resetAt) == 0 || std::sscanf(resetAt.c_str() + 11, "%2d:%2d", &hour, &minute) != 2) {
+// "+1 in 12 min": when the next message comes back (messages come back one by one); empty when unknown or past.
+inline std::string NextMessageText(const std::string& resetAt, int64_t utcNow) {
+    const int64_t at = ParseUtc(resetAt);
+    if (at == 0 || utcNow <= 0) {
         return "";
     }
-    char text[48];
-    std::snprintf(text, sizeof(text), "Resets at %02d:%02d UTC.", hour, minute);
-    return text;
+    const int64_t minutes = std::max<int64_t>(1, (at - utcNow + 59) / 60);
+    return at <= utcNow ? "" : "+1 in " + std::to_string(minutes) + " min";
+}
+
+inline std::string ResetText(const std::string& resetAt, int64_t utcNow = 0) {
+    const std::string next = NextMessageText(resetAt, utcNow); // "+1 in 12 min"
+    return next.empty() ? "" : "One message comes back " + next.substr(3) + ".";
 }
 
 inline std::string ErrorText(const ClientError& error) {
@@ -241,7 +246,7 @@ inline std::string ErrorText(const ClientError& error) {
         return "Nickel AI is not available for this install.";
     }
     if (c == "quota_exceeded") {
-        return "You used all your Nickel AI messages for today.";
+        return "No Nickel AI messages left for now: one comes back every 30 minutes.";
     }
     if (c == "rate_limited") {
         return "Too many messages at once. Wait a moment before sending another.";
@@ -493,8 +498,8 @@ public:
             return "Wait for the answer, or stop it.";
         }
         if (QuotaUsedUp()) {
-            const std::string reset = ResetText(snap_.quota.resetAt);
-            return "You used all " + std::to_string(snap_.quota.limit) + " messages for today."
+            const std::string reset = ResetText(snap_.quota.resetAt, utcNow_);
+            return "No message left for now."
                    + (reset.empty() ? "" : " " + reset);
         }
         if (now_ < retryUntil_) {
@@ -710,17 +715,22 @@ public:
         }
     }
 
-    // "22 left today"; before the first answer of the session, the default limit.
+    // "22 left · +1 in 12 min" (one message comes back every 30 minutes, up to the limit), "Unlimited"; before the
+    // first answer of the session, the limit.
     std::string QuotaLine() const {
         if (!snap_.quota.known) {
-            return std::to_string(kDefaultDailyLimit) + " messages a day";
+            return "Up to " + std::to_string(kDefaultDailyLimit) + " messages";
+        }
+        if (snap_.quota.unlimited) {
+            return "Unlimited messages";
         }
         const int left = std::max(0, snap_.quota.limit - snap_.quota.used);
-        return std::to_string(left) + " left today";
+        const std::string next = NextMessageText(snap_.quota.resetAt, utcNow_);
+        return std::to_string(left) + " left" + (next.empty() ? "" : " Â· " + next);
     }
 
     bool QuotaUsedUp() const {
-        if (!snap_.quota.known || snap_.quota.used < snap_.quota.limit) {
+        if (!snap_.quota.known || snap_.quota.unlimited || snap_.quota.used < snap_.quota.limit) {
             return false;
         }
         const int64_t reset = ParseUtc(snap_.quota.resetAt);
@@ -1281,6 +1291,15 @@ struct AiMenu {
     nickel::ai::PageNotice toast;              // shown at the top of the screen while the window is hidden
     double toastUntil = 0;
     bool unread = false;                       // a notice came while hidden: a dot on the bubble until it opens
+    // Soft line breaks of the input (AiInputCallback): spaces shown as line breaks so a long message wraps.
+    std::string inputBefore;                   // the input at the last edit, to move the breaks with the edit
+    std::vector<int> softBreaks;               // byte offsets of those breaks (a space when the message is sent)
+    float inputWrap = 0;                       // the field's text width in pixels
+    // The copy menu of a message (right click on a bubble): its text and where it opened.
+    bool copyOpen = false;
+    std::string copyText;
+    ImVec2 copyAt;
+    double copyOpenedAt = 0;
 };
 
 // Never destroyed, like PUBLIC's client: the overlay has no unload path, and a destructor at process exit would join the
@@ -1288,6 +1307,18 @@ struct AiMenu {
 AiMenu& Ai() {
     static AiMenu* menu = new AiMenu();
     return *menu;
+}
+
+// The input as typed: soft breaks back to spaces.
+std::string AiInputText() {
+    AiMenu& m = Ai();
+    std::string text = m.input;
+    for (int at : m.softBreaks) {
+        if (at >= 0 && at < static_cast<int>(text.size()) && text[static_cast<size_t>(at)] == '\n') {
+            text[static_cast<size_t>(at)] = ' ';
+        }
+    }
+    return text;
 }
 
 // Drops the page, the tools and the client (its worker stops with it): once off, nothing more is sent.
@@ -1505,6 +1536,47 @@ int AiInputCallback(ImGuiInputTextCallbackData* data) {
             const int keep = static_cast<int>(nickel::ai::BytesOfChars(text, nickel::ai::kMaxMessageChars));
             data->DeleteChars(keep, data->BufTextLen - keep);
         }
+        // Wrap: move the soft breaks with the edit (common start and end of the old and new text), turn them back
+        // into spaces, then break again at the last space before each line overflows. A break replaces a space by
+        // "\n" (same length), so the cursor does not move.
+        const std::string now(data->Buf, static_cast<size_t>(data->BufTextLen));
+        const std::string& old = m.inputBefore;
+        size_t head = 0;
+        while (head < old.size() && head < now.size() && old[head] == now[head]) ++head;
+        size_t tail = 0;
+        while (tail < old.size() - head && tail < now.size() - head
+               && old[old.size() - 1 - tail] == now[now.size() - 1 - tail]) ++tail;
+        const int shift = static_cast<int>(now.size()) - static_cast<int>(old.size());
+        std::vector<int> kept;
+        for (int at : m.softBreaks) {
+            if (at < static_cast<int>(head)) kept.push_back(at);
+            else if (at >= static_cast<int>(old.size() - tail)) kept.push_back(at + shift);
+        }
+        for (int at : kept) {
+            if (at >= 0 && at < data->BufTextLen && data->Buf[at] == '\n') data->Buf[at] = ' ';
+        }
+        m.softBreaks.clear();
+        ImFont* font = ImGui::GetFont();
+        const float size = ImGui::GetFontSize();
+        int lineStart = 0, lastSpace = -1;
+        for (int i = 0; i < data->BufTextLen; ++i) {
+            const char c = data->Buf[i];
+            if (c == '\n') {
+                lineStart = i + 1;
+                lastSpace = -1;
+                continue;
+            }
+            if (c == ' ') lastSpace = i;
+            const float w = font->CalcTextSizeA(size, FLT_MAX, 0, data->Buf + lineStart, data->Buf + i + 1).x;
+            if (m.inputWrap > 0 && w > m.inputWrap && lastSpace > lineStart) {
+                data->Buf[lastSpace] = '\n';
+                m.softBreaks.push_back(lastSpace);
+                lineStart = lastSpace + 1;
+                lastSpace = -1;
+            }
+        }
+        data->BufDirty = true;
+        m.inputBefore.assign(data->Buf, static_cast<size_t>(data->BufTextLen));
     }
     return 0;
 }
@@ -1788,7 +1860,7 @@ void DrawAiInput(AiMenu& m, ImVec2 origin, float W, float H, float s, float a) {
         return ImVec2(origin.x + x * s, origin.y + y * s);
     };
     const float boxH = 64, left = 12, boxW = W - 24, top = H - 12 - boxH, button = 32;
-    const std::string draft = m.input;
+    const std::string draft = AiInputText();
     const std::string blocked = page.SendBlockedReason(draft);
     const bool busy = page.Busy();
     d->AddRectFilled(P(left, top), P(left + boxW, top + boxH), Rgba(23, 23, 29, a), 14 * s);
@@ -1812,6 +1884,7 @@ void DrawAiInput(AiMenu& m, ImVec2 origin, float W, float H, float s, float a) {
         flags |= ImGuiInputTextFlags_ReadOnly;
     }
     const ImVec2 fieldSize((boxW - 4 - button - 10) * s, (boxH - 4) * s);
+    m.inputWrap = fieldSize.x - 2 * 10 * s - 6 * s; // inside the frame padding, room for the cursor
     bool send = ImGui::InputTextMultiline("##ai-input", m.input, sizeof(m.input), fieldSize, flags, AiInputCallback);
     const bool editing = ImGui::IsItemActive();
     ImGui::PopStyleColor(3);
@@ -1864,6 +1937,8 @@ void DrawAiInput(AiMenu& m, ImVec2 origin, float W, float H, float s, float a) {
     }
     if (send && !busy && page.Send(draft)) {
         m.input[0] = 0;
+        m.softBreaks.clear();
+        m.inputBefore.clear();
         m.clearInput = true;
         m.focusInput = true;
     }
@@ -1982,6 +2057,13 @@ void DrawAiWindow(const nickel::ai::BubbleLayout& place, float s, float opacity,
                 const float x = player ? x0 + cw - lane - bw : x0 + lane;
                 const ImU32 fill = player ? AccDeep(opacity) : Rgba(28, 28, 36, opacity);
                 d->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + h), fill, round);
+                if (ImGui::IsMouseHoveringRect(ImVec2(x, y), ImVec2(x + bw, y + h))
+                    && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                    m.copyOpen = true; // the copy menu (AiDrawCopyMenu)
+                    m.copyText = text;
+                    m.copyAt = ImGui::GetIO().MousePos;
+                    m.copyOpenedAt = ImGui::GetTime();
+                }
                 const ImU32 ink = player ? Rgba(255, 255, 255, opacity) : Rgba(228, 228, 235, opacity);
                 if (laid) {
                     DrawAiMarkdown(d, *laid, ImVec2(x + padX, y + (h - box.y) / 2), textSize, bubbleMax - 2 * padX, ink,
@@ -2096,6 +2178,62 @@ void AiDrawToast(float menuOpacity) {
     Label(d, regular, 12.f * s, ImVec2(lo.x + 34 * s, lo.y + 27 * s), hint, Rgba(148, 148, 160, a));
 }
 
+// The code blocks of a message (between ``` fences), joined; empty when there is none.
+std::string AiCodeBlocks(const std::string& text) {
+    std::string out;
+    size_t at = 0;
+    while ((at = text.find("```", at)) != std::string::npos) {
+        size_t start = text.find('\n', at);
+        if (start == std::string::npos) break;
+        const size_t end = text.find("```", start + 1);
+        if (end == std::string::npos) break;
+        if (!out.empty()) out += "\n";
+        out += text.substr(start + 1, end - start - 1);
+        at = end + 3;
+    }
+    return out;
+}
+
+// The copy menu of a message, drawn over everything: Copy message, Copy code (when the message has code). A click
+// outside or Escape closes it.
+void AiDrawCopyMenu(float s) {
+    AiMenu& m = Ai();
+    if (!m.copyOpen) {
+        return;
+    }
+    const std::string code = AiCodeBlocks(m.copyText);
+    const char* labels[2] = {"Copy message", "Copy code"};
+    const int count = code.empty() ? 1 : 2;
+    const float rowH = 30 * s, w = 150 * s, pad = 5 * s;
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+    ImVec2 lo = m.copyAt;
+    lo.x = std::min(lo.x, screen.x - w - 4 * s);
+    lo.y = std::min(lo.y, screen.y - (rowH * count + 2 * pad) - 4 * s);
+    const ImVec2 hi(lo.x + w, lo.y + rowH * count + 2 * pad);
+    ImDrawList* d = ImGui::GetForegroundDrawList();
+    d->AddRectFilled(ImVec2(lo.x, lo.y + 3 * s), ImVec2(hi.x, hi.y + 3 * s), Rgba(0, 0, 0, .35f), 12 * s);
+    d->AddRectFilled(lo, hi, Rgba(15, 15, 20, .98f), 12 * s);
+    d->AddRect(lo, hi, Rgba(38, 38, 48, 1), 12 * s, 0, 1 * s);
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const bool fresh = ImGui::GetTime() - m.copyOpenedAt < .05;
+    for (int i = 0; i < count; ++i) {
+        const ImVec2 a(lo.x + pad, lo.y + pad + i * rowH), b(hi.x - pad, a.y + rowH);
+        const bool over = mouse.x >= a.x && mouse.x < b.x && mouse.y >= a.y && mouse.y < b.y;
+        if (over) d->AddRectFilled(a, b, Rgba(28, 28, 36, 1), 8 * s);
+        Label(d, regular, 13.f * s, ImVec2(a.x + 10 * s, a.y + 7 * s), labels[i], over ? Acc(1) : Rgba(228, 228, 235, 1));
+        if (over && !fresh && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            ImGui::SetClipboardText(i == 0 ? m.copyText.c_str() : code.c_str());
+            m.copyOpen = false;
+            return;
+        }
+    }
+    const bool inside = mouse.x >= lo.x && mouse.x < hi.x && mouse.y >= lo.y && mouse.y < hi.y;
+    if ((!fresh && !inside && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)))
+        || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        m.copyOpen = false;
+    }
+}
+
 // Called by DrawMenu after the menu and its side panels while Nickel AI is on: the page's tick, the chat window when it
 // is open, then the bubble. The page (client, worker, install key) is created the first time the window opens.
 void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity, ImTextureID logo) {
@@ -2119,6 +2257,9 @@ void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity,
     m.windowVisible = m.bubble.WindowOpen() && opened.load() && opacity > .05f;
     if (m.bubble.WindowOpen() && m.page) {
         DrawAiWindow(place, s, opacity, logo);
+        AiDrawCopyMenu(s);
+    } else {
+        m.copyOpen = false;
     }
     // the bubble in its own small window (a few pixels larger for the ring), above the menu
     const ai::UiRect& b = place.bubble;

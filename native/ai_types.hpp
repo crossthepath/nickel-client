@@ -147,7 +147,8 @@ struct QuotaView {
     bool known = false; // false until the first "turn" event
     int used = 0;
     int limit = kDefaultDailyLimit;
-    std::string resetAt; // ISO 8601, UTC
+    std::string resetAt; // ISO 8601, UTC: when the next message comes back (one every 30 minutes, up to the limit)
+    bool unlimited = false;
 };
 
 // The text of a chat message, shared with the client's immutable message instead of copied: the panel takes a new

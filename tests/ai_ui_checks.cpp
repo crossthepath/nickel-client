@@ -219,7 +219,9 @@ void TextHelpers() {
           "cutting keeps whole characters");
     Check(Trim("  hi \n") == "hi" && Trim(" \t\r\n").empty(), "trim removes spaces and newlines");
     Check(ParseUtc("2026-11-17T00:00:00Z") == 1794873600 && ParseUtc("tomorrow") == 0, "reset_at is read as UTC");
-    Check(ResetText("2026-11-17T00:00:00Z") == "Resets at 00:00 UTC." && ResetText("").empty(),
+    Check(NextMessageText("2026-11-17T00:00:00Z", ParseUtc("2026-11-16T23:48:00Z")) == "+1 in 12 min"
+              && ResetText("2026-11-17T00:00:00Z", ParseUtc("2026-11-16T23:48:00Z")) == "One message comes back in 12 min."
+              && ResetText("").empty(),
           "the reset time is shown in UTC");
     Check(ErrorText({"offline", "", 0, 0}).find("offline") != std::string::npos
               && ErrorText({"quota_exceeded", "", 429, 0}).find("messages") != std::string::npos
@@ -268,7 +270,7 @@ void Sending() {
     FakeTools tools;
     ChatPage page(&client, &tools);
     page.Tick(1, kNoon, true);
-    Check(page.QuotaLine() == "25 messages a day" && page.CurrentActivity() == Activity::Idle,
+    Check(page.QuotaLine() == "Up to 25 messages" && page.CurrentActivity() == Activity::Idle,
           "before the first answer: the default limit, idle");
     Check(!page.Send("   ") && client.started.empty(), "an empty message is not sent");
     Check(!page.Send(std::string(kMaxMessageChars + 1, 'x')) && client.started.empty(), "4001 characters are refused");
@@ -284,7 +286,7 @@ void Sending() {
     Check(!page.Send("again") && client.started.size() == 1, "no second message while a turn runs");
     client.Turn(3, 25, "2026-11-17T00:00:00Z");
     page.Tick(2, kNoon, true);
-    Check(page.QuotaLine() == "22 left today", "the quota line comes from the turn event");
+    Check(page.QuotaLine().rfind("22 left", 0) == 0, "the quota line comes from the turn event");
     Check(page.CurrentActivity() == Activity::Thinking, "no text yet: still thinking");
     client.Text("Sure");
     page.Tick(3, kNoon, true);
@@ -309,9 +311,9 @@ void QuotaAndErrors() {
     client.Text("ok");
     client.Done(StopReason::EndTurn);
     page.Tick(2, kNoon, true);
-    Check(page.QuotaLine() == "0 left today" && page.QuotaUsedUp() && !page.CanSend("more"),
+    Check(page.QuotaLine().rfind("0 left", 0) == 0 && page.QuotaUsedUp() && !page.CanSend("more"),
           "25 of 25 used: input blocked");
-    Check(page.SendBlockedReason("more").find("Resets at 00:00 UTC.") != std::string::npos,
+    Check(page.SendBlockedReason("more").find("One message comes back in") != std::string::npos,
           "the block says when the quota resets");
     page.Tick(3, 1794873601, true);
     Check(!page.QuotaUsedUp() && page.CanSend("more"), "after the reset time the service decides again");
@@ -340,16 +342,16 @@ void QuotaAndErrors() {
     p3.Send("hi");
     c3.Turn(1, 25, "2026-11-17T00:00:00Z");
     p3.Tick(2, kNoon, true);
-    Check(p3.QuotaLine() == "24 left today", "the turn event counts the message");
+    Check(p3.QuotaLine().rfind("24 left", 0) == 0, "the turn event counts the message");
     c3.Fail("model_unavailable", 200, 0);
     c3.snap.quota.used = 0;
     p3.Tick(3, kNoon, true);
-    Check(p3.QuotaLine() == "25 left today" && p3.ErrorLine().find("busy") != std::string::npos,
+    Check(p3.QuotaLine().rfind("25 left", 0) == 0 && p3.ErrorLine().find("busy") != std::string::npos,
           "after a refunded failure the quota line goes back to the count before sending");
     c3.snap.quota.used = 1; // GET /status answering after the error: a later snapshot of the same failure
     ++c3.snap.revision;
     p3.Tick(4, kNoon, true);
-    Check(p3.QuotaLine() == "24 left today" && p3.CurrentActivity() == Activity::Error,
+    Check(p3.QuotaLine().rfind("24 left", 0) == 0 && p3.CurrentActivity() == Activity::Error,
           "a quota that arrives after the error is shown too");
 }
 
@@ -740,14 +742,14 @@ void Greeting() {
           "the greeting says what Nickel AI does and that it asks first");
     Check(client.started.empty() && client.snap.messages.empty() && client.snap.revision == 0,
           "the greeting is local: nothing is sent and the conversation stays empty");
-    Check(page.QuotaLine() == "25 messages a day" && page.CanSend("hi"), "the greeting is not counted in the quota");
+    Check(page.QuotaLine() == "Up to 25 messages" && page.CanSend("hi"), "the greeting is not counted in the quota");
     Check(page.Send("hi") && client.started.size() == 1 && client.started[0] == "hi",
           "the first message sent is the player's own, without the greeting");
     client.Turn(1, 25, "2026-11-17T00:00:00Z");
     client.Text("Hello!");
     client.Done(StopReason::EndTurn);
     page.Tick(2, kNoon, true);
-    Check(page.QuotaLine() == "24 left today", "one message sent, one counted: 24 left");
+    Check(page.QuotaLine().rfind("24 left", 0) == 0, "one message sent, one counted: 24 left");
     Check(Kinds(page.Timeline()) == "GPA", "the greeting stays first, before the conversation");
     page.NewChat();
     Check(Kinds(page.Timeline()) == "G" && client.started.size() == 1, "New chat shows the greeting again, sends nothing");

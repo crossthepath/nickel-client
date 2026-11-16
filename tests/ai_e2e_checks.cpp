@@ -329,7 +329,7 @@ int main() {
     Check(page.Available(), "the panel has a client and tools");
 
     // ---- 1. text streaming and the quota line
-    Check(page.QuotaLine() == "25 messages a day", "before any answer the panel shows the default limit");
+    Check(page.QuotaLine() == "Up to 25 messages", "before any answer the panel shows the default limit");
     Check(page.Send("hello"), "the first message is sent");
     const std::string hello = "Hello! I am Nickel AI. How can I help?";
     bool sawPartial = false;
@@ -343,7 +343,7 @@ int main() {
     Check(sawPartial, "part of the answer was shown before the whole of it");
     const std::string conversation = page.Conversation().conversationId;
     Check(!conversation.empty() && !page.Conversation().turnId.empty(), "the turn event gave the ids");
-    Check(page.QuotaLine() == "4 left today", "quota line after the first turn: " + page.QuotaLine());
+    Check(page.QuotaLine().rfind("4 left", 0) == 0, "quota line after the first turn: " + page.QuotaLine());
     Check(page.Conversation().lastStop == ai::StopReason::EndTurn, "the step ended with end_turn");
 
     // ---- 2. a read tool, then an action the player allows
@@ -365,7 +365,7 @@ int main() {
     Check(registry.ById("kill_aura")->enabled && registry.saves == 1, "Kill Aura is on and saved once");
     Check(LastAssistant(page) == "ok: Kill Aura is on.", "the model got both results right: " + LastAssistant(page));
     Check(page.Conversation().conversationId == conversation, "the same conversation continues");
-    Check(page.QuotaLine() == "3 left today", "a turn with tools counts once: " + page.QuotaLine());
+    Check(page.QuotaLine().rfind("3 left", 0) == 0, "a turn with tools counts once: " + page.QuotaLine());
 
     // ---- 3. an action the player declines
     Check(page.Send("turn off flight"), "the third message is sent");
@@ -407,9 +407,9 @@ int main() {
     // ---- 5. the last message of the day, then the limit
     Check(page.Send("thanks"), "the fifth message is sent");
     Check(Pump(page, [&] { return Idle(page) && LastAssistant(page) == "You're welcome!"; }), "the fifth answer");
-    Check(page.QuotaLine() == "0 left today", "quota line at the limit: " + page.QuotaLine());
+    Check(page.QuotaLine().rfind("0 left", 0) == 0, "quota line at the limit: " + page.QuotaLine());
     Check(page.QuotaUsedUp() && !page.CanSend("more"), "the panel stops sending at the limit");
-    Check(page.SendBlockedReason("more").find("You used all 5 messages for today.") == 0,
+    Check(page.SendBlockedReason("more").find("No message left for now.") == 0,
           "and says why: " + page.SendBlockedReason("more"));
     // the service enforces it too (a client that ignores the quota line)
     Check(chat.Client().Send("one more"), "the client posts a sixth message anyway");
@@ -417,7 +417,7 @@ int main() {
     const ai::ConversationSnapshot& refused = page.Conversation();
     Check(refused.error.code == "quota_exceeded" && refused.error.httpStatus == 429,
           "429 quota_exceeded: " + refused.error.code + " " + std::to_string(refused.error.httpStatus));
-    Check(page.ErrorLine() == "You used all your Nickel AI messages for today.", "error line: " + page.ErrorLine());
+    Check(page.ErrorLine() == "No Nickel AI messages left for now: one comes back every 30 minutes.", "error line: " + page.ErrorLine());
 
     // ---- 6. a new conversation forgets the id
     page.NewChat();
