@@ -113,6 +113,20 @@ public:
     }
 };
 
+// The game's packet capture for capture_packets / read_packets: the hook goes in on the first capture.
+class MenuAiPackets final : public nickel::ai::tools::PacketSource {
+public:
+    bool Ready(std::string* why) override {
+        if (game::InstallCaptureHook(WriteLog) == 1) {
+            return true;
+        }
+        *why = "Packet capture is not available in this game version";
+        return false;
+    }
+    nickel::packets::Capture& Capture() override { return nickel::packets::Shared(); }
+    int64_t NowMs() override { return game::CaptureNowMs(); }
+};
+
 void AiLog(const std::string& line) {
     if (WriteLog) {
         WriteLog(("Nickel AI: " + line).c_str());
@@ -127,6 +141,7 @@ nickel::ai::Services MakeAiServices() {
     static MenuAiNavigator navigator;
     static MenuAiStatus status;
     static ai::tools::RegistrySettingsWriter writer(MenuScriptHostInstance());
+    static MenuAiPackets packets;
 
     ai::ClientConfig config;
     config.userAgent = L"Nickel-Overlay/" + Wide(pub::kRunningNickel);
@@ -138,7 +153,7 @@ nickel::ai::Services MakeAiServices() {
         AiLog("local test server " + config.baseUrl);
     }
     ai::tools::Deps deps{MenuScriptHostInstance(), ScriptsLibrary(), writer, navigator, status, &defaults,
-                         [](const std::string& id) { return SoonModule(id); }};
+                         [](const std::string& id) { return SoonModule(id); }, &packets};
     ai::Services services;
     services.client = std::make_unique<ai::AssistantChat>(std::make_unique<ai::AssistantClient>(config, source));
     services.tools = std::make_unique<ai::AssistantToolRunner>(deps);

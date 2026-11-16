@@ -286,6 +286,8 @@ inline std::string ToolActivity(const std::string& tool) {
             {"read_script", "Reading a script"},
             {"validate_script", "Checking a script"},
             {"navigate_ui", "Opening a screen"},
+            {"capture_packets", "Capturing packets"},
+            {"read_packets", "Reading packets"},
             {"set_setting", "Changing a setting"},
             {"revert_changes", "Undoing changes"},
             {"set_module_enabled", "Switching a module"},
