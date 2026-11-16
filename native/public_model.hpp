@@ -690,17 +690,19 @@ inline bool ParseAuthor(const json::Value& value, Author* out, std::string* erro
     const detail::Reader read{value, error, "author."};
     Author author;
     std::string kind;
-    // No accounts: the author is the display name given at publish time; handle, kind and verified are optional.
+    // No accounts: the author is the name given at publish time ("name" in the v2 API, "display_name" in older answers);
+    // handle, kind and verified are optional.
+    const char* nameKey = value.Find("name") != nullptr ? "name" : "display_name";
     if (!read.Pattern("handle", &author.handle, false, ValidHandle, true)
-        || !read.String("display_name", &author.displayName, true, kMaxDisplayNameChars, detail::TextRule::OneLine)
+        || !read.String(nameKey, &author.displayName, true, kMaxDisplayNameChars, detail::TextRule::OneLine)
         || !read.String("kind", &kind, false, 16, detail::TextRule::OneLine, true)
         || !read.Bool("verified", &author.verified, false)) {
         return false;
     }
     if (author.displayName.empty()) {
-        return read.Fail("display_name", "empty");
+        return read.Fail(nameKey, "empty");
     }
-    if (kind == "user") {
+    if (kind == "user" || kind == "player") {
         author.kind = AuthorKind::User;
     } else if (kind == "legacy") {
         author.kind = AuthorKind::Legacy;

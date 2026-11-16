@@ -270,6 +270,11 @@ void PublicTick() {
     if (on && !m.review && !m.client) {
         pub::ClientConfig config;
         config.userAgent = L"Nickel-Overlay/" + Wide(pub::kRunningNickel);
+        char local[64]{};
+        if (GetEnvironmentVariableA("NICKEL_PUBLIC_LOCAL_SERVER", local, sizeof(local)) &&
+            pub::UseLocalTestServer(config, local)) {
+            WriteLog((std::string("PUBLIC: local test server ") + local).c_str());
+        }
         m.client = new pub::PublicClient(config, m.identity);
         m.requests = new pub::ClientRequests(m.client);
     }

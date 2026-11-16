@@ -94,6 +94,29 @@ struct ClientConfig {
     size_t cacheEntries = 32;
 };
 
+// A local test server for trying PUBLIC in game without the real site (environment variable
+// NICKEL_PUBLIC_LOCAL_SERVER, e.g. "http://127.0.0.1:8793"). Only the loopback address with a numeric port is accepted,
+// so it can never send PUBLIC to another host. Returns false, leaving config unchanged, for anything else.
+inline bool UseLocalTestServer(ClientConfig& config, const std::string& origin) {
+    const std::string prefix = "http://127.0.0.1:";
+    if (origin.rfind(prefix, 0) != 0 || origin.size() == prefix.size() || origin.size() > prefix.size() + 5) {
+        return false;
+    }
+    unsigned port = 0;
+    for (size_t i = prefix.size(); i < origin.size(); ++i) {
+        if (origin[i] < '0' || origin[i] > '9') {
+            return false;
+        }
+        port = port * 10 + static_cast<unsigned>(origin[i] - '0');
+    }
+    if (port == 0 || port > 65535) {
+        return false;
+    }
+    config.baseUrl = origin + "/api/community/v1";
+    config.policy = net::HostPolicy{{}, true};
+    return true;
+}
+
 struct ListQuery {
     Kind kind = Kind::Script;
     Sort sort = Sort::Trending;

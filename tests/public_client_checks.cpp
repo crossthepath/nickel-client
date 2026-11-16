@@ -86,7 +86,55 @@ std::string DetailJson() {
 // ---------------------------------------------------------------------------------------------------------------
 // Model
 
+// The exact answer of the PUBLIC v2 server (nickel-website#2) for GET /items?kind=script, with an official legacy item.
+void ServerShapeChecks() {
+    const char* answer = R"({"items":[{"id":"sk6eere4a85h","kind":"script","slug":"hello","name":"Hello",
+        "summary":"The smallest script: a module with a text setting that greets you when enabled.",
+        "author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],
+        "license":"NOASSERTION","featured":false,
+        "latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,
+        "sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},
+        "capabilities":[],"stats":{"downloads":0,"favourites":0,"stars":0,"trending_score":0},
+        "published_at":"2026-11-16T04:48:51.716Z","updated_at":"2026-11-16T04:48:51.716Z"}],
+        "next_cursor":null,"total_estimate":1})";
+    json::Value value;
+    Page page;
+    std::string error;
+    const bool parsed = json::Parse(answer, &value) && ParsePage(value, &page, &error);
+    Card card;
+    std::string cardError;
+    if (parsed && value.Find("items") && value.Find("items")->size() == 1) {
+        ParseCard(value.Find("items")->At(0), &card, &cardError);
+    }
+    if (!cardError.empty()) {
+        std::printf("server item refused: %s\n", cardError.c_str());
+    }
+    Check(parsed && page.items.size() == 1 && page.dropped == 0, "the v2 server's list answer is read, item kept");
+    {
+        const char* detailAnswer = R"({"id":"sk6eere4a85h","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"favourites":0,"stars":0,"trending_score":0},"published_at":"2026-11-16T04:48:51.716Z","updated_at":"2026-11-16T04:48:51.716Z","description":"The smallest script: a module with a text setting that greets you when enabled.","listed":true,"page_url":"https://nickelclient.com/community#scripts","versions":[{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null,"changelog":""}],"state":"published","state_reason":null})";
+        json::Value detailValue;
+        Detail detail;
+        std::string detailError;
+        const bool detailOk = json::Parse(detailAnswer, &detailValue) && ParseDetail(detailValue, &detail, &detailError);
+        if (!detailOk) {
+            std::printf("server detail refused: %s\n", detailError.c_str());
+        }
+        Check(detailOk && detail.card.author.displayName == "Nickel", "the v2 server's item detail is read");
+        const char* lookupAnswer = R"({"items":[{"id":"sk6eere4a85h","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"favourites":0,"stars":0,"trending_score":0},"published_at":"2026-11-16T04:48:51.716Z","updated_at":"2026-11-16T04:48:51.716Z"},{"id":"zzzzzzzzzzzz","state":"not_found"}]})";
+        json::Value lookupValue;
+        std::vector<LookupEntry> entries;
+        std::string lookupError;
+        const bool lookupOk = json::Parse(lookupAnswer, &lookupValue)
+                && ParseLookup(lookupValue, {"sk6eere4a85h", "zzzzzzzzzzzz"}, &entries, &lookupError);
+        if (!lookupOk) {
+            std::printf("server lookup refused: %s\n", lookupError.c_str());
+        }
+        Check(lookupOk && entries.size() == 2, "the v2 server's lookup answer is read");
+    }
+}
+
 void ModelChecks() {
+    ServerShapeChecks();
     int64_t ms = 0;
     Check(ParseIsoTime("2026-11-15T18:00:00.000Z", &ms) && ms == 1794765600000LL, "ISO time with milliseconds");
     Check(ParseIsoTime("1970-01-01T00:00:00Z", &ms) && ms == 0, "ISO time without a fraction");
@@ -944,6 +992,29 @@ void PolicyChecks() {
     plain.baseUrl = "http://nickelclient.com/api/community/v1";
     Check(!PublicClient(plain).Usable(), "plain HTTP is refused for the real host");
     Check(PublicClient().Usable(), "the default base URL is usable");
+    {
+        ClientConfig local;
+        Check(UseLocalTestServer(local, "http://127.0.0.1:8793") && PublicClient(local).Usable() &&
+                      local.baseUrl == "http://127.0.0.1:8793/api/community/v1",
+              "the local test server is accepted on the loopback address");
+        const char* refused[] = {"http://localhost:8793",
+                                 "https://127.0.0.1:8793",
+                                 "http://127.0.0.1@evil.example:8793",
+                                 "http://127.0.0.1.evil.example:8793",
+                                 "http://127.0.0.1:8793/../x",
+                                 "http://127.0.0.1:",
+                                 "http://127.0.0.1:0",
+                                 "http://127.0.0.1:99999",
+                                 "http://10.0.0.1:8793",
+                                 ""};
+        bool allRefused = true;
+        for (const char* origin : refused) {
+            ClientConfig other;
+            allRefused = allRefused && !UseLocalTestServer(other, origin) &&
+                         other.baseUrl == "https://nickelclient.com/api/community/v1";
+        }
+        Check(allRefused, "the local test server accepts nothing but http://127.0.0.1:<port>");
+    }
 
     PublicClient noKey(config);
     Check(!noKey.Star(kScriptId, true) && noKey.Snap().star->outcome.status == Status::Invalid,
