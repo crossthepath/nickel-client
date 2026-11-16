@@ -1,5 +1,6 @@
-// Packet capture in the game (packet_capture.hpp keeps the records; Nickel AI's capture_packets / read_packets read
-// them). Installed the first time a capture starts, never before.
+// Packet capture in the game (packet_capture.hpp keeps the records; Nickel AI's capture_packets / read_packets and
+// get_server_info read them). Installed once Nickel AI is on (the session of a server starts at the join), never
+// while it is off.
 // - MC 0x226b050 (outer peer, const std::string* data, bool outgoing): the game's connection wrapper calls it with the
 //   serialized bytes of every packet, [varint header: id in the low 10 bits][payload], from its send (0x226b000,
 //   outgoing = 1) and its receive (0x226b560, outgoing = 0), for every connection type (RakNet, NetherNet, local).
@@ -21,12 +22,16 @@ inline CaptureFunction captureOriginal = nullptr;
 inline int64_t CaptureNowMs() { return static_cast<int64_t>(GetTickCount64()); }
 
 inline void CaptureWork(uint64_t peer, const std::string* data, bool outgoing) {
-    auto& capture = nickel::packets::Shared();
-    const int64_t now = CaptureNowMs();
-    if (!data || !peer || peer != captureServerPeer.load() || !capture.Capturing(now)) {
+    if (!data || !peer || peer != captureServerPeer.load()) {
         return;
     }
-    capture.Record(now, outgoing, reinterpret_cast<const unsigned char*>(data->data()), data->size());
+    const int64_t now = CaptureNowMs();
+    const auto* bytes = reinterpret_cast<const unsigned char*>(data->data());
+    nickel::packets::SharedSession().Record(now, outgoing, bytes, data->size());
+    auto& capture = nickel::packets::Shared();
+    if (capture.Capturing(now)) {
+        capture.Record(now, outgoing, bytes, data->size());
+    }
 }
 inline void CaptureGuarded(uint64_t peer, const std::string* data, bool outgoing) {
     __try {
@@ -42,9 +47,12 @@ inline uint64_t CaptureDetour(uint64_t peer, const std::string* data, uint64_t o
     return captureOriginal(peer, data, outgoing);
 }
 
-// The server connection's outer peer, or 0 outside a server (render thread, once a frame while capturing).
+inline std::atomic<bool> captureInstalled{false};
+
+// The server connection's outer peer, or 0 outside a server (render thread, once a frame once the hook is in); a new
+// peer starts a new session (get_server_info).
 inline void CaptureTick() {
-    if (!nickel::packets::Shared().Capturing(CaptureNowMs())) {
+    if (!captureInstalled) {
         return;
     }
     Context c{};
@@ -59,6 +67,7 @@ inline void CaptureTick() {
         }
     }
     captureServerPeer = peer;
+    nickel::packets::SharedSession().Begin(peer, CaptureNowMs());
 }
 
 // 1 installed, -1 not available (unexpected code or MinHook refused); installs once.
@@ -92,6 +101,7 @@ inline int InstallCaptureHook(void (*log)(const char*)) {
         return state;
     }
     if (log) log("Packet capture: hook installed");
+    captureInstalled = true;
     state = 1;
     return state;
 }

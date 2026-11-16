@@ -14,6 +14,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <iterator>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -193,6 +195,111 @@ private:
     std::set<int> ids_;
     bool capturing_ = false;
 };
+
+// What the current server session showed, kept from the moment the player joins (Nickel AI's get_server_info): how
+// many packets of each id came and went, and the latest copies of the packets that describe the server (StartGame,
+// the item registry with custom items, resource packs, commands, player list, scoreboard, forms...). A new server
+// connection starts a new session.
+constexpr size_t kMaxKeptBytes = 64 * 1024;
+
+inline bool KeptPacket(int id, size_t* copies) {
+    switch (id) {
+        case 11: case 6: case 7: case 162: case 76: case 72: case 62: case 103: case 198: case 330: case 119:
+        case 107: case 74:
+            *copies = 1; return true;     // StartGame, packs, item registry, commands, game rules, game mode, server
+                                          // settings, camera presets, data store, actor ids, objective, boss bar
+        case 63: case 108: case 88: case 100: case 186:
+            *copies = 8; return true;     // player list, scores, titles, forms, toasts: the latest few
+        default:
+            return false;
+    }
+}
+
+struct SessionView {
+    bool active = false;
+    int64_t sinceMs = 0;                        // since the session started
+    std::vector<std::pair<int, uint64_t>> in;   // id, count received
+    std::vector<std::pair<int, uint64_t>> out;  // id, count sent
+    std::vector<nickel::packets::Record> kept;  // oldest first
+};
+
+class Session {
+public:
+    // A new connection (or none: peer 0) clears everything.
+    void Begin(uint64_t peer, int64_t nowMs) {
+        std::lock_guard<std::mutex> lock(guard_);
+        if (peer == peer_) {
+            return;
+        }
+        peer_ = peer;
+        startMs_ = nowMs;
+        std::fill(std::begin(in_), std::end(in_), 0);
+        std::fill(std::begin(out_), std::end(out_), 0);
+        kept_.clear();
+        seq_ = 1;
+    }
+
+    void Record(int64_t nowMs, bool outgoing, const unsigned char* data, size_t size) {
+        int id = -1;
+        size_t header = 0;
+        if (!data || !size || !ReadHeader(data, size, &id, &header)) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(guard_);
+        if (!peer_) {
+            return;
+        }
+        (outgoing ? out_ : in_)[id & 0x3ff] += 1;
+        size_t copies = 0;
+        if (outgoing || !KeptPacket(id, &copies)) {
+            return;
+        }
+        nickel::packets::Record r;
+        r.seq = seq_++;
+        r.atMs = nowMs - startMs_;
+        r.id = id;
+        r.size = static_cast<uint32_t>(std::min<size_t>(size, UINT32_MAX));
+        const size_t keep = std::min(size - header, kMaxKeptBytes);
+        r.truncated = keep < size - header;
+        r.payload.assign(reinterpret_cast<const char*>(data + header), keep);
+        auto& list = kept_[id];
+        list.push_back(std::move(r));
+        while (list.size() > copies) {
+            list.pop_front();
+        }
+    }
+
+    SessionView View(int64_t nowMs) {
+        std::lock_guard<std::mutex> lock(guard_);
+        SessionView v;
+        v.active = peer_ != 0;
+        v.sinceMs = peer_ ? nowMs - startMs_ : 0;
+        for (int id = 0; id < 1024; ++id) {
+            if (in_[id]) v.in.push_back({id, in_[id]});
+            if (out_[id]) v.out.push_back({id, out_[id]});
+        }
+        auto byCount = [](const auto& a, const auto& b) { return a.second > b.second; };
+        std::sort(v.in.begin(), v.in.end(), byCount);
+        std::sort(v.out.begin(), v.out.end(), byCount);
+        for (const auto& [id, list] : kept_) {
+            v.kept.insert(v.kept.end(), list.begin(), list.end());
+        }
+        std::sort(v.kept.begin(), v.kept.end(), [](const auto& a, const auto& b) { return a.seq < b.seq; });
+        return v;
+    }
+
+private:
+    std::mutex guard_;
+    uint64_t peer_ = 0, seq_ = 1;
+    int64_t startMs_ = 0;
+    uint64_t in_[1024] = {}, out_[1024] = {};
+    std::map<int, std::deque<nickel::packets::Record>> kept_;
+};
+
+inline Session& SharedSession() {
+    static auto* session = new Session();
+    return *session;
+}
 
 // The capture of the running game (game_packet_capture.hpp feeds it; ai_menu.hpp gives it to the tools).
 inline Capture& Shared() {

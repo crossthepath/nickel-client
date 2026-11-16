@@ -2897,7 +2897,8 @@ void DrawMenu(float opacity,ImTextureID logo){
  PublicTick();   // PUBLIC answers (installs, revocations, updates) are handled even while the menu is closed
  if(!nickel::ai::Factory())nickel::ai::Factory()=&MakeAiServices;   // Nickel AI: the real client and tools (ai_menu.hpp)
  AiTick();       // Nickel AI: reads its option once; nothing exists while it is off
- game::CaptureTick();   // packet capture (Nickel AI): the server peer, while a capture runs
+ if(AiOption().value){static bool captureHook=false;if(!captureHook){captureHook=true;game::InstallCaptureHook(WriteLog);}}   // Nickel AI on: the server session is kept from the join
+ game::CaptureTick();   // packet capture (Nickel AI): the server peer and its session
  // "Background blur": blurred game frame under the HUD and the menu, faded with the menu opening
  if(opacity>0&&interfaceOptions[0].value&&RequestBlur){auto* under=ImGui::GetBackgroundDrawList();if(auto blurred=RequestBlur(under))under->AddImage(blurred,ImVec2(0,0),ImGui::GetIO().DisplaySize,ImVec2(0,0),ImVec2(1,1),Rgba(255,255,255,opacity));}
  // "Auto save config": every change is copied into the most recently loaded or created config

@@ -297,7 +297,7 @@ struct World {
 void ChecksBasics() {
     World world;
     AssistantTools tools = world.Tools();
-    Check(AssistantTools::ToolNames().size() == 14, "fourteen tools (packets included)");
+    Check(AssistantTools::ToolNames().size() == 16, "sixteen tools (packets and game included)");
     Check(IsError(tools.Run("delete_everything", Input("{}")), "unknown_tool"), "an unknown tool is refused");
     Check(IsError(tools.Run("get_module", Input("[1]")), "invalid_input"), "an input that is not an object is refused");
     Check(!tools.Run("get_client_status", json::Value()).isError, "a null input counts as {}");

@@ -137,6 +137,130 @@ public:
     int64_t NowMs() override { return game::CaptureNowMs(); }
 };
 
+// get_server_info and get_world_state: the server session kept since the join (packet_capture.hpp) and what the
+// game shows around the player (the readers of the script engine).
+class MenuAiGame final : public nickel::ai::tools::GameSource {
+public:
+    nickel::json::Value ServerInfo(const nickel::json::Value& in) override {
+        namespace json = nickel::json;
+        json::Value body = json::Value::MakeObject();
+        game::Server server{};
+        game::Context context{};
+        const bool inWorld = game::Local(&context);
+        body.Set("in_world", json::Value::MakeBool(inWorld));
+        if (inWorld && game::ReadServer(&server)) {
+            server.address[sizeof(server.address) - 1] = 0;
+            body.Set("singleplayer", json::Value::MakeBool(server.singleplayer));
+            if (!server.singleplayer) {
+                body.Set("address", json::Value::MakeString(server.address));
+                body.Set("port", json::Value::MakeInt(server.port));
+            }
+        }
+        body.Set("transport", json::Value::MakeString(game::OnRakNet() ? "RakNet" : "NetherNet or local"));
+        const auto view = nickel::packets::SharedSession().View(game::CaptureNowMs());
+        body.Set("session_seconds", json::Value::MakeInt(view.sinceMs / 1000));
+        body.Set("session_recorded", json::Value::MakeBool(view.active));
+        auto counts = [](const std::vector<std::pair<int, uint64_t>>& list, size_t most) {
+            json::Value array = json::Value::MakeArray();
+            for (size_t i = 0; i < list.size() && i < most; ++i) {
+                json::Value item = json::Value::MakeObject();
+                item.Set("id", json::Value::MakeInt(list[i].first));
+                item.Set("count", json::Value::MakeInt(static_cast<int64_t>(list[i].second)));
+                array.Push(std::move(item));
+            }
+            return array;
+        };
+        body.Set("packets_received", counts(view.in, 80));
+        body.Set("packets_sent", counts(view.out, 40));
+        int64_t maxBytes = 160;
+        if (const auto* v = in.Find("max_bytes"); v != nullptr) v->GetInt64(&maxBytes);
+        maxBytes = std::clamp<int64_t>(maxBytes, 0, 8192);
+        std::vector<int> only;
+        if (const auto* ids = in.Find("ids"); ids != nullptr && ids->IsArray()) {
+            for (size_t i = 0; i < ids->size() && i < 32; ++i) only.push_back(static_cast<int>(ids->At(i).AsInt64(-1)));
+        }
+        std::vector<json::Value> kept;
+        for (const auto& r : view.kept) {
+            if (!only.empty() && std::find(only.begin(), only.end(), r.id) == only.end()) continue;
+            json::Value item = json::Value::MakeObject();
+            item.Set("id", json::Value::MakeInt(r.id));
+            item.Set("seconds_after_join", json::Value::MakeInt(r.atMs / 1000));
+            item.Set("size", json::Value::MakeInt(r.size));
+            item.Set("hex", json::Value::MakeString(nickel::packets::Hex(r.payload, static_cast<size_t>(maxBytes))));
+            if (r.truncated || r.payload.size() > static_cast<size_t>(maxBytes)) item.Set("cut", json::Value::MakeBool(true));
+            kept.push_back(std::move(item));
+        }
+        nickel::ai::tools::detail::SetBounded(body, "kept_packets", kept);
+        return body;
+    }
+
+    nickel::json::Value WorldState(const nickel::json::Value& in) override {
+        namespace json = nickel::json;
+        json::Value body = json::Value::MakeObject();
+        game::Context context{};
+        if (!game::Local(&context)) {
+            body.Set("in_world", json::Value::MakeBool(false));
+            return body;
+        }
+        body.Set("in_world", json::Value::MakeBool(true));
+        int dimension = -1;
+        static const char* names[] = {"Overworld", "Nether", "TheEnd"};
+        if (game::ReadDimension(&dimension) && dimension >= 0 && dimension < 3) {
+            body.Set("dimension", json::Value::MakeString(names[dimension]));
+        }
+        float health{}, maxHealth{};
+        if (game::ReadHealth(&health, &maxHealth)) {
+            body.Set("health", json::Value::MakeNumber(health));
+            body.Set("max_health", json::Value::MakeNumber(maxHealth));
+        }
+        int64_t radius = 64;
+        if (const auto* v = in.Find("radius"); v != nullptr) v->GetInt64(&radius);
+        radius = std::clamp<int64_t>(radius, 4, 256);
+        static struct ScriptEntity list[512];   // "struct": script_api21.hpp has a function of that name
+        const int n = ReadScriptEntities(list, 512, static_cast<float>(radius), false);
+        float me[3] = {0, 0, 0};
+        for (int i = 0; i < n; ++i) {
+            if (list[i].local) {
+                std::copy(list[i].pos, list[i].pos + 3, me);
+                json::Value pos = json::Value::MakeArray();
+                for (float v : list[i].pos) pos.Push(json::Value::MakeNumber(std::round(v * 10) / 10));
+                body.Set("position", std::move(pos));
+            }
+        }
+        std::vector<json::Value> players;
+        std::map<std::string, std::pair<int, float>> others;   // name or type -> count, nearest distance
+        for (int i = 0; i < n; ++i) {
+            if (list[i].local) continue;
+            const float dx = list[i].pos[0] - me[0], dy = list[i].pos[1] - me[1], dz = list[i].pos[2] - me[2];
+            const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+            list[i].name[sizeof(list[i].name) - 1] = 0;
+            if (list[i].player) {
+                json::Value p = json::Value::MakeObject();
+                p.Set("name", json::Value::MakeString(list[i].name));
+                p.Set("distance", json::Value::MakeNumber(std::round(distance * 10) / 10));
+                players.push_back(std::move(p));
+            } else {
+                const std::string key = list[i].name[0] ? list[i].name : "entity." + std::to_string(list[i].type & 0xff);
+                auto& entry = others[key];
+                entry.second = entry.first ? std::min(entry.second, distance) : distance;
+                entry.first += 1;
+            }
+        }
+        nickel::ai::tools::detail::SetBounded(body, "players_nearby", players, 6000);
+        std::vector<json::Value> entities;
+        for (const auto& [name, entry] : others) {
+            json::Value e = json::Value::MakeObject();
+            e.Set("name", json::Value::MakeString(name));
+            e.Set("count", json::Value::MakeInt(entry.first));
+            e.Set("nearest", json::Value::MakeNumber(std::round(entry.second * 10) / 10));
+            entities.push_back(std::move(e));
+        }
+        nickel::ai::tools::detail::SetBounded(body, "entities_nearby", entities, 12000);
+        body.Set("radius", json::Value::MakeInt(radius));
+        return body;
+    }
+};
+
 void AiLog(const std::string& line) {
     if (WriteLog) {
         WriteLog(("Nickel AI: " + line).c_str());
@@ -152,6 +276,7 @@ nickel::ai::Services MakeAiServices() {
     static MenuAiStatus status;
     static ai::tools::RegistrySettingsWriter writer(MenuScriptHostInstance());
     static MenuAiPackets packets;
+    static MenuAiGame gameInfo;
 
     ai::ClientConfig config;
     config.userAgent = L"Nickel-Overlay/" + Wide(pub::kRunningNickel);
@@ -163,7 +288,7 @@ nickel::ai::Services MakeAiServices() {
         AiLog("local test server " + config.baseUrl);
     }
     ai::tools::Deps deps{MenuScriptHostInstance(), ScriptsLibrary(), writer, navigator, status, &defaults,
-                         [](const std::string& id) { return SoonModule(id); }, &packets};
+                         [](const std::string& id) { return SoonModule(id); }, &packets, &gameInfo};
     ai::Services services;
     services.client = std::make_unique<ai::AssistantChat>(std::make_unique<ai::AssistantClient>(config, source));
     services.tools = std::make_unique<ai::AssistantToolRunner>(deps);
