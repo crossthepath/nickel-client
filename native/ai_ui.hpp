@@ -219,14 +219,19 @@ inline int64_t ParseUtc(const std::string& text) {
 }
 
 // "Resets at 00:00 UTC." from the quota's reset_at; empty when it cannot be read.
-inline std::string ResetText(const std::string& resetAt) {
-    int hour = 0, minute = 0;
-    if (ParseUtc(resetAt) == 0 || std::sscanf(resetAt.c_str() + 11, "%2d:%2d", &hour, &minute) != 2) {
+// "+1 in 12 min": when the next message comes back (messages come back one by one); empty when unknown or past.
+inline std::string NextMessageText(const std::string& resetAt, int64_t utcNow) {
+    const int64_t at = ParseUtc(resetAt);
+    if (at == 0 || utcNow <= 0) {
         return "";
     }
-    char text[48];
-    std::snprintf(text, sizeof(text), "Resets at %02d:%02d UTC.", hour, minute);
-    return text;
+    const int64_t minutes = std::max<int64_t>(1, (at - utcNow + 59) / 60);
+    return at <= utcNow ? "" : "+1 in " + std::to_string(minutes) + " min";
+}
+
+inline std::string ResetText(const std::string& resetAt, int64_t utcNow = 0) {
+    const std::string next = NextMessageText(resetAt, utcNow); // "+1 in 12 min"
+    return next.empty() ? "" : "One message comes back " + next.substr(3) + ".";
 }
 
 inline std::string ErrorText(const ClientError& error) {
@@ -241,7 +246,7 @@ inline std::string ErrorText(const ClientError& error) {
         return "Nickel AI is not available for this install.";
     }
     if (c == "quota_exceeded") {
-        return "You used all your Nickel AI messages for today.";
+        return "No Nickel AI messages left for now: one comes back every 30 minutes.";
     }
     if (c == "rate_limited") {
         return "Too many messages at once. Wait a moment before sending another.";
@@ -493,8 +498,8 @@ public:
             return "Wait for the answer, or stop it.";
         }
         if (QuotaUsedUp()) {
-            const std::string reset = ResetText(snap_.quota.resetAt);
-            return "You used all " + std::to_string(snap_.quota.limit) + " messages for today."
+            const std::string reset = ResetText(snap_.quota.resetAt, utcNow_);
+            return "No message left for now."
                    + (reset.empty() ? "" : " " + reset);
         }
         if (now_ < retryUntil_) {
@@ -710,17 +715,22 @@ public:
         }
     }
 
-    // "22 left today"; before the first answer of the session, the default limit.
+    // "22 left · +1 in 12 min" (one message comes back every 30 minutes, up to the limit), "Unlimited"; before the
+    // first answer of the session, the limit.
     std::string QuotaLine() const {
         if (!snap_.quota.known) {
-            return std::to_string(kDefaultDailyLimit) + " messages a day";
+            return "Up to " + std::to_string(kDefaultDailyLimit) + " messages";
+        }
+        if (snap_.quota.unlimited) {
+            return "Unlimited messages";
         }
         const int left = std::max(0, snap_.quota.limit - snap_.quota.used);
-        return std::to_string(left) + " left today";
+        const std::string next = NextMessageText(snap_.quota.resetAt, utcNow_);
+        return std::to_string(left) + " left" + (next.empty() ? "" : " Â· " + next);
     }
 
     bool QuotaUsedUp() const {
-        if (!snap_.quota.known || snap_.quota.used < snap_.quota.limit) {
+        if (!snap_.quota.known || snap_.quota.unlimited || snap_.quota.used < snap_.quota.limit) {
             return false;
         }
         const int64_t reset = ParseUtc(snap_.quota.resetAt);

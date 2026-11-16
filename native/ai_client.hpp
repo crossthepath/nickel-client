@@ -170,7 +170,8 @@ struct ErrorInfo {
 struct Quota {
     int64_t used = -1;      // -1 until the server says
     int64_t limit = -1;
-    std::string resetAt;    // as the server wrote it
+    std::string resetAt;    // as the server wrote it: when the next message comes back (empty when full)
+    bool unlimited = false; // this install has no quota
 };
 
 enum class Role : uint8_t { User, Assistant };
@@ -328,6 +329,9 @@ inline bool ReadQuota(const json::Value& value, Quota* out) {
     Quota quota;
     quota.used = usedValue;
     quota.limit = limitValue;
+    if (const json::Value* unlimited = value.Find("unlimited"); unlimited != nullptr && unlimited->IsBool()) {
+        quota.unlimited = unlimited->AsBool();
+    }
     const json::Value* reset = value.Find("reset_at");
     if (reset == nullptr) {
         reset = value.Find("resets_at");

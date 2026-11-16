@@ -113,6 +113,7 @@ inline ConversationSnapshot ToPanelSnapshot(const Conversation& conversation, ui
         snap.quota.used = static_cast<int>((std::min)(static_cast<int64_t>(conversation.quota.used), kMaxQuota));
         snap.quota.limit = static_cast<int>((std::min)(static_cast<int64_t>(conversation.quota.limit), kMaxQuota));
         snap.quota.resetAt = conversation.quota.resetAt;
+        snap.quota.unlimited = conversation.quota.unlimited;
     }
     if (conversation.status == Status::Failed) {
         snap.error.code = PanelErrorCode(conversation.error);
