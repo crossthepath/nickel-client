@@ -153,6 +153,8 @@ public:
 
     void NewConversation() override { client_->NewConversation(); }
 
+    void SetMemory(bool on) override { client_->SetMemory(on); }
+
     uint64_t Revision() const override { return client_->Version(); }
 
     ConversationSnapshot Snapshot() const override {

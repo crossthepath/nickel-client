@@ -2810,7 +2810,7 @@ void DrawMenuSettings(ImVec2 origin,float s,float opacity){
   Label(d,semibold,15*s,at(x0+(width-TextWidth(semibold,15,label))/2,26*U-10.5f),label,style==3?Rgba(246,160,171,fade):style==1?Rgba(255,255,255,fade):Rgba(230,230,235,fade));
   return Hit(("##"+id).c_str(),lo,ImVec2(width*s,28*U*s))&&enabled;};
  auto toggle=[&](MenuOption& option){const float a=row(option.key,option.title,option.description);Toggle(d,at(areaW-12*U-34,26*U-9),s,Animate(std::string("menu")+option.key,option.value?1.f:0.f,io.DeltaTime),a);
-  if(Hit(option.key,at(areaW-12*U-34,26*U-9),ImVec2(34*s,18*s))){if(&option==&PublicOption())SetPublicCommunity(!option.value);else if(&option==&AiOption())SetAiEnabled(!option.value);else{option.value=!option.value;WritePrivateProfileStringW(L"menu",Wide(option.key).c_str(),option.value?L"1":L"0",configPath.c_str());}}};
+  if(Hit(option.key,at(areaW-12*U-34,26*U-9),ImVec2(34*s,18*s))){if(&option==&PublicOption())SetPublicCommunity(!option.value);else if(&option==&AiOption())SetAiEnabled(!option.value);else if(&option==&AiMemoryOption())SetAiMemory(!option.value);else{option.value=!option.value;WritePrivateProfileStringW(L"menu",Wide(option.key).c_str(),option.value?L"1":L"0",configPath.c_str());}}};
  // stepper: 150 u block, 28 u "-" and "+" buttons, 16.392 u value in the middle; returns -1, 0 or +1
  auto stepper=[&](const std::string& id,const char* value,bool canLower,bool canRaise,float a){const float right=areaW-12*U;
   Label(d,regular,12*U*s,at(right-75*U-TextWidth(regular,12*U,value)/2,26*U-.7f*12*U),value,Rgba(214,210,226,a));
@@ -2818,7 +2818,7 @@ void DrawMenuSettings(ImVec2 origin,float s,float opacity){
   const bool lower=button(id+"-minus","",right-122*U,28*U,0,canLower,a);d->AddLine(at(right-150*U+9.5f*U,26*U),at(right-150*U+18.5f*U,26*U),Rgba(230,230,235,a*(canLower?1.f:.4f)),1.6f*s);
   if(lower)return -1;return button(id+"-plus","+",right,28*U,0,canRaise,a)?1:0;};
  header("INTERFACE","\xee\x80\x89");for(auto& option:interfaceOptions)toggle(option);
- header("CONNECTION","\xee\x80\x89");for(auto& option:connectionOptions)toggle(option);toggle(PublicOption());toggle(AiOption());
+ header("CONNECTION","\xee\x80\x89");for(auto& option:connectionOptions)toggle(option);toggle(PublicOption());toggle(AiOption());if(AiOption().value)toggle(AiMemoryOption());
  // Theme: one swatch per theme (glow -> background gradient), selection ringed in white; saved in [interface] theme
  {const float a2=row("theme","Theme",(std::string(Th().name)+"  \xc2\xb7  menu colors and animated background").c_str());const float size=20*U,gap=8*U,right=areaW-12*U;
   for(int t=themeCount-1;t>=0;--t){const float x=right-(themeCount-t)*size-(themeCount-1-t)*gap;const ImVec2 lo=at(x,16*U),hi=at(x+size,36*U);
@@ -2863,14 +2863,14 @@ const bool waiting=listening==-100-i;const char* value=waiting?"Press a key...":
  header("ABOUT","\xee\x80\xa1");
  {const float a=row("reset-all","Reset all settings","Resets every setting on this page to its default.");const bool armed=resetArmed>=0&&ImGui::GetTime()-resetArmed<3;
   bool changed=schematicRange!=4.5f||schematicDelay!=75||schematicPerTick!=1||itemProfiles.size()!=1||itemProfiles[0].name!="sword"||!itemProfiles[0].weapon||!itemProfiles[0].items.empty()||itemProfiles[0].customSpeed||itemProfiles[0].speed!=8||!itemProfiles[0].blocks.empty();
-  for(auto* option:MenuToggles())changed|=option->value!=option->initial;changed|=PublicOption().value||AiOption().value;for(auto& key:menuKeys)changed|=key.code!=key.initialCode;
+  for(auto* option:MenuToggles())changed|=option->value!=option->initial;changed|=PublicOption().value||AiOption().value||!AiMemoryOption().value;for(auto& key:menuKeys)changed|=key.code!=key.initialCode;
   if(button("reset-all",armed?"Click again to reset":"Reset all",areaW-12*U,(armed?150:92)*U,3,changed||armed,a)){
    if(!armed)resetArmed=ImGui::GetTime();
    else{for(const wchar_t* name:{L"schematic-place-range",L"schematic-place-delay",L"schematic-placements-per-tick",L"item-profiles"})WritePrivateProfileStringW(L"menu",name,nullptr,configPath.c_str());
     for(size_t k=0;k<itemProfiles.size()+4;++k)WritePrivateProfileStringW(L"menu",(L"item-profile-"+std::to_wstring(k)).c_str(),nullptr,configPath.c_str());
     for(auto* option:MenuToggles())WritePrivateProfileStringW(L"menu",Wide(option->key).c_str(),nullptr,configPath.c_str());
     for(auto& key:menuKeys){WritePrivateProfileStringW(L"menu",Wide(key.key).c_str(),nullptr,configPath.c_str());WritePrivateProfileStringW(L"menu",Wide(std::string(key.key)+"-code").c_str(),nullptr,configPath.c_str());}
-    LoadMenuSettings();SetPublicCommunity(false);SetAiEnabled(false);profileOpen=-1;resetArmed=-1;}}}
+    LoadMenuSettings();SetPublicCommunity(false);SetAiEnabled(false);SetAiMemory(true);profileOpen=-1;resetArmed=-1;}}}
  ImGui::SetCursorPosY(y*s);ImGui::Dummy(ImVec2(1,1));FadeEdges(s,opacity);ImGui::EndChild();
 }
 }

@@ -70,6 +70,7 @@ struct ClientInfo {
     std::string nickelVersion;
     std::string gameVersion;
     std::string language;  // the player's language ("fr", "en-US"...), so the answer uses it
+    std::string memory;    // "on" or "off": Nickel AI memory in Settings; empty sends nothing (the service: off)
 };
 
 struct ClientConfig {
@@ -399,6 +400,12 @@ public:
         config_.client = std::move(info);
     }
 
+    // Nickel AI memory for the next turns (the Settings toggle may change while a chat is open).
+    void SetMemory(bool on) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        config_.client.memory = on ? "on" : "off";
+    }
+
     // Starts a turn with the player's message (1 to 4000 code points of UTF-8, not blank). False when it was refused
     // at once: busy (a turn in flight or waiting for tools: the snapshot is unchanged), a bad message (unchanged), or a
     // Retry-After still running, the base URL refused, or Stop() (the snapshot's error says why).
@@ -597,6 +604,9 @@ private:
         client.Set("nickel_version", json::Value::MakeString(config_.client.nickelVersion));
         client.Set("game_version", json::Value::MakeString(config_.client.gameVersion));
         client.Set("language", json::Value::MakeString(config_.client.language));
+        if (!config_.client.memory.empty()) {
+            client.Set("memory", json::Value::MakeString(config_.client.memory));
+        }
         json::Value root = json::Value::MakeObject();
         root.Set("conversation_id",
                 conversationId.empty() ? json::Value() : json::Value::MakeString(conversationId));
