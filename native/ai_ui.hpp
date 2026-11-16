@@ -242,6 +242,12 @@ inline std::string ErrorText(const ClientError& error) {
     if (c == "model_unavailable" || c == "unavailable") {
         return "Nickel AI is busy right now. Try again in a moment.";
     }
+    if (c == "conversation_full") {
+        return "This conversation is full. Start a new chat.";
+    }
+    if (c == "service_unavailable") {
+        return "Nickel AI is offline for now. Try again later.";
+    }
     if (c == "update_required") {
         return "Update Nickel to use Nickel AI.";
     }
@@ -782,9 +788,11 @@ struct AiMenu {
     size_t seenItems = 0;
 };
 
+// Never destroyed, like PUBLIC's client: the overlay has no unload path, and a destructor at process exit would join the
+// AI client's worker thread inside DllMain. Turning the option off (AiShutdown) stops it on the render thread.
 AiMenu& Ai() {
-    static AiMenu menu;
-    return menu;
+    static AiMenu* menu = new AiMenu();
+    return *menu;
 }
 
 // Drops the page, the tools and the client (its worker stops with it): once off, nothing more is sent.

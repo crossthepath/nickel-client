@@ -268,3 +268,15 @@ if(MSVC)
   target_compile_options(nickel_ai_tools_checks PRIVATE /bigobj /utf-8)
 endif()
 add_test(NAME ai_tools_checks COMMAND nickel_ai_tools_checks)
+# Nickel AI end to end: the panel's logic over the real client and tools (native/ai_integration.hpp) against the AI
+# service of the website repository on 127.0.0.1 with a fake model. Set NICKEL_AI_E2E_SERVER to that repository's
+# ai/scripts/e2e-server.mjs (needs node); without it the test is skipped.
+if(WIN32)
+  add_executable(nickel_ai_e2e_checks tests/ai_e2e_checks.cpp)
+  target_include_directories(nickel_ai_e2e_checks PRIVATE native)
+  target_compile_definitions(nickel_ai_e2e_checks PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+  target_compile_options(nickel_ai_e2e_checks PRIVATE /bigobj /utf-8)
+  target_link_libraries(nickel_ai_e2e_checks PRIVATE winhttp bcrypt ws2_32)
+  add_test(NAME ai_e2e_checks COMMAND nickel_ai_e2e_checks)
+  set_tests_properties(ai_e2e_checks PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+endif()
