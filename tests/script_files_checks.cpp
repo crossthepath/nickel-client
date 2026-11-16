@@ -93,10 +93,11 @@ struct Folder {
 };
 
 std::wstring NewRoot() {
+    static int made = 0; // GetTickCount64 moves every ~16 ms: two roots of the same tick would be one folder
     wchar_t temp[MAX_PATH]{};
     GetTempPathW(MAX_PATH, temp);
     const std::wstring root = std::wstring(temp) + L"nickel-script-files-" + std::to_wstring(GetCurrentProcessId()) + L"-"
-            + std::to_wstring(GetTickCount64());
+            + std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(++made);
     CreateDirectoryW(root.c_str(), nullptr);
     return root;
 }
