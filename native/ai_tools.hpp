@@ -122,6 +122,14 @@ struct PacketSource {
     virtual int64_t NowMs() = 0;
 };
 
+// What the game shows right now, for get_server_info and get_world_state (built in the game by ai_menu.hpp). Optional:
+// without it both tools answer that the game cannot be read.
+struct GameSource {
+    virtual ~GameSource() = default;
+    virtual json::Value ServerInfo(const json::Value& input) = 0;
+    virtual json::Value WorldState(const json::Value& input) = 0;
+};
+
 struct Deps {
     overlay::ModuleRegistry& registry;
     overlay::ScriptLibrary& scripts;
@@ -134,6 +142,7 @@ struct Deps {
     // They are marked "available": false, and set_module_enabled (to on) and set_setting refuse them. Optional.
     std::function<bool(const std::string& id)> unavailable;
     PacketSource* packets = nullptr;
+    GameSource* game = nullptr;
 };
 
 // ---- results and cards
@@ -889,7 +898,7 @@ public:
     static const std::vector<std::string>& ToolNames() {
         static const std::vector<std::string> kNames = {
                 "search_modules", "get_module",     "get_client_status",  "list_scripts",
-                "read_script",    "validate_script", "navigate_ui",       "capture_packets", "read_packets", "set_setting",
+                "read_script",    "validate_script", "navigate_ui",       "capture_packets", "read_packets", "get_server_info", "get_world_state", "set_setting",
                 "revert_changes", "set_module_enabled", "write_script",   "set_script_running"};
         return kNames;
     }
@@ -941,6 +950,14 @@ public:
         if (name == "navigate_ui") return NavigateUi(in);
         if (name == "capture_packets") return CapturePackets(in);
         if (name == "read_packets") return ReadPackets(in);
+        if (name == "get_server_info" || name == "get_world_state") {
+            if (deps_.game == nullptr) {
+                return Error("unavailable", "The game cannot be read in this build");
+            }
+            json::Value body = name == "get_server_info" ? deps_.game->ServerInfo(in) : deps_.game->WorldState(in);
+            body.Set("ok", json::Value::MakeBool(true));
+            return Done(body);
+        }
         if (name == "set_setting") return SetSetting(in);
         if (name == "revert_changes") return RevertChanges();
         if (name == "set_module_enabled") return SetModuleEnabled(in);

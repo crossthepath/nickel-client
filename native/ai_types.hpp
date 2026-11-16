@@ -37,7 +37,8 @@ constexpr double kConfirmTimeoutSeconds = 120;    // a card left unanswered is d
 inline const std::vector<std::string>& ReadToolNames() {
     static const std::vector<std::string> names = {"search_modules", "get_module",    "get_client_status",
                                                    "list_scripts",   "read_script",   "validate_script",
-                                                   "navigate_ui",    "capture_packets", "read_packets"};
+                                                   "navigate_ui",    "capture_packets", "read_packets",
+                                                   "get_server_info", "get_world_state"};
     return names;
 }
 

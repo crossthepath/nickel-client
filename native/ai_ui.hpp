@@ -288,6 +288,8 @@ inline std::string ToolActivity(const std::string& tool) {
             {"navigate_ui", "Opening a screen"},
             {"capture_packets", "Capturing packets"},
             {"read_packets", "Reading packets"},
+            {"get_server_info", "Looking at the server"},
+            {"get_world_state", "Looking around"},
             {"set_setting", "Changing a setting"},
             {"revert_changes", "Undoing changes"},
             {"set_module_enabled", "Switching a module"},
