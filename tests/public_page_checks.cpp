@@ -533,7 +533,7 @@ void ConfigFileChecks() {
           "a missing config leaves the preferences alone");
 
     // The PUBLIC setting is not in the preferences ini: no config load turns it on or off.
-    Check(!ReadCommunitySetting(root), "PUBLIC is off without its file");
+    Check(ReadCommunitySetting(root), "PUBLIC is on without its file (on by default)");
     Check(WriteCommunitySetting(root, false), "the setting is written");
     WriteText(prefs, player);
     WriteText(config, "[menu]\r\npublic-community=1\r\n[public]\r\ncommunity=1\r\n");
