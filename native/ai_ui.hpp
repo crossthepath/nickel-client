@@ -1266,6 +1266,19 @@ MenuOption& AiOption() {
     return aiAssistantOption;
 }
 
+// Settings > Connection, under Nickel AI: [ai] memory= in the same settings.ini (on by default).
+MenuOption aiMemoryOption = {"nickel-ai-memory",
+                             "Nickel AI memory",
+                             "Nickel AI keeps short notes about you (your server, your preferences, the scripts you "
+                             "make together) on nickelclient.com and reads them when a new chat starts. While off, it "
+                             "keeps nothing and its notes are deleted with your next message.",
+                             true,
+                             true};
+
+MenuOption& AiMemoryOption() {
+    return aiMemoryOption;
+}
+
 // %APPDATA%\Nickel\ai\settings.ini in the game (the folder of the preferences ini).
 std::wstring AiSettingPath() {
     return configPath.substr(0, configPath.find_last_of(L"\\/")) + L"\\ai\\settings.ini";
@@ -1355,6 +1368,17 @@ void SetAiEnabled(bool on) {
     }
 }
 
+// The Settings toggle and Reset all: kept in settings.ini and sent with the next message of an open chat.
+void SetAiMemory(bool on) {
+    AiMemoryOption().value = on;
+    const std::wstring path = AiSettingPath();
+    CreateDirectoryW(path.substr(0, path.find_last_of(L"\\/")).c_str(), nullptr);
+    WritePrivateProfileStringW(L"ai", L"memory", on ? L"1" : L"0", path.c_str());
+    if (Ai().client) {
+        Ai().client->SetMemory(on);
+    }
+}
+
 // Called once per frame by DrawMenu: reads the option once, and makes sure nothing stays alive while it is off.
 void AiTick() {
     AiMenu& m = Ai();
@@ -1364,6 +1388,7 @@ void AiTick() {
     if (!m.settingRead) {
         m.settingRead = true;
         AiOption().value = GetPrivateProfileIntW(L"ai", L"enabled", 1, AiSettingPath().c_str()) == 1;
+        AiMemoryOption().value = GetPrivateProfileIntW(L"ai", L"memory", 1, AiSettingPath().c_str()) == 1;
         wchar_t place[64] = {};
         GetPrivateProfileStringW(L"ai", L"bubble", L"", place, 64, AiSettingPath().c_str());
         m.placed = nickel::ai::ReadBubblePlace(Utf8(place), &m.placeX, &m.placeY);
@@ -2286,6 +2311,9 @@ void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity,
             ai::Services services = ai::Factory()();
             m.client = std::move(services.client);
             m.tools = std::move(services.tools);
+            if (m.client) {
+                m.client->SetMemory(AiMemoryOption().value);
+            }
         }
         m.page = std::make_unique<ai::ChatPage>(m.client.get(), m.tools.get());
     }

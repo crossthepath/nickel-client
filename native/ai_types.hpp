@@ -216,6 +216,8 @@ public:
     virtual void NewConversation() = 0;
     virtual uint64_t Revision() const = 0;
     virtual ConversationSnapshot Snapshot() const = 0;
+    // Nickel AI memory (Settings): sent with the next turns. Clients without memory ignore it.
+    virtual void SetMemory(bool) {}
 };
 
 // The tool side, as the panel uses it. Called on the render thread only, while the panel is visible.

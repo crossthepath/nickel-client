@@ -619,6 +619,17 @@ void StreamedText(TestServer& server) {
     SendAndWait(client, "hello");
     json::Parse(server.Requests().back().body, &third);
     Check(third["client"]["language"].AsString() == "en", "SetClientInfo changes the next turn's language");
+    Check(third["client"]["memory"].IsNull(), "no memory field until the Settings toggle is known");
+
+    // Nickel AI memory (Settings): sent with the next turns, on or off.
+    client.SetMemory(true);
+    SendAndWait(client, "hello");
+    json::Parse(server.Requests().back().body, &third);
+    Check(third["client"]["memory"].AsString() == "on", "SetMemory(true) sends memory on");
+    client.SetMemory(false);
+    SendAndWait(client, "hello");
+    json::Parse(server.Requests().back().body, &third);
+    Check(third["client"]["memory"].AsString() == "off", "SetMemory(false) sends memory off");
 
     bool leak = false;
     {
