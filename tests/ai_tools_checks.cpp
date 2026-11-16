@@ -280,11 +280,13 @@ struct World {
         registry.keys["kill_aura"] = 'R';
         defaults = registry.list;
 
-        library.AddScript("aimbot", "local m = module(\"Aim\", {category = \"Combat\"})\nm:onEnable(function() end)\n",
+        library.AddScript("aimbot",
+                          "local m = nickel.module{ name = \"Aim\", category = \"Combat\" }\nm:onEnable(function() end)\n",
                           ScriptState::StoppedAfterErrors);
         library.scripts.back().errors = {"aimbot:1: e1", "aimbot:2: e2", "aimbot:3: e3", "aimbot:4: e4"};
         library.scripts.back().modules.push_back({"Aim", 5, true});
-        library.AddScript("Auto Totem", "-- totem\nlocal t = module('Totem')\n", ScriptState::Running);
+        library.AddScript("Auto Totem", "-- totem\nlocal t = nickel.module({ category = 'Player', name = 'Totem' })\n",
+                          ScriptState::Running);
         library.AddScript("held one", "print('x')\n");
         library.scripts.back().held = true;
     }
@@ -612,19 +614,21 @@ void ChecksEnabledAndRevert() {
 void ChecksWriteScript() {
     World world;
     AssistantTools tools = world.Tools();
-    const json::Value create = Input("{\"name\":\"fly helper\",\"source\":\"local m = module(\\\"Fly\\\")\\n\","
-                                     "\"expected_sha256\":null}");
+    json::Value create = json::Value::MakeObject();
+    create.Set("name", json::Value::MakeString("fly helper"));
+    create.Set("source", json::Value::MakeString("local m = nickel.module{name = \"Fly\"}\n"));
+    create.Set("expected_sha256", json::Value());
     Check(IsError(tools.Run("write_script", create), "confirmation_required") && world.library.writes == 0,
           "write_script without confirmation writes nothing");
     ConfirmCard card = tools.Describe("write_script", create);
-    Check(card.ok && card.newScript && card.script == "fly helper" && card.diff == "+local m = module(\"Fly\")\n" &&
+    Check(card.ok && card.newScript && card.script == "fly helper" && card.diff == "+local m = nickel.module{name = \"Fly\"}\n" &&
                   card.added == 1 && card.removed == 0 && card.compileErrors.empty() &&
                   card.lines[0].before == "(new script)",
           "the card of a new script shows its whole code");
     ToolResult result = tools.Run("write_script", create, true);
     json::Value body = Parse(result.content);
     Check(!result.isError && body["ok"].AsBool() && body["held"].AsBool() &&
-                  body["sha256"].AsString() == FakeSha("local m = module(\"Fly\")\n") &&
+                  body["sha256"].AsString() == FakeSha("local m = nickel.module{name = \"Fly\"}\n") &&
                   world.library.Info("fly helper") != nullptr && world.library.Info("fly helper")->held &&
                   world.library.started.empty(),
           "a written script is held and not started");
@@ -640,7 +644,8 @@ void ChecksWriteScript() {
           "a malformed revision is invalid input");
 
     const std::string oldText = world.library.files["Auto Totem"];
-    const std::string newText = "-- totem\nlocal t = module('Totem')\nt:onEnable(function() end)\nerror 4\n";
+    const std::string newText = "-- totem\nlocal t = nickel.module({ category = 'Player', name = 'Totem' })\n"
+                                "t:onEnable(function() end)\nerror 4\n";
     json::Value replace = json::Value::MakeObject();
     replace.Set("name", json::Value::MakeString("auto totem"));
     replace.Set("source", json::Value::MakeString(newText));
@@ -648,7 +653,8 @@ void ChecksWriteScript() {
     card = tools.Describe("write_script", replace);
     Check(card.ok && !card.newScript && card.script == "Auto Totem" && card.added == 2 && card.removed == 0 &&
                   card.diff.find("+t:onEnable(function() end)\n") != std::string::npos &&
-                  card.diff.find(" local t = module('Totem')\n") != std::string::npos &&
+                  card.diff.find(" local t = nickel.module({ category = 'Player', name = 'Totem' })\n") !=
+                          std::string::npos &&
                   card.compileErrors.size() == 1 && card.compileErrors[0].line == 4,
           "the card of a new version shows the diff and the compile errors");
     result = tools.Run("write_script", replace, true);
@@ -733,6 +739,226 @@ void ChecksSizeCap() {
           "get_module of a large module is cut with a marker");
 }
 
+void ChecksDeclaredModules() {
+    using nickel::ai::detail::DeclaredModules;
+    const std::string source =
+            "local a = nickel.module{ name = \"A\", category = \"Combat\" }\n"
+            "local b = nickel.module({ settings = { name = \"inner\" }, name = 'B' })\n"
+            "local module = nickel.module\n"
+            "local c = module{ category = \"HUD\", -- name = \"Commented\"\n name = \"C\" }\n"
+            "local d = nickel.module{ description = \"name = 'N'\", name = \"D\" }\n"
+            "local again = nickel.module{ name = \"A\" }\n"
+            "local x = foo.module{ name = \"X\" }\n"
+            "local y = othermodule{ name = \"Y\" }\n"
+            "local z = obj:module{ name = \"Z\" }\n"
+            "local w = nickel.modules.get(\"W\")\n"
+            "local dyn = nickel.module{ name = someName }\n";
+    const std::vector<std::string> names = DeclaredModules(source);
+    Check(names == std::vector<std::string>({"A", "B", "C", "D"}),
+          "declared modules: nickel.module{...}, nickel.module({...}), a local alias; nested tables, comments, "
+          "strings, other tables' module and repeats are skipped");
+    Check(DeclaredModules("local m = module(\"Old\")\n").empty(), "a string argument is not the real API");
+
+    World world;
+    AssistantTools tools = world.Tools();
+    ConfirmCard card = tools.Describe("set_script_running", Input("{\"name\":\"aimbot\",\"running\":true}"));
+    Check(card.ok && card.declaredModules == std::vector<std::string>({"Aim"}),
+          "the start card of a real script lists its nickel.module declaration");
+    world.library.AddScript("dynamic", "local n = 'Dyn'\nlocal m = nickel.module{ name = n }\n");
+    world.library.scripts.back().modules.push_back({"Dyn", -1, false});
+    card = tools.Describe("set_script_running", Input("{\"name\":\"dynamic\",\"running\":true}"));
+    Check(card.ok && card.declaredModules == std::vector<std::string>({"Dyn"}),
+          "without a literal name the start card uses the modules the library knows");
+}
+
+void ChecksReadPages() {
+    World world;
+    AssistantTools tools = world.Tools();
+    std::string big;
+    for (int i = 0; i < 2500; ++i) {
+        big += "print(\"line " + std::to_string(i) + " \xc3\xa9\")\n";
+    }
+    world.library.AddScript("big", big);
+    ToolResult result = tools.Run("read_script", Input("{\"name\":\"big\"}"));
+    json::Value body = Parse(result.content);
+    const int64_t firstEnd = body["end_line"].AsInt64();
+    Check(!result.isError && result.content.size() <= nickel::ai::kMaxToolResultBytes && body["truncated"].AsBool() &&
+                  body["start_line"].AsInt64() == 1 && firstEnd > 100 && firstEnd < 2500 &&
+                  body["next_start_line"].AsInt64() == firstEnd + 1 && body["total_lines"].AsInt64() == 2500 &&
+                  body["total_bytes"].AsInt64() == static_cast<int64_t>(big.size()),
+          "read_script of a long script: the first page with its line numbers and the totals");
+
+    json::Value write = json::Value::MakeObject();
+    write.Set("name", json::Value::MakeString("big"));
+    write.Set("source", json::Value::MakeString(body["source"].AsString()));
+    write.Set("expected_sha256", json::Value::MakeString(body["sha256"].AsString()));
+    const int writes = world.library.writes;
+    Check(IsError(tools.Run("write_script", write, true), "partial_read") && world.library.writes == writes &&
+                  world.library.files["big"] == big,
+          "write_script refuses to replace a script read in part (the cut copy is not written)");
+    const ConfirmCard partialCard = tools.Describe("write_script", write);
+    Check(!partialCard.ok && partialCard.error == "partial_read", "the card names partial_read too");
+
+    std::string joined = body["source"].AsString();
+    bool capped = true;
+    int pages = 1;
+    for (int64_t next = body["next_start_line"].AsInt64(); next > 0 && pages < 50; ++pages) {
+        result = tools.Run("read_script", Input("{\"name\":\"big\",\"start_line\":" + std::to_string(next) + "}"));
+        body = Parse(result.content);
+        capped = capped && !result.isError && result.content.size() <= nickel::ai::kMaxToolResultBytes &&
+                 body["start_line"].AsInt64() == next;
+        joined += body["source"].AsString();
+        next = body.Find("next_start_line") != nullptr ? body["next_start_line"].AsInt64() : 0;
+    }
+    Check(capped && pages > 1 && joined == big && body["end_line"].AsInt64() == 2500,
+          "the pages cover the whole script, each within 16 KB");
+    result = tools.Run("write_script", write, true);
+    Check(!result.isError && world.library.files["big"] == write["source"].AsString(),
+          "once every page was read, the replace is accepted");
+
+    Check(IsError(tools.Run("read_script", Input("{\"name\":\"big\",\"start_line\":99999}")), "invalid_input"),
+          "a start_line after the last line");
+    Check(IsError(tools.Run("read_script", Input("{\"name\":\"big\",\"start_line\":0}")), "invalid_input") &&
+                  IsError(tools.Run("read_script", Input("{\"name\":\"big\",\"start_line\":1.5}")), "invalid_input") &&
+                  IsError(tools.Run("read_script", Input("{\"name\":\"big\",\"start_line\":\"2\"}")), "invalid_input"),
+          "start_line is a whole number from 1");
+
+    body = Parse(tools.Run("read_script", Input("{\"name\":\"held one\"}")).content);
+    Check(body.Find("truncated") == nullptr && body.Find("next_start_line") == nullptr &&
+                  body["total_lines"].AsInt64() == 1 && body["end_line"].AsInt64() == 1,
+          "a short script is one page");
+
+    // one line longer than a page: cut, and never counted as read
+    const std::string longLine = std::string(20000, 'x') + "\nprint(1)\n";
+    world.library.AddScript("long line", longLine);
+    result = tools.Run("read_script", Input("{\"name\":\"long line\"}"));
+    body = Parse(result.content);
+    Check(!result.isError && result.content.size() <= nickel::ai::kMaxToolResultBytes && body["truncated"].AsBool() &&
+                  body["end_line"].AsInt64() == 1 && body["next_start_line"].AsInt64() == 2 &&
+                  body["source"].AsString().size() > 10000,
+          "a line longer than a page is cut");
+    tools.Run("read_script", Input("{\"name\":\"long line\",\"start_line\":2}"));
+    json::Value replaceLong = json::Value::MakeObject();
+    replaceLong.Set("name", json::Value::MakeString("long line"));
+    replaceLong.Set("source", json::Value::MakeString("print(2)\n"));
+    replaceLong.Set("expected_sha256", json::Value::MakeString(body["sha256"].AsString()));
+    Check(IsError(tools.Run("write_script", replaceLong, true), "partial_read"),
+          "a script with a cut line cannot be replaced from the cut copy");
+}
+
+void ChecksDiffHunks() {
+    using nickel::ai::detail::DiffLines;
+    std::string before, after;
+    for (int i = 0; i < 30; ++i) {
+        before += "l" + std::to_string(i) + "\n";
+        after += (i == 2 ? "X2" : i == 27 ? "X27" : "l" + std::to_string(i)) + "\n";
+    }
+    nickel::ai::detail::LineDiff diff = DiffLines(before, after);
+    Check(diff.text == "@@ line 1 @@\n l0\n l1\n-l2\n+X2\n l3\n l4\n l5\n"
+                       "@@ line 25 @@\n l24\n l25\n l26\n-l27\n+X27\n l28\n l29\n" &&
+                  diff.added == 2 && diff.removed == 2 && !diff.truncated,
+          "unchanged runs are folded into hunks with three lines of context");
+
+    before.clear();
+    after.clear();
+    for (int i = 0; i < 3000; ++i) {
+        const std::string line = "local value" + std::to_string(i) + " = " + std::to_string(i) + "\n";
+        before += line;
+        after += (i == 1 ? "-- first change\n" : i == 2990 ? "-- last change\n" : line);
+    }
+    diff = DiffLines(before, after);
+    Check(diff.text.find("+-- first change\n") != std::string::npos &&
+                  diff.text.find("+-- last change\n") != std::string::npos && diff.text.size() < 2000 &&
+                  !diff.truncated,
+          "two changes far apart in a 60 KB script both show");
+
+    before.clear();
+    after.clear();
+    for (int i = 0; i < 400; ++i) {
+        before += "old line number " + std::to_string(i) + "\n";
+        after += (i % 8 == 0 ? "new line number " : "old line number ") + std::to_string(i) + "\n";
+    }
+    const size_t fullSize = DiffLines(before, after, size_t{1} << 30).text.size();
+    diff = DiffLines(before, after, 4000);
+    Check(fullSize > 8000 && diff.text.size() <= 4000 && !diff.truncated && diff.added == 50 &&
+                  diff.text.find("+new line number 0\n") != std::string::npos &&
+                  diff.text.find("+new line number 392\n") != std::string::npos &&
+                  diff.text.find(" old line number 1\n") == std::string::npos,
+          "over the budget, the context is dropped before any changed line");
+    diff = DiffLines(before, after, 600);
+    Check(diff.text.size() <= 600 && diff.truncated && diff.added == 50 && diff.removed == 50,
+          "a diff that cannot fit is cut with the marker and full counts");
+
+    diff = DiffLines("a\nb\nc\nd\n", "a\nX\nb\nd\n");
+    Check(diff.text == "@@ line 1 @@\n a\n+X\n b\n-c\n d\n" && diff.added == 1 && diff.removed == 1,
+          "an addition and a removal in the same hunk");
+    diff = DiffLines("1\n2\n3\n", "1\n3\n2\n3\n");
+    Check(diff.added == 1 && diff.removed == 0, "the shortest edit script");
+    before.clear();
+    after.clear();
+    for (int i = 0; i < 1500; ++i) {
+        before += "a" + std::to_string(i) + "\n";
+        after += "b" + std::to_string(i) + "\n";
+    }
+    diff = DiffLines(before, after);
+    Check(diff.added == 1500 && diff.removed == 1500 && diff.text.compare(0, 17, "@@ line 1 @@\n-a0\n") == 0,
+          "a full rewrite is a removed then an added block");
+
+    diff = DiffLines("a\n", std::string(40000, 'y') + "\n");
+    Check(diff.truncated && diff.text.size() <= nickel::ai::kMaxDiffBytes && diff.text.size() > 30000 &&
+                  diff.text.compare(0, 18, "@@ line 1 @@\n-a\n+y") == 0,
+          "a line longer than the diff budget is cut, not left out");
+}
+
+void ChecksWriteCardRunning() {
+    World world;
+    AssistantTools tools = world.Tools();
+    json::Value replace = json::Value::MakeObject();
+    replace.Set("name", json::Value::MakeString("Auto Totem"));
+    replace.Set("source", json::Value::MakeString("print(1)\n"));
+    replace.Set("expected_sha256", json::Value::MakeString(FakeSha(world.library.files["Auto Totem"])));
+    ConfirmCard card = tools.Describe("write_script", replace);
+    Check(card.ok && card.wasRunning && card.lines.size() == 2 && card.lines[1].what == "State" &&
+                  card.lines[1].before == "Running" && card.lines[1].after.find("Stopped") == 0,
+          "the write card warns that a running script stops");
+    replace.Set("name", json::Value::MakeString("held one"));
+    replace.Set("expected_sha256", json::Value::MakeString(FakeSha(world.library.files["held one"])));
+    card = tools.Describe("write_script", replace);
+    Check(card.ok && !card.wasRunning && card.lines.size() == 1, "no warning for a script that is not running");
+}
+
+void ChecksUnavailable() {
+    World world;
+    world.registry.list.push_back(MakeModule("disabler", "Disabler", "Utility", "Disables anticheat checks",
+                                             {MakeSetting("mode", "Mode", "enum", 0, 1, 0.01, 0, "A", {"A", "B"})}));
+    const int disabler = world.registry.Count() - 1;
+    nickel::ai::Deps deps{world.registry, world.library, world.writer, world.ui, world.status, &world.defaults};
+    deps.unavailable = [](const std::string& id) { return id == "disabler"; };
+    AssistantTools tools(deps);
+
+    json::Value body = Parse(tools.Run("search_modules", Input("{\"query\":\"disabler\"}")).content);
+    Check(body["modules"].size() == 1 && body["modules"].At(0).Find("available") != nullptr &&
+                  !body["modules"].At(0)["available"].AsBool(),
+          "search marks a module that cannot be switched on");
+    body = Parse(tools.Run("search_modules", Input("{\"query\":\"aura\"}")).content);
+    Check(body["modules"].At(0).Find("available") == nullptr, "other modules carry no mark");
+    body = Parse(tools.Run("get_module", Input("{\"id\":\"disabler\"}")).content);
+    Check(body.Find("available") != nullptr && !body["available"].AsBool(), "get_module marks it too");
+
+    const json::Value on = Input("{\"module_id\":\"disabler\",\"enabled\":true}");
+    const ConfirmCard card = tools.Describe("set_module_enabled", on);
+    Check(!card.ok && card.error == "not_available", "no card to turn it on");
+    Check(IsError(tools.Run("set_module_enabled", on, true), "not_available") &&
+                  !world.registry.list[static_cast<size_t>(disabler)].enabled && tools.Journal().empty(),
+          "set_module_enabled refuses it and changes nothing");
+    Check(IsError(tools.Run("set_setting", Input("{\"module_id\":\"disabler\",\"setting\":\"mode\",\"value\":\"B\"}"),
+                            true), "not_available") &&
+                  world.registry.list[static_cast<size_t>(disabler)].settings[0].text == "A",
+          "set_setting refuses it too");
+    const ToolResult off = tools.Run("set_module_enabled", Input("{\"module_id\":\"disabler\",\"enabled\":false}"), true);
+    Check(!off.isError && tools.Journal().empty(), "turning it off (already off) is allowed and changes nothing");
+}
+
 } // namespace
 
 int main() {
@@ -747,6 +973,11 @@ int main() {
     ChecksWriteScript();
     ChecksRunScript();
     ChecksSizeCap();
+    ChecksDeclaredModules();
+    ChecksReadPages();
+    ChecksDiffHunks();
+    ChecksWriteCardRunning();
+    ChecksUnavailable();
     std::printf(failed == 0 ? "all ai tools checks passed\n" : "%d ai tools checks failed\n", failed);
     return failed == 0 ? 0 : 1;
 }

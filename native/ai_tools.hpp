@@ -11,6 +11,9 @@
 //   says the player confirmed. The confirmation card comes from Describe, which reads the registry and the script
 //   library, never the model's text.
 // - Scripts written by the assistant are held (ScriptLibrary::WriteSource): they never run before set_script_running.
+// - read_script returns a long script in pages (start_line); write_script refuses ("partial_read") to replace a
+//   revision of which a page was not read, so a cut copy cannot replace the whole file.
+// - Modules the player cannot switch on (Deps::unavailable, the menu's "Soon" cards) cannot be turned on or set.
 // - Results are JSON text of at most 16 KB; lists and long texts are cut with "truncated": true.
 // - Private text settings (a hidden nickname, a disconnect command, sign text, a fake server address) are sent as
 //   "<hidden>".
@@ -27,7 +30,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <map>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -114,6 +119,9 @@ struct Deps {
     const ClientStatusSource& status;
     // The catalogue as generated, before saved preferences were applied: the "default" of get_module. Optional.
     const std::vector<overlay::Module>* defaults = nullptr;
+    // True for the modules the player cannot switch on (the menu's "Soon" cards, which it keeps off every frame).
+    // They are marked "available": false, and set_module_enabled (to on) and set_setting refuse them. Optional.
+    std::function<bool(const std::string& id)> unavailable;
 };
 
 // ---- results and cards
@@ -147,7 +155,9 @@ struct ConfirmCard {
     int added = 0;
     int removed = 0;
     std::vector<overlay::CompileError> compileErrors; // the new source's (it can still be saved)
-    // set_script_running when starting: module("...") declarations found in the source (best effort)
+    bool wasRunning = false; // the script runs now: saving holds it, so it stops (a "State" line says so too)
+    // set_script_running when starting: the names of the nickel.module{ name = "..." } declarations found in the
+    // source (best effort), or the modules the library knows for the script when none is found
     std::vector<std::string> declaredModules;
 };
 
@@ -395,36 +405,20 @@ inline std::vector<std::string> SplitLines(const std::string& text) {
     return lines;
 }
 
-struct LineDiff {
-    std::string text;
-    int added = 0;
-    int removed = 0;
-    bool truncated = false;
+// One line of a diff: ' ' kept, '-' removed, '+' added. `a` is the line's index in the old text (for '+', the index
+// of the old line it comes before); `b` its index in the new text (for '-', the new line it comes before).
+struct DiffOp {
+    char mark;
+    size_t a;
+    size_t b;
 };
 
-// A line diff of `before` -> `after`: the common start and end are kept as up to three context lines; the middle is
-// diffed by longest common subsequence when it is small enough, otherwise shown as a removed then an added block.
-inline LineDiff DiffLines(const std::string& before, const std::string& after, size_t maxBytes = kMaxDiffBytes) {
-    const std::vector<std::string> a = SplitLines(before);
-    const std::vector<std::string> b = SplitLines(after);
-    LineDiff diff;
-    auto emit = [&](char mark, const std::string& line) {
-        if (mark == '+') {
-            ++diff.added;
-        } else if (mark == '-') {
-            ++diff.removed;
-        }
-        if (diff.truncated) {
-            return;
-        }
-        if (diff.text.size() + line.size() + 2 > maxBytes) {
-            diff.truncated = true;
-            return;
-        }
-        diff.text += mark;
-        diff.text += line;
-        diff.text += '\n';
-    };
+// The edit script of `a` -> `b`: the common start and end are kept lines; the middle is diffed with Myers' algorithm
+// (a shortest edit script, removals before additions at the same place) when it needs at most kMaxEdits removed and
+// added lines, otherwise shown as a removed then an added block.
+inline std::vector<DiffOp> DiffOps(const std::vector<std::string>& a, const std::vector<std::string>& b) {
+    constexpr int kMaxEdits = 1000;
+    std::vector<DiffOp> ops;
     size_t prefix = 0;
     while (prefix < a.size() && prefix < b.size() && a[prefix] == b[prefix]) {
         ++prefix;
@@ -434,99 +428,313 @@ inline LineDiff DiffLines(const std::string& before, const std::string& after, s
            a[a.size() - 1 - suffix] == b[b.size() - 1 - suffix]) {
         ++suffix;
     }
-    const size_t na = a.size() - prefix - suffix;
-    const size_t nb = b.size() - prefix - suffix;
-    if (na == 0 && nb == 0) {
+    for (size_t k = 0; k < prefix; ++k) {
+        ops.push_back({' ', k, k});
+    }
+    const int na = static_cast<int>(a.size() - prefix - suffix);
+    const int nb = static_cast<int>(b.size() - prefix - suffix);
+    auto same = [&](int x, int y) { return a[prefix + static_cast<size_t>(x)] == b[prefix + static_cast<size_t>(y)]; };
+    // trace[d][k + d]: the furthest x on diagonal k (x - y) after d edits
+    std::vector<std::vector<int>> trace;
+    bool found = na == 0 || nb == 0;
+    if (!found) {
+        std::vector<int> v(1, 0); // d = -1 view: v[k + d] with d = 0 below reads v[0]
+        for (int d = 0; d <= std::min(na + nb, kMaxEdits) && !found; ++d) {
+            std::vector<int> next(static_cast<size_t>(2 * d + 1), 0);
+            for (int k = -d; k <= d; k += 2) {
+                // previous V (d - 1) at diagonal j, valid for |j| <= d - 1
+                auto prev = [&](int j) { return v[static_cast<size_t>(j + d - 1)]; };
+                int x;
+                if (d == 0) {
+                    x = 0;
+                } else if (k == -d || (k != d && prev(k - 1) < prev(k + 1))) {
+                    x = prev(k + 1); // an added line
+                } else {
+                    x = prev(k - 1) + 1; // a removed line
+                }
+                int y = x - k;
+                while (x < na && y < nb && same(x, y)) {
+                    ++x;
+                    ++y;
+                }
+                next[static_cast<size_t>(k + d)] = x;
+                if (x >= na && y >= nb) {
+                    found = true;
+                }
+            }
+            trace.push_back(next);
+            v = std::move(next);
+        }
+    }
+    if (found && !trace.empty()) {
+        std::vector<DiffOp> middle; // built backwards
+        int x = na, y = nb;
+        for (int d = static_cast<int>(trace.size()) - 1; d > 0; --d) {
+            const std::vector<int>& v = trace[static_cast<size_t>(d - 1)];
+            auto prev = [&](int j) { return v[static_cast<size_t>(j + d - 1)]; };
+            const int k = x - y;
+            const bool added = k == -d || (k != d && prev(k - 1) < prev(k + 1));
+            const int prevK = added ? k + 1 : k - 1;
+            const int prevX = prev(prevK);
+            const int prevY = prevX - prevK;
+            const int startX = added ? prevX : prevX + 1;
+            const int startY = added ? prevY + 1 : prevY;
+            while (x > startX && y > startY) {
+                --x;
+                --y;
+                middle.push_back({' ', prefix + static_cast<size_t>(x), prefix + static_cast<size_t>(y)});
+            }
+            if (added) {
+                middle.push_back({'+', prefix + static_cast<size_t>(prevX), prefix + static_cast<size_t>(prevY)});
+            } else {
+                middle.push_back({'-', prefix + static_cast<size_t>(prevX), prefix + static_cast<size_t>(prevY)});
+            }
+            x = prevX;
+            y = prevY;
+        }
+        while (x > 0 && y > 0) {
+            --x;
+            --y;
+            middle.push_back({' ', prefix + static_cast<size_t>(x), prefix + static_cast<size_t>(y)});
+        }
+        ops.insert(ops.end(), middle.rbegin(), middle.rend());
+    } else {
+        for (int i = 0; i < na; ++i) {
+            ops.push_back({'-', prefix + static_cast<size_t>(i), prefix});
+        }
+        for (int j = 0; j < nb; ++j) {
+            ops.push_back({'+', prefix + static_cast<size_t>(na), prefix + static_cast<size_t>(j)});
+        }
+    }
+    for (size_t k = 0; k < suffix; ++k) {
+        ops.push_back({' ', a.size() - suffix + k, b.size() - suffix + k});
+    }
+    return ops;
+}
+
+// Writes the hunks of `ops` with `context` kept lines around each change: a run of unchanged lines longer than twice
+// the context is folded, and the next hunk starts with "@@ line N @@" (N: the old text's line). No header when the old
+// text is empty (a new script). Stops at `maxBytes` (0: no limit) with truncated set; a line that does not fit is cut.
+inline std::string RenderDiff(const std::vector<DiffOp>& ops, const std::vector<std::string>& a,
+                              const std::vector<std::string>& b, size_t context, size_t maxBytes, bool* truncated) {
+    const size_t none = static_cast<size_t>(-1);
+    // distance (in ops) to the nearest change before and after each op
+    std::vector<size_t> before(ops.size(), none), after(ops.size(), none);
+    for (size_t i = 0, last = none; i < ops.size(); ++i) {
+        if (ops[i].mark != ' ') {
+            last = i;
+        }
+        before[i] = last == none ? none : i - last;
+    }
+    for (size_t i = ops.size(), next = none; i-- > 0;) {
+        if (ops[i].mark != ' ') {
+            next = i;
+        }
+        after[i] = next == none ? none : next - i;
+    }
+    std::string text;
+    *truncated = false;
+    auto append = [&](const std::string& piece) {
+        if (maxBytes == 0 || text.size() + piece.size() <= maxBytes) {
+            text += piece;
+            return true;
+        }
+        *truncated = true;
+        return false;
+    };
+    bool shownBefore = false;
+    for (size_t i = 0; i < ops.size(); ++i) {
+        const bool show = (before[i] != none && before[i] <= context) || (after[i] != none && after[i] <= context);
+        if (!show) {
+            shownBefore = false;
+            continue;
+        }
+        if (!shownBefore && !a.empty() && !append("@@ line " + std::to_string(ops[i].a + 1) + " @@\n")) {
+            break;
+        }
+        shownBefore = true;
+        const std::string& line = ops[i].mark == '+' ? b[ops[i].b] : a[ops[i].a];
+        if (!append(std::string(1, ops[i].mark) + line + "\n")) {
+            if (maxBytes > text.size() + 16) {
+                text += ops[i].mark;
+                text += CutUtf8(line, maxBytes - text.size() - 1); // the mark is counted; room is left for '\n'
+                text += '\n';
+            }
+            break;
+        }
+    }
+    return text;
+}
+
+struct LineDiff {
+    std::string text;
+    int added = 0;
+    int removed = 0;
+    bool truncated = false; // some changed lines are not in `text`
+};
+
+// A line diff of `before` -> `after` in hunks with three lines of context. When it is over `maxBytes`, the context is
+// narrowed (one line, then none) so that every changed line shows before any is dropped.
+inline LineDiff DiffLines(const std::string& before, const std::string& after, size_t maxBytes = kMaxDiffBytes) {
+    const std::vector<std::string> a = SplitLines(before);
+    const std::vector<std::string> b = SplitLines(after);
+    const std::vector<DiffOp> ops = DiffOps(a, b);
+    LineDiff diff;
+    for (const DiffOp& op : ops) {
+        diff.added += op.mark == '+' ? 1 : 0;
+        diff.removed += op.mark == '-' ? 1 : 0;
+    }
+    if (diff.added == 0 && diff.removed == 0) {
         return diff; // same lines
     }
-    const size_t contextStart = prefix > 3 ? prefix - 3 : 0;
-    if (contextStart > 0 || !a.empty()) {
-        if (!diff.truncated) {
-            diff.text += "@@ line " + std::to_string(contextStart + 1) + " @@\n";
+    for (const size_t context : {size_t{3}, size_t{1}}) {
+        bool cut = false;
+        diff.text = RenderDiff(ops, a, b, context, maxBytes, &cut);
+        if (!cut) {
+            return diff;
         }
     }
-    for (size_t i = contextStart; i < prefix; ++i) {
-        emit(' ', a[i]);
-    }
-    if (na > 0 && nb > 0 && na * nb <= 1000000) {
-        // lcs[i][j]: longest common subsequence of a[prefix+i..] and b[prefix+j..] within the middle
-        std::vector<int> lcs((na + 1) * (nb + 1), 0);
-        auto at = [&](size_t i, size_t j) -> int& { return lcs[i * (nb + 1) + j]; };
-        for (size_t i = na; i-- > 0;) {
-            for (size_t j = nb; j-- > 0;) {
-                at(i, j) = a[prefix + i] == b[prefix + j] ? at(i + 1, j + 1) + 1 : std::max(at(i + 1, j), at(i, j + 1));
-            }
-        }
-        size_t i = 0, j = 0;
-        while (i < na || j < nb) {
-            if (i < na && j < nb && a[prefix + i] == b[prefix + j]) {
-                emit(' ', a[prefix + i]);
-                ++i;
-                ++j;
-            } else if (j >= nb || (i < na && at(i + 1, j) >= at(i, j + 1))) {
-                emit('-', a[prefix + i]);
-                ++i;
-            } else {
-                emit('+', b[prefix + j]);
-                ++j;
-            }
-        }
-    } else {
-        for (size_t i = 0; i < na; ++i) {
-            emit('-', a[prefix + i]);
-        }
-        for (size_t j = 0; j < nb; ++j) {
-            emit('+', b[prefix + j]);
-        }
-    }
-    for (size_t k = 0; k < suffix && k < 3; ++k) {
-        emit(' ', a[a.size() - suffix + k]);
-    }
+    diff.text = RenderDiff(ops, a, b, 0, maxBytes, &diff.truncated);
     return diff;
 }
 
-// The names in module("Name", ...) calls of a Luau source (best effort: the first argument when it is a plain string
-// literal), without repeats, at most 20.
+inline bool IdentifierChar(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+inline size_t SkipSpace(const std::string& text, size_t p) {
+    while (p < text.size() && (text[p] == ' ' || text[p] == '\t' || text[p] == '\r' || text[p] == '\n')) {
+        ++p;
+    }
+    return p;
+}
+
+// The quoted string ('...' or "...") at `p` on one line, with \" \' \\ unescaped; false for anything else (other
+// escapes included). *end is the index after the closing quote.
+inline bool ReadQuoted(const std::string& text, size_t p, std::string* value, size_t* end) {
+    if (p >= text.size() || (text[p] != '"' && text[p] != '\'')) {
+        return false;
+    }
+    const char quote = text[p];
+    std::string out;
+    for (size_t i = p + 1; i < text.size(); ++i) {
+        const char c = text[i];
+        if (c == '\n') {
+            return false;
+        }
+        if (c == '\\') {
+            if (i + 1 >= text.size() || (text[i + 1] != '"' && text[i + 1] != '\'' && text[i + 1] != '\\')) {
+                return false;
+            }
+            out += text[++i];
+            continue;
+        }
+        if (c == quote) {
+            *value = out;
+            *end = i + 1;
+            return true;
+        }
+        out += c;
+    }
+    return false;
+}
+
+// The `name = "..."` field of the table constructor whose "{" is at `open` (top level of the table only; strings and
+// -- comments skipped). Empty when there is none.
+inline std::string TableNameField(const std::string& text, size_t open) {
+    int depth = 0;
+    char previous = 0; // the last character that is not a space at depth 1
+    for (size_t i = open; i < text.size(); ++i) {
+        const char c = text[i];
+        if (c == '-' && i + 1 < text.size() && text[i + 1] == '-') {
+            const size_t eol = text.find('\n', i);
+            if (eol == std::string::npos) {
+                return {};
+            }
+            i = eol;
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            std::string skipped;
+            size_t end = 0;
+            if (!ReadQuoted(text, i, &skipped, &end)) {
+                return {};
+            }
+            i = end - 1;
+            previous = c;
+            continue;
+        }
+        if (c == '{' || c == '(' || c == '[') {
+            ++depth;
+        } else if (c == '}' || c == ')' || c == ']') {
+            if (--depth == 0) {
+                return {};
+            }
+        } else if (depth == 1 && IdentifierChar(c) && !IdentifierChar(text[i - 1])) {
+            size_t end = i;
+            while (end < text.size() && IdentifierChar(text[end])) {
+                ++end;
+            }
+            if (text.compare(i, end - i, "name") == 0 && (previous == '{' || previous == ',' || previous == ';')) {
+                const size_t equals = SkipSpace(text, end);
+                if (equals < text.size() && text[equals] == '=' &&
+                    (equals + 1 >= text.size() || text[equals + 1] != '=')) {
+                    std::string value;
+                    size_t after = 0;
+                    if (ReadQuoted(text, SkipSpace(text, equals + 1), &value, &after)) {
+                        return value;
+                    }
+                }
+            }
+            i = end - 1;
+            previous = 'a';
+            continue;
+        }
+        if (c != ' ' && c != '\t' && c != '\r' && c != '\n') {
+            previous = c;
+        }
+    }
+    return {};
+}
+
+// The names of the modules a Luau source declares with nickel.module{ name = "Name", ... } (also nickel.module({...})
+// and module{...} through a local), best effort: only a plain string literal name is read. No repeats, at most 20.
 inline std::vector<std::string> DeclaredModules(const std::string& source) {
     std::vector<std::string> names;
     size_t at = 0;
     while (names.size() < 20 && (at = source.find("module", at)) != std::string::npos) {
         const size_t start = at;
         at += 6;
+        if (at < source.size() && IdentifierChar(source[at])) {
+            continue;
+        }
         if (start > 0) {
-            const unsigned char before = static_cast<unsigned char>(source[start - 1]);
-            if (std::isalnum(before) || before == '_' || before == '.' || before == ':') {
+            const char before = source[start - 1];
+            if (before == '.') {
+                // only the nickel table's: "nickel.module"
+                if (start < 7 || source.compare(start - 7, 7, "nickel.") != 0 ||
+                    (start > 7 && (IdentifierChar(source[start - 8]) || source[start - 8] == '.' ||
+                                   source[start - 8] == ':'))) {
+                    continue;
+                }
+            } else if (IdentifierChar(before) || before == ':') {
                 continue;
             }
         }
-        size_t p = at;
-        while (p < source.size() && (source[p] == ' ' || source[p] == '\t')) {
-            ++p;
+        size_t p = SkipSpace(source, at);
+        if (p < source.size() && source[p] == '(') {
+            p = SkipSpace(source, p + 1);
         }
-        if (p >= source.size() || source[p] != '(') {
+        if (p >= source.size() || source[p] != '{') {
             continue;
         }
-        ++p;
-        while (p < source.size() && (source[p] == ' ' || source[p] == '\t')) {
-            ++p;
-        }
-        if (p >= source.size() || (source[p] != '"' && source[p] != '\'')) {
+        const std::string name = TableNameField(source, p);
+        if (name.empty() || name.size() > 64) {
             continue;
         }
-        const char quote = source[p];
-        const size_t end = source.find(quote, p + 1);
-        if (end == std::string::npos || end - p - 1 > 64 || source.find('\n', p) < end) {
-            continue;
-        }
-        const std::string name = source.substr(p + 1, end - p - 1);
-        bool repeated = false;
-        for (const std::string& known : names) {
-            repeated = repeated || known == name;
-        }
-        if (!name.empty() && !repeated) {
+        if (std::find(names.begin(), names.end(), name) == names.end()) {
             names.push_back(name);
         }
-        at = end;
     }
     return names;
 }
@@ -614,6 +822,22 @@ public:
             return Fail(std::string("'") + key + "' must be true or false");
         }
         *out = value->AsBool();
+        return true;
+    }
+
+    // A whole number in [minimum, maximum].
+    bool Integer(const char* key, int64_t* out, bool required, int64_t minimum, int64_t maximum) {
+        const json::Value* value = Member(key, required);
+        if (value == nullptr) {
+            return ok();
+        }
+        const double number = value->IsNumber() ? value->AsDouble() : 0.5;
+        if (!value->IsNumber() || !std::isfinite(number) || std::floor(number) != number ||
+            number < static_cast<double>(minimum) || number > static_cast<double>(maximum)) {
+            return Fail(std::string("'") + key + "' must be a whole number from " + std::to_string(minimum) + " to " +
+                        std::to_string(maximum));
+        }
+        *out = static_cast<int64_t>(number);
         return true;
     }
 
@@ -782,6 +1006,10 @@ public:
                                   plan.exists ? std::to_string(detail::SplitLines(plan.old.text).size()) + " lines"
                                               : "(new script)",
                                   std::to_string(newLines) + " lines, not started"});
+            card.wasRunning = plan.wasRunning;
+            if (plan.wasRunning) {
+                card.lines.push_back({"State", "Running", "Stopped (held until started again)"});
+            }
         } else {
             RunPlan plan;
             if (!PlanRun(in, plan, failure)) {
@@ -795,6 +1023,13 @@ public:
                 overlay::ScriptSource source;
                 if (deps_.scripts.ReadSource(plan.info.name, source)) {
                     card.declaredModules = detail::DeclaredModules(source.text);
+                }
+                if (card.declaredModules.empty()) {
+                    for (const overlay::ScriptModuleInfo& module : plan.info.modules) {
+                        if (!module.name.empty() && card.declaredModules.size() < 20) {
+                            card.declaredModules.push_back(module.name);
+                        }
+                    }
                 }
             }
         }
@@ -888,6 +1123,10 @@ private:
         return index >= 0 && detail::Visible(deps_.registry.At(index)) ? index : -1;
     }
 
+    bool Unavailable(const std::string& id) const {
+        return deps_.unavailable && deps_.unavailable(id);
+    }
+
     const overlay::Setting* DefaultOf(const std::string& moduleId, const std::string& settingId) const {
         if (deps_.defaults == nullptr) {
             return nullptr;
@@ -968,6 +1207,9 @@ private:
             if (detail::ScriptModule(module)) {
                 item.Set("source", json::Value::MakeString("script"));
             }
+            if (Unavailable(module.id)) {
+                item.Set("available", json::Value::MakeBool(false));
+            }
             items.push_back(std::move(item));
         }
         detail::SetBounded(body, "modules", items);
@@ -998,6 +1240,9 @@ private:
         body.Set("key", json::Value::MakeString(detail::KeyName(deps_.registry.KeyOf(module.id))));
         if (detail::ScriptModule(module)) {
             body.Set("source", json::Value::MakeString("script"));
+        }
+        if (Unavailable(module.id)) {
+            body.Set("available", json::Value::MakeBool(false));
         }
         std::vector<json::Value> settings;
         for (const overlay::Setting& setting : module.settings) {
@@ -1079,10 +1324,15 @@ private:
         return Done(body);
     }
 
+    // A page of the script's lines from start_line (1 by default) that fits in a result. When the page is not the
+    // whole file, "truncated" is true and next_start_line says where the next page starts; write_script refuses to
+    // replace this revision until every line was read (partial_read).
     ToolResult ReadScript(const json::Value& in) {
         detail::InputReader reader(in);
         std::string name;
+        int64_t startLine = 1;
         reader.String("name", &name, true, 255);
+        reader.Integer("start_line", &startLine, false, 1, 1000000);
         if (!reader.ok()) {
             return Error("invalid_input", reader.message());
         }
@@ -1092,10 +1342,81 @@ private:
         if (index < 0 || !deps_.scripts.ReadSource(scripts[index].name, source)) {
             return Error("not_found", "No script is called '" + name + "'; use list_scripts");
         }
-        json::Value body = json::Value::MakeObject();
-        body.Set("name", json::Value::MakeString(scripts[index].name));
-        body.Set("sha256", json::Value::MakeString(source.sha256));
-        detail::SetBoundedText(body, "source", source.text);
+        const std::string& text = source.text;
+        std::vector<size_t> starts; // the byte offset of each line, then the text's size
+        if (!text.empty()) {
+            starts.push_back(0);
+        }
+        for (size_t i = 0; i < text.size(); ++i) {
+            if (text[i] == '\n' && i + 1 < text.size()) {
+                starts.push_back(i + 1);
+            }
+        }
+        const size_t total = starts.size();
+        starts.push_back(text.size());
+        if (static_cast<size_t>(startLine) > std::max<size_t>(total, 1)) {
+            return Error("invalid_input", "'start_line' is after the last line (" + std::to_string(total) + ")");
+        }
+        const size_t first = static_cast<size_t>(startLine) - 1;
+        // the result's other members at their largest, to know the room left for the source
+        auto build = [&](size_t end, bool whole, size_t next) {
+            json::Value body = json::Value::MakeObject();
+            body.Set("name", json::Value::MakeString(scripts[index].name));
+            body.Set("sha256", json::Value::MakeString(source.sha256));
+            body.Set("start_line", json::Value::MakeInt(static_cast<int64_t>(first + 1)));
+            body.Set("end_line", json::Value::MakeInt(static_cast<int64_t>(end)));
+            body.Set("total_lines", json::Value::MakeInt(static_cast<int64_t>(total)));
+            body.Set("total_bytes", json::Value::MakeInt(static_cast<int64_t>(text.size())));
+            if (!whole) {
+                body.Set("truncated", json::Value::MakeBool(true));
+            }
+            if (next > 0) {
+                body.Set("next_start_line", json::Value::MakeInt(static_cast<int64_t>(next)));
+            }
+            return body;
+        };
+        const size_t room = kMaxToolResultBytes - detail::JsonSize(build(9999999, false, 9999999)) -
+                            detail::JsonStringSize("source") - 4 - 2;
+        size_t end = first, used = 0;
+        while (end < total) {
+            const size_t size = detail::JsonStringSize(text.substr(starts[end], starts[end + 1] - starts[end])) - 2;
+            if (used + size > room) {
+                break;
+            }
+            used += size;
+            ++end;
+        }
+        std::string page = text.substr(starts[first], starts[end] - starts[first]);
+        bool lineCut = false;
+        if (end == first && first < total) {
+            // one line longer than a whole page: cut it, it does not count as read
+            page = text.substr(starts[first], starts[first + 1] - starts[first]);
+            while (!page.empty() && detail::JsonStringSize(page) - 2 > room) {
+                page = detail::CutUtf8(page, page.size() * 9 / 10);
+            }
+            lineCut = true;
+        }
+        const size_t endLine = lineCut ? first + 1 : end; // 1-based, inclusive
+        const bool whole = first == 0 && end == total;
+        json::Value body = build(endLine, whole, endLine < total ? endLine + 1 : 0);
+        body.Set("source", json::Value::MakeString(page));
+        {
+            std::lock_guard<std::mutex> lock(readsGuard_);
+            if (reads_.size() >= 64 && reads_.find(source.sha256) == reads_.end()) {
+                reads_.erase(reads_.begin());
+            }
+            ReadCoverage& coverage = reads_[source.sha256];
+            if (coverage.lines.size() != total) {
+                coverage.lines.assign(total, 0);
+                coverage.missing = total;
+            }
+            for (size_t k = first; k < end; ++k) {
+                if (!coverage.lines[k]) {
+                    coverage.lines[k] = 1;
+                    --coverage.missing;
+                }
+            }
+        }
         return Done(body);
     }
 
@@ -1160,6 +1481,9 @@ private:
             return Fail(failure, "not_found", "No module has the id '" + moduleId + "'; use search_modules");
         }
         const overlay::Module& module = deps_.registry.At(plan.module);
+        if (Unavailable(module.id)) {
+            return Fail(failure, "not_available", module.name + " is not available in Nickel yet");
+        }
         plan.setting = detail::FindSetting(module, settingName);
         if (plan.setting < 0) {
             return Fail(failure, "not_found",
@@ -1249,7 +1573,11 @@ private:
         if (plan.module < 0) {
             return Fail(failure, "not_found", "No module has the id '" + moduleId + "'; use search_modules");
         }
-        plan.before = deps_.registry.At(plan.module).enabled;
+        const overlay::Module& module = deps_.registry.At(plan.module);
+        if (plan.on && Unavailable(module.id)) {
+            return Fail(failure, "not_available", module.name + " is not available in Nickel yet and cannot be turned on");
+        }
+        plan.before = module.enabled;
         return true;
     }
 
@@ -1375,6 +1703,16 @@ private:
             return Fail(failure, "conflict",
                         "The script '" + plan.name + "' changed since it was read; read it again");
         }
+        if (!plan.expected.empty()) {
+            std::lock_guard<std::mutex> lock(readsGuard_);
+            const auto read = reads_.find(plan.expected);
+            if (read != reads_.end() && read->second.missing > 0) {
+                return Fail(failure, "partial_read",
+                            "Only part of '" + plan.name + "' was read (" + std::to_string(read->second.missing) +
+                            " of " + std::to_string(read->second.lines.size()) +
+                            " lines missing); read the rest with read_script and start_line before replacing it");
+            }
+        }
         return true;
     }
 
@@ -1401,6 +1739,10 @@ private:
         }
         overlay::ScriptSource written;
         deps_.scripts.ReadSource(plan.name, written);
+        {
+            std::lock_guard<std::mutex> lock(readsGuard_);
+            reads_.erase(written.sha256); // the model wrote every line of it
+        }
         json::Value body = json::Value::MakeObject();
         body.Set("ok", json::Value::MakeBool(true));
         body.Set("name", json::Value::MakeString(plan.name));
@@ -1450,8 +1792,16 @@ private:
         return Done(body);
     }
 
+    // The lines of a script revision (by sha256) that read_script returned this session.
+    struct ReadCoverage {
+        std::vector<char> lines;
+        size_t missing = 0;
+    };
+
     Deps deps_;
     std::vector<Change> journal_;
+    std::mutex readsGuard_; // read_script and write_script may run off the render thread
+    std::map<std::string, ReadCoverage> reads_;
 };
 
 } // namespace nickel::ai
