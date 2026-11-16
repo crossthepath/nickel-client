@@ -18,7 +18,18 @@ record. Do not add a handwritten entry here for each change.
 - Every change waits on a card that shows the real current and new values; nothing happens until you press Allow.
   Scripts it writes are saved held and run only when you start them.
 - Answers show their formatting (bold, lists, headings, code).
-- 25 messages a day. No account and no sign-in: Nickel AI uses the anonymous key of this install.
+- Up to 25 messages, one more every 30 minutes; the chat shows how many are left and when the next one comes back.
+  No account and no sign-in: Nickel AI uses the anonymous key of this install.
+- It sees the game: the server you are on (named, not just its address), what the server sent since you joined
+  (custom items, commands, scoreboards), the players and entities around you, and it can capture packets while you
+  play. It searches the web and Mojang's protocol documentation, and checks every script against Nickel's API
+  before saving it.
+- It keeps working while you close the chat and play, and a notice tells you when it is done or needs you.
+- Long chats are summarised instead of filling up.
+- Nickel AI memory (Settings > Connection, on by default): short notes about you are kept for your next chats.
+  Turn it off and Nickel AI keeps nothing.
+- The chat window can be resized from its corner, long messages wrap, and right click on a message copies it or
+  its code.
 - Nickel AI is on by default; turn it off in Settings > Connection > Nickel AI (assistant). While it is off, Nickel
   sends nothing.
 
