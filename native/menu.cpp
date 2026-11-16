@@ -79,6 +79,7 @@
 #include "game_sound.hpp"
 #include "game_player_b.hpp"
 #include "public_page.hpp"      // PUBLIC: what the pages do (public_ui.hpp draws them); no sign-in, an install key
+#include "ai_ui.hpp"           // Nickel AI: the chat page logic (drawn by the second include of ai_ui.hpp below)
 #include "generated_arrow_shape.hpp"
 #include "../include/nickel/visual_projection.hpp"
 #include "../include/nickel/visual_world.hpp"
@@ -160,7 +161,7 @@ void WindowFont(float px){ImDrawList* list=ImGui::GetWindowDrawList();if(!window
  ImFont* font=Sized(regular,px);if(std::fabs(font->FontSize-px)<1.f)px=font->FontSize;ImGui::PushFont(font);ImGui::SetWindowFontScale(px/font->FontSize);windowFonts.push_back(list);}
 void EndChildWindow(){if(!windowFonts.empty()&&windowFonts.back()==ImGui::GetWindowDrawList()){ImGui::PopFont();windowFonts.pop_back();}ImGui::EndChild();}   // same for a child window
 void EndWindow(){if(!windowFonts.empty()&&windowFonts.back()==ImGui::GetWindowDrawList()){ImGui::PopFont();windowFonts.pop_back();}ImGui::End();}
-const char* names[]={"Combat","Movement","Player","Visuals","Utility","HUD","Settings","Configs","Scripting","Schematics","Wardrobe","Scripts","Configs"};   // 11, 12: PUBLIC (public_ui.hpp)
+const char* names[]={"Combat","Movement","Player","Visuals","Utility","HUD","Settings","Configs","Scripting","Schematics","Wardrobe","Scripts","Configs","Nickel AI"};   // 11, 12: PUBLIC (public_ui.hpp); 13: Nickel AI (ai_ui.hpp)
 const char* glyphs[]={"\xee\x80\x80","\xee\x80\x81","\xee\x80\x82","\xee\x80\x83","\xee\x80\x84","\xee\x80\x83","\xee\x80\x85","\xee\x80\x87","\xee\x80\x88","\xee\x80\xa2","\xee\x80\xa8"};
 std::wstring configPath;RECT previousClip{};int cursorBalance=0;
 // Settings screen entries: label, description, key and default value.
@@ -2695,6 +2696,8 @@ void JumpPreAll(uint64_t a7,uint64_t a8){game::Move2JumpPre(a7,a8);game::LongJum
 void JumpPostAll(uint64_t a8){game::Move2JumpPost(a8);game::LongJumpPost(a8);ScriptsJumpPost(a8);}
 #include "schematic_ui.hpp"
 #include "public_ui.hpp"
+#define NICKEL_AI_UI_DRAW
+#include "ai_ui.hpp"   // Nickel AI panel (tab 13), its Settings toggle and sidebar icon
 // Details panel for the selected config, inside the floating right panel.
 // Rows (height / gap in u): title 22/4 (or field + Save 32/10), "Updated ..." 16/10, rule 1/10, MODULES 12/6 then one
 // bar per category 14/6, Load | Save here 32/6, Rename | Duplicate 32/6, Delete 32/10.
@@ -2803,7 +2806,7 @@ void DrawMenuSettings(ImVec2 origin,float s,float opacity){
   Label(d,semibold,15*s,at(x0+(width-TextWidth(semibold,15,label))/2,26*U-10.5f),label,style==3?Rgba(246,160,171,fade):style==1?Rgba(255,255,255,fade):Rgba(230,230,235,fade));
   return Hit(("##"+id).c_str(),lo,ImVec2(width*s,28*U*s))&&enabled;};
  auto toggle=[&](MenuOption& option){const float a=row(option.key,option.title,option.description);Toggle(d,at(areaW-12*U-34,26*U-9),s,Animate(std::string("menu")+option.key,option.value?1.f:0.f,io.DeltaTime),a);
-  if(Hit(option.key,at(areaW-12*U-34,26*U-9),ImVec2(34*s,18*s))){if(&option==&PublicOption())SetPublicCommunity(!option.value);else{option.value=!option.value;WritePrivateProfileStringW(L"menu",Wide(option.key).c_str(),option.value?L"1":L"0",configPath.c_str());}}};
+  if(Hit(option.key,at(areaW-12*U-34,26*U-9),ImVec2(34*s,18*s))){if(&option==&PublicOption())SetPublicCommunity(!option.value);else if(&option==&AiOption())SetAiEnabled(!option.value);else{option.value=!option.value;WritePrivateProfileStringW(L"menu",Wide(option.key).c_str(),option.value?L"1":L"0",configPath.c_str());}}};
  // stepper: 150 u block, 28 u "-" and "+" buttons, 16.392 u value in the middle; returns -1, 0 or +1
  auto stepper=[&](const std::string& id,const char* value,bool canLower,bool canRaise,float a){const float right=areaW-12*U;
   Label(d,regular,12*U*s,at(right-75*U-TextWidth(regular,12*U,value)/2,26*U-.7f*12*U),value,Rgba(214,210,226,a));
@@ -2811,7 +2814,7 @@ void DrawMenuSettings(ImVec2 origin,float s,float opacity){
   const bool lower=button(id+"-minus","",right-122*U,28*U,0,canLower,a);d->AddLine(at(right-150*U+9.5f*U,26*U),at(right-150*U+18.5f*U,26*U),Rgba(230,230,235,a*(canLower?1.f:.4f)),1.6f*s);
   if(lower)return -1;return button(id+"-plus","+",right,28*U,0,canRaise,a)?1:0;};
  header("INTERFACE","\xee\x80\x89");for(auto& option:interfaceOptions)toggle(option);
- header("CONNECTION","\xee\x80\x89");for(auto& option:connectionOptions)toggle(option);toggle(PublicOption());
+ header("CONNECTION","\xee\x80\x89");for(auto& option:connectionOptions)toggle(option);toggle(PublicOption());toggle(AiOption());
  // Theme: one swatch per theme (glow -> background gradient), selection ringed in white; saved in [interface] theme
  {const float a2=row("theme","Theme",(std::string(Th().name)+"  \xc2\xb7  menu colors and animated background").c_str());const float size=20*U,gap=8*U,right=areaW-12*U;
   for(int t=themeCount-1;t>=0;--t){const float x=right-(themeCount-t)*size-(themeCount-1-t)*gap;const ImVec2 lo=at(x,16*U),hi=at(x+size,36*U);
@@ -2856,14 +2859,14 @@ const bool waiting=listening==-100-i;const char* value=waiting?"Press a key...":
  header("ABOUT","\xee\x80\xa1");
  {const float a=row("reset-all","Reset all settings","Resets every setting on this page to its default.");const bool armed=resetArmed>=0&&ImGui::GetTime()-resetArmed<3;
   bool changed=schematicRange!=4.5f||schematicDelay!=75||schematicPerTick!=1||itemProfiles.size()!=1||itemProfiles[0].name!="sword"||!itemProfiles[0].weapon||!itemProfiles[0].items.empty()||itemProfiles[0].customSpeed||itemProfiles[0].speed!=8||!itemProfiles[0].blocks.empty();
-  for(auto* option:MenuToggles())changed|=option->value!=option->initial;changed|=PublicOption().value;for(auto& key:menuKeys)changed|=key.code!=key.initialCode;
+  for(auto* option:MenuToggles())changed|=option->value!=option->initial;changed|=PublicOption().value||AiOption().value;for(auto& key:menuKeys)changed|=key.code!=key.initialCode;
   if(button("reset-all",armed?"Click again to reset":"Reset all",areaW-12*U,(armed?150:92)*U,3,changed||armed,a)){
    if(!armed)resetArmed=ImGui::GetTime();
    else{for(const wchar_t* name:{L"schematic-place-range",L"schematic-place-delay",L"schematic-placements-per-tick",L"item-profiles"})WritePrivateProfileStringW(L"menu",name,nullptr,configPath.c_str());
     for(size_t k=0;k<itemProfiles.size()+4;++k)WritePrivateProfileStringW(L"menu",(L"item-profile-"+std::to_wstring(k)).c_str(),nullptr,configPath.c_str());
     for(auto* option:MenuToggles())WritePrivateProfileStringW(L"menu",Wide(option->key).c_str(),nullptr,configPath.c_str());
     for(auto& key:menuKeys){WritePrivateProfileStringW(L"menu",Wide(key.key).c_str(),nullptr,configPath.c_str());WritePrivateProfileStringW(L"menu",Wide(std::string(key.key)+"-code").c_str(),nullptr,configPath.c_str());}
-    LoadMenuSettings();SetPublicCommunity(false);profileOpen=-1;resetArmed=-1;}}}
+    LoadMenuSettings();SetPublicCommunity(false);SetAiEnabled(false);profileOpen=-1;resetArmed=-1;}}}
  ImGui::SetCursorPosY(y*s);ImGui::Dummy(ImVec2(1,1));FadeEdges(s,opacity);ImGui::EndChild();
 }
 }
@@ -2888,6 +2891,7 @@ bool FontsRebuild(){if(fontPending.empty()||ImGui::GetTime()-fontRequestedAt<.15
 void DrawMenu(float opacity,ImTextureID logo){
  windowFonts.clear();   // a new frame starts with no pushed window font
  PublicTick();   // PUBLIC answers (installs, revocations, updates) are handled even while the menu is closed
+ AiTick();       // Nickel AI: reads its option once; nothing exists while it is off
  // "Background blur": blurred game frame under the HUD and the menu, faded with the menu opening
  if(opacity>0&&interfaceOptions[0].value&&RequestBlur){auto* under=ImGui::GetBackgroundDrawList();if(auto blurred=RequestBlur(under))under->AddImage(blurred,ImVec2(0,0),ImGui::GetIO().DisplaySize,ImVec2(0,0),ImVec2(1,1),Rgba(255,255,255,opacity));}
  // "Auto save config": every change is copied into the most recently loaded or created config
@@ -2944,17 +2948,18 @@ void DrawMenu(float opacity,ImTextureID logo){
  if(logo)d->AddImage(logo,P(26,24),P(56,54),ImVec2(0,0),ImVec2(1,1),Rgba(255,255,255,opacity));
  {Label(d,semibold,20*s,P(66,28),"Nickel",Rgba(255,255,255,opacity));const float pill=66+TextWidth(semibold,20,"Nickel")+10;
   const float pillW=16+TextWidth(semibold,11,"V1 Beta");d->AddRectFilled(P(pill,31),P(pill+pillW,51),Rgba(35,35,44,opacity),0);Label(d,semibold,11*s,P(pill+8,34.5f),"V1 Beta",Rgba(148,148,160,opacity));}
- // Three groups: FEATURES (tabs 0-5), PUBLIC (11, 12) and OTHER (6-9). Entries are drawn 2 u shorter than their pitch
- // (32 u at the default height); OTHER sits at the bottom of the column when there is room, and in a short menu the
- // pitch shrinks so that every entry stays inside the column.
- const float pitch=std::clamp((menuH-194.f)/12.f,19.f,32.f),entryH=pitch-2,publicCaption=106+6*pitch+16,publicTop=publicCaption+18;
- const float otherTop=std::max(menuH-26-4*pitch,publicTop+2*pitch+16+18);
+ // Three groups: FEATURES (tabs 0-5), PUBLIC (11, 12) and OTHER (6-9, then 13 Nickel AI while its option is on). Entries
+ // are drawn 2 u shorter than their pitch (32 u at the default height); OTHER sits at the bottom of the column when there
+ // is room, and in a short menu the pitch shrinks so that every entry stays inside the column.
+ const int entries=AiOption().value?13:12,others=entries-8;
+ const float pitch=std::clamp((menuH-194.f)/entries,19.f,32.f),entryH=pitch-2,publicCaption=106+6*pitch+16,publicTop=publicCaption+18;
+ const float otherTop=std::max(menuH-26-others*pitch,publicTop+2*pitch+16+18);
  Label(d,semibold,10.5f*s,P(28,88),"FEATURES",Rgba(120,120,132,opacity));Label(d,semibold,10.5f*s,P(28,publicCaption),"PUBLIC",Rgba(120,120,132,opacity));Label(d,semibold,10.5f*s,P(28,otherTop-18),"OTHER",Rgba(120,120,132,opacity));
- static const int order[12]={0,1,2,3,4,5,11,12,6,7,8,9};
- for(int n=0;n<12;++n){const int i=order[n];
+ static const int order[13]={0,1,2,3,4,5,11,12,6,7,8,9,kAiTab};
+ for(int n=0;n<entries;++n){const int i=order[n];
   const float y=n<6?106.f+n*pitch:n<8?publicTop+(n-6)*pitch:otherTop+(n-8)*pitch;bool active=tab==i;auto id="nav"+std::to_string(i);const float hover=NavHover(id,Hover(P(16,y),ImVec2(212*s,pitch*s))?1:0,io.DeltaTime);
   if(active)d->AddRectFilled(P(16,y),P(228,y+entryH),Rgba(20,20,27,opacity),0);else if(hover>.001f)d->AddRectFilled(P(16,y),P(228,y+entryH),Rgba(15,15,20,hover*opacity),0);
-  const float glyph=std::min(17.f,entryH-4);DrawIcon(d,i,P(27,y+(entryH-glyph)/2),glyph*s,active?Acc(opacity):Rgba(148,148,160,opacity));Label(d,semibold,13.5f*s,P(52,y+(entryH-16)/2),names[i],active?Rgba(255,255,255,opacity):Rgba(148,148,160,opacity));
+  const float glyph=std::min(17.f,entryH-4);if(i==kAiTab)DrawAiIcon(d,P(27,y+(entryH-glyph)/2),glyph*s,active?Acc(opacity):Rgba(148,148,160,opacity));else DrawIcon(d,i,P(27,y+(entryH-glyph)/2),glyph*s,active?Acc(opacity):Rgba(148,148,160,opacity));Label(d,semibold,13.5f*s,P(52,y+(entryH-16)/2),names[i],active?Rgba(255,255,255,opacity):Rgba(148,148,160,opacity));
   if(PublicTab(i)&&Public().page&&Public().page->AnyUpdate(PublicKindOf(i)))d->AddCircleFilled(P(210,y+entryH/2),2.5f*s,Acc(opacity));   // an installed item of this kind has an update
   if(Hit(id.c_str(),P(16,y),ImVec2(212*s,pitch*s))){tab=i;if(i<6)category=i;selected=-1;listening=-1;search[0]=0;}
  }
@@ -3032,6 +3037,7 @@ const bool modulesTab=tab<6;const float panelTop=64.f;const std::string crumb=st
  else if(tab==8){if(!DrawPublishForm(origin,s,opacity,true))DrawScripting(origin,s,opacity);}
  else if(tab==9)DrawSchematics(origin,s,opacity);
  else if(PublicTab(tab))DrawPublic(origin,s,opacity);
+ else if(tab==kAiTab){if(AiOption().value)DrawAi(origin,s,opacity);else tab=6;}   // the option was turned off: back to Settings
  else{ImGui::SetCursorScreenPos(P(273,90));ImGui::BeginGroup();ImGui::TextWrapped("%s","This section is being reconstructed from the original client.");ImGui::EndGroup();}
  EndWindow();
  // `selected` and `tab` may have changed during this frame (category click or the open card), so read them again
