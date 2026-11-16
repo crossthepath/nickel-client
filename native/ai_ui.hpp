@@ -1291,6 +1291,10 @@ struct AiMenu {
     nickel::ai::PageNotice toast;              // shown at the top of the screen while the window is hidden
     double toastUntil = 0;
     bool unread = false;                       // a notice came while hidden: a dot on the bubble until it opens
+    // Soft line breaks of the input (AiInputCallback): spaces shown as line breaks so a long message wraps.
+    std::string inputBefore;                   // the input at the last edit, to move the breaks with the edit
+    std::vector<int> softBreaks;               // byte offsets of those breaks (a space when the message is sent)
+    float inputWrap = 0;                       // the field's text width in pixels
 };
 
 // Never destroyed, like PUBLIC's client: the overlay has no unload path, and a destructor at process exit would join the
@@ -1298,6 +1302,18 @@ struct AiMenu {
 AiMenu& Ai() {
     static AiMenu* menu = new AiMenu();
     return *menu;
+}
+
+// The input as typed: soft breaks back to spaces.
+std::string AiInputText() {
+    AiMenu& m = Ai();
+    std::string text = m.input;
+    for (int at : m.softBreaks) {
+        if (at >= 0 && at < static_cast<int>(text.size()) && text[static_cast<size_t>(at)] == '\n') {
+            text[static_cast<size_t>(at)] = ' ';
+        }
+    }
+    return text;
 }
 
 // Drops the page, the tools and the client (its worker stops with it): once off, nothing more is sent.
@@ -1515,6 +1531,47 @@ int AiInputCallback(ImGuiInputTextCallbackData* data) {
             const int keep = static_cast<int>(nickel::ai::BytesOfChars(text, nickel::ai::kMaxMessageChars));
             data->DeleteChars(keep, data->BufTextLen - keep);
         }
+        // Wrap: move the soft breaks with the edit (common start and end of the old and new text), turn them back
+        // into spaces, then break again at the last space before each line overflows. A break replaces a space by
+        // "\n" (same length), so the cursor does not move.
+        const std::string now(data->Buf, static_cast<size_t>(data->BufTextLen));
+        const std::string& old = m.inputBefore;
+        size_t head = 0;
+        while (head < old.size() && head < now.size() && old[head] == now[head]) ++head;
+        size_t tail = 0;
+        while (tail < old.size() - head && tail < now.size() - head
+               && old[old.size() - 1 - tail] == now[now.size() - 1 - tail]) ++tail;
+        const int shift = static_cast<int>(now.size()) - static_cast<int>(old.size());
+        std::vector<int> kept;
+        for (int at : m.softBreaks) {
+            if (at < static_cast<int>(head)) kept.push_back(at);
+            else if (at >= static_cast<int>(old.size() - tail)) kept.push_back(at + shift);
+        }
+        for (int at : kept) {
+            if (at >= 0 && at < data->BufTextLen && data->Buf[at] == '\n') data->Buf[at] = ' ';
+        }
+        m.softBreaks.clear();
+        ImFont* font = ImGui::GetFont();
+        const float size = ImGui::GetFontSize();
+        int lineStart = 0, lastSpace = -1;
+        for (int i = 0; i < data->BufTextLen; ++i) {
+            const char c = data->Buf[i];
+            if (c == '\n') {
+                lineStart = i + 1;
+                lastSpace = -1;
+                continue;
+            }
+            if (c == ' ') lastSpace = i;
+            const float w = font->CalcTextSizeA(size, FLT_MAX, 0, data->Buf + lineStart, data->Buf + i + 1).x;
+            if (m.inputWrap > 0 && w > m.inputWrap && lastSpace > lineStart) {
+                data->Buf[lastSpace] = '\n';
+                m.softBreaks.push_back(lastSpace);
+                lineStart = lastSpace + 1;
+                lastSpace = -1;
+            }
+        }
+        data->BufDirty = true;
+        m.inputBefore.assign(data->Buf, static_cast<size_t>(data->BufTextLen));
     }
     return 0;
 }
@@ -1798,7 +1855,7 @@ void DrawAiInput(AiMenu& m, ImVec2 origin, float W, float H, float s, float a) {
         return ImVec2(origin.x + x * s, origin.y + y * s);
     };
     const float boxH = 64, left = 12, boxW = W - 24, top = H - 12 - boxH, button = 32;
-    const std::string draft = m.input;
+    const std::string draft = AiInputText();
     const std::string blocked = page.SendBlockedReason(draft);
     const bool busy = page.Busy();
     d->AddRectFilled(P(left, top), P(left + boxW, top + boxH), Rgba(23, 23, 29, a), 14 * s);
@@ -1822,6 +1879,7 @@ void DrawAiInput(AiMenu& m, ImVec2 origin, float W, float H, float s, float a) {
         flags |= ImGuiInputTextFlags_ReadOnly;
     }
     const ImVec2 fieldSize((boxW - 4 - button - 10) * s, (boxH - 4) * s);
+    m.inputWrap = fieldSize.x - 2 * 10 * s - 6 * s; // inside the frame padding, room for the cursor
     bool send = ImGui::InputTextMultiline("##ai-input", m.input, sizeof(m.input), fieldSize, flags, AiInputCallback);
     const bool editing = ImGui::IsItemActive();
     ImGui::PopStyleColor(3);
@@ -1874,6 +1932,8 @@ void DrawAiInput(AiMenu& m, ImVec2 origin, float W, float H, float s, float a) {
     }
     if (send && !busy && page.Send(draft)) {
         m.input[0] = 0;
+        m.softBreaks.clear();
+        m.inputBefore.clear();
         m.clearInput = true;
         m.focusInput = true;
     }
