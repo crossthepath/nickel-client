@@ -295,6 +295,44 @@
         "scriptFiles": 0,
         "ScriptFilesStore": 0
       }
+    },
+    {
+      "name": "Nickel AI's client tools reaching into the menu, the Luau engine or the network (ai_tools.hpp: ModuleRegistry, ScriptLibrary and its own interfaces only, handed in through Deps)",
+      "files": [
+        "native/ai_tools.hpp"
+      ],
+      "identifiers": [
+        "ImGui",
+        "ImDrawList",
+        "icons",
+        "scriptGuard",
+        "ScriptsLibrary",
+        "ScriptFolder",
+        "StartScript",
+        "StopScript",
+        "ScanScripts",
+        "DecideScan",
+        "keybinds",
+        "configPath",
+        "Host",
+        "WinHttpOpen"
+      ],
+      "baseline": {
+        "ImGui": 0,
+        "ImDrawList": 0,
+        "icons": 0,
+        "scriptGuard": 0,
+        "ScriptsLibrary": 0,
+        "ScriptFolder": 0,
+        "StartScript": 0,
+        "StopScript": 0,
+        "ScanScripts": 0,
+        "DecideScan": 0,
+        "keybinds": 0,
+        "configPath": 0,
+        "Host": 0,
+        "WinHttpOpen": 0
+      }
     }
   ]
 }

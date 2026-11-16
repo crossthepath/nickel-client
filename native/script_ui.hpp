@@ -9,7 +9,10 @@
 // disappears, even if a file of the same name comes back.
 char scriptingSearch[64]{};uint64_t scriptingSelected=0;
 // Index of the selected script in `list`, or -1 (and the selection is cleared when that script is gone).
-int ScriptingSelection(const std::vector<ScriptInfo>& list){return FindSelectedScript(list,scriptingSelected);}
+int ScriptingSelection(const std::vector<ScriptInfo>& list){
+ // offline review (probe only): NICKEL_REVIEW_SCRIPT=name selects that script once it is listed
+ static bool reviewed=!OwnProbe();if(!reviewed){char name[128]{};if(!GetEnvironmentVariableA("NICKEL_REVIEW_SCRIPT",name,sizeof(name)))reviewed=true;else for(auto& one:list)if(one.name==name){scriptingSelected=one.serial;reviewed=true;}}
+ return FindSelectedScript(list,scriptingSelected);}
 // Tone of a state label: green running, grey stopped, red after errors or a failed load.
 ImU32 ScriptStateTone(ScriptState state,float a){return state==ScriptState::Running?Rgba(159,232,191,a):state==ScriptState::Stopped?Rgba(148,148,160,a):Rgba(246,160,171,a);}
 void DrawScripting(ImVec2 origin,float s,float opacity){

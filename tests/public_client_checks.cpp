@@ -1226,10 +1226,11 @@ void DeleteTree(const std::wstring& folder) {
 }
 
 std::wstring TemporaryRoot() {
+    static int made = 0; // GetTickCount64 moves every ~16 ms: two roots of the same tick would be one folder
     wchar_t buffer[MAX_PATH] = {};
     GetTempPathW(MAX_PATH, buffer);
     std::wstring root = std::wstring(buffer) + L"nickel-public-checks-" + std::to_wstring(GetCurrentProcessId()) + L"-"
-            + std::to_wstring(GetTickCount64());
+            + std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(++made);
     CreateDirectoryW(root.c_str(), nullptr);
     CreateDirectoryW((root + L"\\scripts").c_str(), nullptr);
     return root;

@@ -133,10 +133,13 @@ struct Check {
   while(GetTickCount64()<deadline){if(!Frame())return false;if(State(s)){framesAfter=s.submittedFrames;if(s.menuOpen&&s.submittedFrames>framesBefore){framesAdvanced=menuReopened=true;return true;}}Sleep(10);}
   return Fail("frames_advanced","submittedFrames did not advance past the pre-resize count with the menu open");
  }
+ // review: NICKEL_REVIEW_HOLD=ms keeps the menu up longer (1500 by default, at most 60000), e.g. for a Nickel AI answer
+ // to arrive; the frame is saved 300 ms before the end (600 ms after the start by default)
  bool HoldVisible(){
   if(!visible)return true;
-  auto start=GetTickCount64();auto deadline=start+(review?1500:10000);bool saved=false;
-  while(GetTickCount64()<deadline){if(!Frame())return false;if(review&&!saved&&GetTickCount64()-start>600)saved=SaveOwnFrame(g);Sleep(10);}
+  DWORD hold=review?1500:10000,saveAt=600;{wchar_t text[16]{};if(review&&GetEnvironmentVariableW(L"NICKEL_REVIEW_HOLD",text,16)){const DWORD ms=(DWORD)_wtoi(text);if(ms>=1000){hold=ms>60000?60000:ms;saveAt=hold-300;}}}
+  auto start=GetTickCount64();auto deadline=start+hold;bool saved=false;
+  while(GetTickCount64()<deadline){if(!Frame())return false;if(review&&!saved&&GetTickCount64()-start>saveAt)saved=SaveOwnFrame(g);Sleep(10);}
   return true;
  }
  bool DoResize(){
@@ -218,10 +221,12 @@ int wmain(int argc,wchar_t** argv){
  c.g.dx12=c.dx12;c.readyName=L"Local\\NickelOverlay.Rendered."+std::to_wstring(GetCurrentProcessId());
  auto own=GetModuleHandleW(nullptr);
  WNDCLASSEXW wc{sizeof(wc)};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=own;wc.lpszClassName=L"NickelOwnProbe";RegisterClassExW(&wc);
- c.hwnd=CreateWindowExW(0,wc.lpszClassName,L"Nickel overlay renderer check",WS_OVERLAPPEDWINDOW,100,100,c.review?1480:1120,680,nullptr,nullptr,own,nullptr);
+ // review: NICKEL_REVIEW_SIZE=WxH sets the client area (the game window size to check), e.g. 1280x720
+ RECT frame{0,0,c.review?1480:1120,680};bool exact=false;{wchar_t size[32]{};int w=0,h=0;if(c.review&&GetEnvironmentVariableW(L"NICKEL_REVIEW_SIZE",size,32)&&swscanf_s(size,L"%dx%d",&w,&h)==2&&w>=320&&h>=240){frame={0,0,w,h};AdjustWindowRect(&frame,WS_OVERLAPPEDWINDOW,FALSE);exact=true;}}
+ c.hwnd=CreateWindowExW(0,wc.lpszClassName,L"Nickel overlay renderer check",WS_OVERLAPPEDWINDOW,exact?0:100,exact?0:100,frame.right-frame.left,frame.bottom-frame.top,nullptr,nullptr,own,nullptr);
  int rc=2;
  if(c.hwnd){
-  if(c.visible)ShowWindow(c.hwnd,SW_SHOW);
+  if(c.visible)ShowWindow(c.hwnd,SW_SHOWNOACTIVATE);   // shown without taking the keyboard from the player's window
   if(c.motion&&c.dx12){ComPtr<ID3D12Debug> debug;if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))debug->EnableDebugLayer();}
   bool gfx=c.dx12?InitDx12(c.g,c.hwnd):InitDx11(c.g,c.hwnd);
   c.dll=LoadLibraryW(L"Nickel.Overlay.dll");
