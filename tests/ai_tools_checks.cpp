@@ -15,9 +15,9 @@
 namespace {
 
 using namespace overlay;
-using nickel::ai::AssistantTools;
-using nickel::ai::ConfirmCard;
-using nickel::ai::ToolResult;
+using nickel::ai::tools::AssistantTools;
+using nickel::ai::tools::ConfirmCard;
+using nickel::ai::tools::ToolResult;
 namespace json = nickel::json;
 
 int failed = 0;
@@ -174,7 +174,7 @@ public:
     }
 };
 
-class FakeUi final : public nickel::ai::UiNavigator {
+class FakeUi final : public nickel::ai::tools::UiNavigator {
 public:
     std::vector<std::string> shown;
     bool ShowModule(int index, const std::string& id) override {
@@ -190,10 +190,10 @@ public:
     }
 };
 
-class FakeStatus final : public nickel::ai::ClientStatusSource {
+class FakeStatus final : public nickel::ai::tools::ClientStatusSource {
 public:
-    nickel::ai::ClientStatus status{"1.1.0-beta", "1.26.62.1", true, ""};
-    nickel::ai::ClientStatus Status() const override { return status; }
+    nickel::ai::tools::ClientStatus status{"1.1.0-beta", "1.26.62.1", true, ""};
+    nickel::ai::tools::ClientStatus Status() const override { return status; }
 };
 
 Setting MakeSetting(const std::string& id, const std::string& name, const std::string& kind, double min, double max,
@@ -250,7 +250,7 @@ bool IsError(const ToolResult& result, const std::string& code) {
 struct World {
     FakeRegistry registry;
     FakeLibrary library;
-    nickel::ai::RegistrySettingsWriter writer{registry};
+    nickel::ai::tools::RegistrySettingsWriter writer{registry};
     FakeUi ui;
     FakeStatus status;
     std::vector<Module> defaults;
@@ -443,7 +443,7 @@ void ChecksScripts() {
     world.library.AddScript("big", big);
     result = tools.Run("read_script", Input("{\"name\":\"big\"}"));
     body = Parse(result.content);
-    Check(!result.isError && result.content.size() <= nickel::ai::kMaxToolResultBytes &&
+    Check(!result.isError && result.content.size() <= nickel::ai::tools::kMaxToolResultBytes &&
                   body["truncated"].AsBool() && body["sha256"].AsString() == FakeSha(big) &&
                   big.compare(0, body["source"].AsString().size(), body["source"].AsString()) == 0 &&
                   body["source"].AsString().size() > 12000,
@@ -456,7 +456,7 @@ void ChecksScripts() {
                   !body["errors"].At(0)["message"].AsString().empty(),
           "validate_script: errors with their line");
     json::Value tooBig = json::Value::MakeObject();
-    tooBig.Set("source", json::Value::MakeString(std::string(nickel::ai::kMaxScriptSourceBytes + 1, 'a')));
+    tooBig.Set("source", json::Value::MakeString(std::string(nickel::ai::tools::kMaxScriptSourceBytes + 1, 'a')));
     Check(IsError(tools.Run("validate_script", tooBig), "too_large"), "validate_script: more than 64 KB");
     Check(IsError(tools.Run("validate_script", Input("{}")), "invalid_input"), "validate_script: no source");
 }
@@ -669,12 +669,12 @@ void ChecksWriteScript() {
           "a path is not a script name");
     json::Value tooBig = json::Value::MakeObject();
     tooBig.Set("name", json::Value::MakeString("big"));
-    tooBig.Set("source", json::Value::MakeString(std::string(nickel::ai::kMaxScriptSourceBytes + 1, 'a')));
+    tooBig.Set("source", json::Value::MakeString(std::string(nickel::ai::tools::kMaxScriptSourceBytes + 1, 'a')));
     Check(IsError(tools.Run("write_script", tooBig, true), "too_large"), "a source over 64 KB is too large");
     Check(IsError(tools.Run("write_script", Input("{\"name\":\"x\"}"), true), "invalid_input"), "a missing source");
 
     // a diff of a middle change
-    const nickel::ai::detail::LineDiff diff = nickel::ai::detail::DiffLines("a\nb\nc\nd\ne\n", "a\nb\nX\nd\ne\n");
+    const nickel::ai::tools::detail::LineDiff diff = nickel::ai::tools::detail::DiffLines("a\nb\nc\nd\ne\n", "a\nb\nX\nd\ne\n");
     Check(diff.added == 1 && diff.removed == 1 && diff.text == "@@ line 1 @@\n a\n b\n-c\n+X\n d\n e\n",
           "a line diff with context");
 }
@@ -719,12 +719,12 @@ void ChecksSizeCap() {
     AssistantTools tools = world.Tools();
     ToolResult result = tools.Run("search_modules", Input("{\"query\":\"filler\"}"));
     json::Value body = Parse(result.content);
-    Check(!result.isError && result.content.size() <= nickel::ai::kMaxToolResultBytes && body["truncated"].AsBool() &&
+    Check(!result.isError && result.content.size() <= nickel::ai::tools::kMaxToolResultBytes && body["truncated"].AsBool() &&
                   body["modules"].size() <= 25 && body["total"].AsInt64() == 400,
           "search results are capped with a marker");
     result = tools.Run("get_client_status", Input("{}"));
     body = Parse(result.content);
-    Check(!result.isError && result.content.size() <= nickel::ai::kMaxToolResultBytes,
+    Check(!result.isError && result.content.size() <= nickel::ai::tools::kMaxToolResultBytes,
           "the client status stays within 16 KB");
     Module wide = MakeModule("wide", "Wide", "Utility", "Many settings");
     for (int i = 0; i < 300; ++i) {
@@ -734,13 +734,13 @@ void ChecksSizeCap() {
     world.registry.list.push_back(wide);
     result = tools.Run("get_module", Input("{\"id\":\"wide\"}"));
     body = Parse(result.content);
-    Check(!result.isError && result.content.size() <= nickel::ai::kMaxToolResultBytes && body["truncated"].AsBool() &&
+    Check(!result.isError && result.content.size() <= nickel::ai::tools::kMaxToolResultBytes && body["truncated"].AsBool() &&
                   body["settings"].size() > 10,
           "get_module of a large module is cut with a marker");
 }
 
 void ChecksDeclaredModules() {
-    using nickel::ai::detail::DeclaredModules;
+    using nickel::ai::tools::detail::DeclaredModules;
     const std::string source =
             "local a = nickel.module{ name = \"A\", category = \"Combat\" }\n"
             "local b = nickel.module({ settings = { name = \"inner\" }, name = 'B' })\n"
@@ -782,7 +782,7 @@ void ChecksReadPages() {
     ToolResult result = tools.Run("read_script", Input("{\"name\":\"big\"}"));
     json::Value body = Parse(result.content);
     const int64_t firstEnd = body["end_line"].AsInt64();
-    Check(!result.isError && result.content.size() <= nickel::ai::kMaxToolResultBytes && body["truncated"].AsBool() &&
+    Check(!result.isError && result.content.size() <= nickel::ai::tools::kMaxToolResultBytes && body["truncated"].AsBool() &&
                   body["start_line"].AsInt64() == 1 && firstEnd > 100 && firstEnd < 2500 &&
                   body["next_start_line"].AsInt64() == firstEnd + 1 && body["total_lines"].AsInt64() == 2500 &&
                   body["total_bytes"].AsInt64() == static_cast<int64_t>(big.size()),
@@ -805,7 +805,7 @@ void ChecksReadPages() {
     for (int64_t next = body["next_start_line"].AsInt64(); next > 0 && pages < 50; ++pages) {
         result = tools.Run("read_script", Input("{\"name\":\"big\",\"start_line\":" + std::to_string(next) + "}"));
         body = Parse(result.content);
-        capped = capped && !result.isError && result.content.size() <= nickel::ai::kMaxToolResultBytes &&
+        capped = capped && !result.isError && result.content.size() <= nickel::ai::tools::kMaxToolResultBytes &&
                  body["start_line"].AsInt64() == next;
         joined += body["source"].AsString();
         next = body.Find("next_start_line") != nullptr ? body["next_start_line"].AsInt64() : 0;
@@ -833,7 +833,7 @@ void ChecksReadPages() {
     world.library.AddScript("long line", longLine);
     result = tools.Run("read_script", Input("{\"name\":\"long line\"}"));
     body = Parse(result.content);
-    Check(!result.isError && result.content.size() <= nickel::ai::kMaxToolResultBytes && body["truncated"].AsBool() &&
+    Check(!result.isError && result.content.size() <= nickel::ai::tools::kMaxToolResultBytes && body["truncated"].AsBool() &&
                   body["end_line"].AsInt64() == 1 && body["next_start_line"].AsInt64() == 2 &&
                   body["source"].AsString().size() > 10000,
           "a line longer than a page is cut");
@@ -847,13 +847,13 @@ void ChecksReadPages() {
 }
 
 void ChecksDiffHunks() {
-    using nickel::ai::detail::DiffLines;
+    using nickel::ai::tools::detail::DiffLines;
     std::string before, after;
     for (int i = 0; i < 30; ++i) {
         before += "l" + std::to_string(i) + "\n";
         after += (i == 2 ? "X2" : i == 27 ? "X27" : "l" + std::to_string(i)) + "\n";
     }
-    nickel::ai::detail::LineDiff diff = DiffLines(before, after);
+    nickel::ai::tools::detail::LineDiff diff = DiffLines(before, after);
     Check(diff.text == "@@ line 1 @@\n l0\n l1\n-l2\n+X2\n l3\n l4\n l5\n"
                        "@@ line 25 @@\n l24\n l25\n l26\n-l27\n+X27\n l28\n l29\n" &&
                   diff.added == 2 && diff.removed == 2 && !diff.truncated,
@@ -905,7 +905,7 @@ void ChecksDiffHunks() {
           "a full rewrite is a removed then an added block");
 
     diff = DiffLines("a\n", std::string(40000, 'y') + "\n");
-    Check(diff.truncated && diff.text.size() <= nickel::ai::kMaxDiffBytes && diff.text.size() > 30000 &&
+    Check(diff.truncated && diff.text.size() <= nickel::ai::tools::kMaxDiffBytes && diff.text.size() > 30000 &&
                   diff.text.compare(0, 18, "@@ line 1 @@\n-a\n+y") == 0,
           "a line longer than the diff budget is cut, not left out");
 }
@@ -932,7 +932,7 @@ void ChecksUnavailable() {
     world.registry.list.push_back(MakeModule("disabler", "Disabler", "Utility", "Disables anticheat checks",
                                              {MakeSetting("mode", "Mode", "enum", 0, 1, 0.01, 0, "A", {"A", "B"})}));
     const int disabler = world.registry.Count() - 1;
-    nickel::ai::Deps deps{world.registry, world.library, world.writer, world.ui, world.status, &world.defaults};
+    nickel::ai::tools::Deps deps{world.registry, world.library, world.writer, world.ui, world.status, &world.defaults};
     deps.unavailable = [](const std::string& id) { return id == "disabler"; };
     AssistantTools tools(deps);
 

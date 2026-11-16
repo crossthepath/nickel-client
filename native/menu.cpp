@@ -80,6 +80,7 @@
 #include "game_player_b.hpp"
 #include "public_page.hpp"      // PUBLIC: what the pages do (public_ui.hpp draws them); no sign-in, an install key
 #include "ai_ui.hpp"           // Nickel AI: the chat page logic (drawn by the second include of ai_ui.hpp below)
+#include "ai_integration.hpp"  // Nickel AI: the panel bound to the real client and tools (ai_menu.hpp builds them)
 #include "generated_arrow_shape.hpp"
 #include "../include/nickel/visual_projection.hpp"
 #include "../include/nickel/visual_world.hpp"
@@ -2698,6 +2699,7 @@ void JumpPostAll(uint64_t a8){game::Move2JumpPost(a8);game::LongJumpPost(a8);Scr
 #include "public_ui.hpp"
 #define NICKEL_AI_UI_DRAW
 #include "ai_ui.hpp"   // Nickel AI panel (tab 13), its Settings toggle and sidebar icon
+#include "ai_menu.hpp"  // Nickel AI services of the game (MakeAiServices)
 // Details panel for the selected config, inside the floating right panel.
 // Rows (height / gap in u): title 22/4 (or field + Save 32/10), "Updated ..." 16/10, rule 1/10, MODULES 12/6 then one
 // bar per category 14/6, Load | Save here 32/6, Rename | Duplicate 32/6, Delete 32/10.
@@ -2891,6 +2893,7 @@ bool FontsRebuild(){if(fontPending.empty()||ImGui::GetTime()-fontRequestedAt<.15
 void DrawMenu(float opacity,ImTextureID logo){
  windowFonts.clear();   // a new frame starts with no pushed window font
  PublicTick();   // PUBLIC answers (installs, revocations, updates) are handled even while the menu is closed
+ if(!nickel::ai::Factory())nickel::ai::Factory()=&MakeAiServices;   // Nickel AI: the real client and tools (ai_menu.hpp)
  AiTick();       // Nickel AI: reads its option once; nothing exists while it is off
  // "Background blur": blurred game frame under the HUD and the menu, faded with the menu opening
  if(opacity>0&&interfaceOptions[0].value&&RequestBlur){auto* under=ImGui::GetBackgroundDrawList();if(auto blurred=RequestBlur(under))under->AddImage(blurred,ImVec2(0,0),ImGui::GetIO().DisplaySize,ImVec2(0,0),ImVec2(1,1),Rgba(255,255,255,opacity));}

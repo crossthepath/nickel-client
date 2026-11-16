@@ -34,14 +34,13 @@
 #include <utility>
 #include <vector>
 
+#include "ai_types.hpp"  // ToolUse, ToolResult, kMaxMessageChars, kMaxToolResultBytes (shared with the panel)
 #include "https_client.hpp"
 #include "json_value.hpp"
 #include "public_identity.hpp"
 
 namespace nickel::ai {
 
-constexpr size_t kMaxMessageChars = 4000;          // the player's message, in code points (the API's limit)
-constexpr size_t kMaxToolResultBytes = 16 * 1024;  // one tool result's content (the API's limit)
 constexpr size_t kMaxIdChars = 128;                // turn, conversation and tool_use ids
 constexpr size_t kMaxToolNameChars = 64;
 
@@ -168,19 +167,6 @@ struct Quota {
     int64_t used = -1;      // -1 until the server says
     int64_t limit = -1;
     std::string resetAt;    // as the server wrote it
-};
-
-struct ToolUse {
-    std::string id;
-    std::string name;
-    json::Value input;      // an object
-    std::string inputJson;  // the same input as compact JSON text
-};
-
-struct ToolResult {
-    std::string toolUseId;
-    std::string content;    // JSON text, at most kMaxToolResultBytes
-    bool isError = false;
 };
 
 enum class Role : uint8_t { User, Assistant };

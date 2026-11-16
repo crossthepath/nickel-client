@@ -7,6 +7,7 @@
 //   SSE events: turn {turn_id, conversation_id, quota {used, limit, reset_at}}, text {delta},
 //               tool_use {id, name, input}, done {stop_reason}, error {code, message, retry_after?}
 //
+// ToolUse, ToolResult and the protocol limits are shared with the network client (ai_client.hpp includes this file).
 // The panel only sees two small interfaces: ChatClient (the conversation, read as a snapshot each frame) and
 // ToolRunner (runs a tool call, or describes the change an action tool would make, from real data). The concrete
 // classes adapt to them; nothing here does I/O. No ImGui, no game access: tests/ai_ui_checks.cpp uses fakes.
@@ -68,6 +69,7 @@ struct ToolUse {
     std::string id;
     std::string name;
     json::Value input;
+    std::string inputJson; // the same input as compact JSON text (filled by the network client)
 };
 
 // One entry of POST /tool-results. `content` is JSON text; errors are {"error": code, "message": text}.
@@ -136,7 +138,7 @@ struct ClientError {
     int retryAfterSeconds = 0;
 };
 
-struct Quota {
+struct QuotaView {
     bool known = false; // false until the first "turn" event
     int used = 0;
     int limit = kDefaultDailyLimit;
@@ -156,7 +158,7 @@ struct ConversationSnapshot {
     std::vector<ChatMessage> messages;
     TurnState state = TurnState::Idle;
     StopReason lastStop = StopReason::None;
-    Quota quota;
+    QuotaView quota;
     ClientError error;          // when state == Failed
     std::vector<ToolUse> toolUses; // the tool_use events of the step, when state == AwaitingToolResults
     uint64_t toolRound = 0;     // increases each time a step ends with tool_use

@@ -41,7 +41,7 @@
 #include "module_registry.hpp"
 #include "script_library.hpp"
 
-namespace nickel::ai {
+namespace nickel::ai::tools {
 
 constexpr size_t kMaxToolResultBytes = 16 * 1024;   // a tool result's JSON text
 constexpr size_t kMaxScriptSourceBytes = 64 * 1024; // write_script / validate_script source
@@ -1804,4 +1804,4 @@ private:
     std::map<std::string, ReadCoverage> reads_;
 };
 
-} // namespace nickel::ai
+} // namespace nickel::ai::tools
