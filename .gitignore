@@ -23,6 +23,9 @@ tools/*
 !tools/compare_objects.py
 !tools/compare_images.py
 !tools/check_boundaries.py
+!tools/check_game_builds.py
+!tools/check_game_builds_test.py
+!tools/port_build.py
 !tools/boundaries.json
 !tools/release-signer/
 tools/release-signer/bin/
