@@ -9,6 +9,23 @@ Nickel's change history comes from its commits and, once published, its releases
 Write a short imperative commit or PR title describing the resulting behavior; release notes are written from that
 record. Do not add a handwritten entry here for each change.
 
+## 1.3.0-beta
+
+### Nickel AI
+
+- Nickel AI, an assistant inside the menu: a bubble beside the menu opens a chat window. Ask about modules, settings
+  and scripts; it can look them up, turn modules on or off, change settings, write scripts and undo its changes.
+- Every change waits on a card that shows the real current and new values; nothing happens until you press Allow.
+  Scripts it writes are saved held and run only when you start them.
+- Answers show their formatting (bold, lists, headings, code).
+- 25 messages a day. No account and no sign-in: Nickel AI uses the anonymous key of this install.
+- Nickel AI is off by default (Settings > Connection > Nickel AI (assistant)). While it is off, Nickel sends nothing.
+
+### Menu
+
+- The menu fits the game window: it scales down on smaller windows instead of going past the edges.
+- The Nickel AI bubble can be dragged; double-click its window's header to put it back.
+
 ## 1.2.0-beta
 
 ### PUBLIC
