@@ -112,9 +112,11 @@ if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/vendor/imgui/imgui.cpp")
   target_link_libraries(nickel_https_client_checks PRIVATE winhttp bcrypt ws2_32)
 endif()
 # Nickel AI panel logic without ImGui: sending limits, quota, errors, read tools at once, confirmation cards
-# (allow, decline, timeout), the script diff (native/ai_ui.hpp, native/ai_types.hpp)
+# (allow, decline, timeout), the script diff, the chat window's timeline, the bubble and their placement
+# (native/ai_ui.hpp, native/ai_types.hpp); reads native/menu.cpp to check the sidebar has no Nickel AI entry
 add_executable(nickel_ai_ui_checks tests/ai_ui_checks.cpp)
 target_include_directories(nickel_ai_ui_checks PRIVATE native)
+target_compile_definitions(nickel_ai_ui_checks PRIVATE NICKEL_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 add_test(NAME ai_ui_checks COMMAND nickel_ai_ui_checks)
 add_executable(nickel_core_checks tests/module_core_checks.cpp)
 target_link_libraries(nickel_core_checks PRIVATE nickel_core)

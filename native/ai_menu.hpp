@@ -1,13 +1,13 @@
 // Nickel AI in the game: the real services behind the panel (ai_ui.hpp). Included by menu.cpp inside its anonymous
 // namespace, after the panel's drawing, so it can use the menu's modules, tabs and options. DrawMenu installs
-// MakeAiServices as nickel::ai::Factory(); the panel calls it the first time the player opens Nickel AI (while the
-// option is on), so the install key and the network client exist only from then.
+// MakeAiServices as nickel::ai::Factory(); the panel calls it the first time the player opens the chat window from the
+// Nickel AI bubble (while the option is on), so the install key and the network client exist only from then.
 //
 // - The client talks to https://nickelclient.com/api/ai/v1, or to NICKEL_AI_LOCAL_SERVER (an http://127.0.0.1:<port>
 //   origin) for local tests. It logs request lines and error kinds only, never the key or a body.
 // - The tools change modules through the menu's ScriptHost (MenuScriptHostInstance, the same registry the Luau
 //   bindings use, saved like a click on a toggle) and scripts through ScriptsLibrary(): a written script is held.
-// - Navigation opens a tab or selects a module like a click in the side column would.
+// - Navigation opens a tab or selects a module like a click in the side column would; "Nickel AI" is the chat window.
 // ai_integration.hpp is included at the top of menu.cpp (outside the anonymous namespace).
 
 namespace nickel_ai_menu_detail {
@@ -44,7 +44,8 @@ public:
         if (name == "home" || name == "settings") {
             found = 6;
         } else if (name == "nickel ai" || name == "ai" || name == "assistant") {
-            found = kAiTab;
+            Ai().bubble.Open(); // not a tab: the chat window beside the menu (already open while a tool runs)
+            return true;
         } else if ((name == "public scripts" || name == "community scripts") && PublicOption().value) {
             found = 11;
         } else if ((name == "public configs" || name == "community configs") && PublicOption().value) {

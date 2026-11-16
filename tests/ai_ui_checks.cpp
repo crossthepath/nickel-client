@@ -2,10 +2,14 @@
 // sending and its limits (4000 characters, busy, quota, Retry-After), the activity line, read tools run at once,
 // action tools wait for Allow / Decline on a card built by the tools (never from model text), the 2-minute timeout,
 // nothing runs while the panel is hidden, all results of a step posted once in order, cancel and new chat, error texts,
-// and the script diff.
+// and the script diff. Then the chat window: the local greeting (never sent, not counted), the timeline (sides, order,
+// avatars, typing indicator, errors as centred lines), the bubble that toggles the window, where both are placed, and
+// that the sidebar has no Nickel AI entry any more.
 #include "ai_ui.hpp"
 
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -269,7 +273,7 @@ void Sending() {
     Check(!page.Send("again") && client.started.size() == 1, "no second message while a turn runs");
     client.Turn(3, 25, "2026-11-17T00:00:00Z");
     page.Tick(2, kNoon, true);
-    Check(page.QuotaLine() == "3/25 today", "the quota line comes from the turn event");
+    Check(page.QuotaLine() == "22 left today", "the quota line comes from the turn event");
     Check(page.CurrentActivity() == Activity::Thinking, "no text yet: still thinking");
     client.Text("Sure");
     page.Tick(3, kNoon, true);
@@ -294,7 +298,7 @@ void QuotaAndErrors() {
     client.Text("ok");
     client.Done(StopReason::EndTurn);
     page.Tick(2, kNoon, true);
-    Check(page.QuotaLine() == "25/25 today" && page.QuotaUsedUp() && !page.CanSend("more"),
+    Check(page.QuotaLine() == "0 left today" && page.QuotaUsedUp() && !page.CanSend("more"),
           "25 of 25 used: input blocked");
     Check(page.SendBlockedReason("more").find("Resets at 00:00 UTC.") != std::string::npos,
           "the block says when the quota resets");
@@ -577,6 +581,289 @@ void RefusalIsChecked() {
           "an oversized refusal is capped like any result and does not spoil the step");
 }
 
+// ---- the chat window
+
+using Kind = ChatItem::Kind;
+
+std::string Kinds(const std::vector<ChatItem>& items) {
+    std::string out;
+    for (const auto& item : items) {
+        switch (item.kind) {
+            case Kind::Greeting: out += "G"; break;
+            case Kind::Message: out += item.side == ChatSide::Player ? "P" : "A"; break;
+            case Kind::Typing: out += "T"; break;
+            case Kind::Card: out += "C"; break;
+            case Kind::Note: out += "N"; break;
+            case Kind::System: out += "S"; break;
+        }
+    }
+    return out;
+}
+
+// "1" where an avatar starts a run, "0" elsewhere.
+std::string Avatars(const std::vector<ChatItem>& items) {
+    std::string out;
+    for (const auto& item : items) {
+        out += item.groupStart ? "1" : "0";
+    }
+    return out;
+}
+
+void Greeting() {
+    FakeClient client;
+    FakeTools tools;
+    ChatPage page(&client, &tools);
+    page.Tick(1, kNoon, true);
+    auto items = page.Timeline();
+    Check(Kinds(items) == "G" && items[0].side == ChatSide::Assistant && items[0].groupStart
+              && items[0].text == kGreeting,
+          "a new chat opens with the assistant's greeting, on the left with its avatar");
+    Check(std::string(kGreeting)
+                  == "Hi! I'm Nickel AI. Ask me anything about Nickel: modules, settings or scripts. I can also turn "
+                     "modules on or write a script for you, always after you confirm.",
+          "the greeting says what Nickel AI does and that it asks first");
+    Check(client.started.empty() && client.snap.messages.empty() && client.snap.revision == 0,
+          "the greeting is local: nothing is sent and the conversation stays empty");
+    Check(page.QuotaLine() == "25 messages a day" && page.CanSend("hi"), "the greeting is not counted in the quota");
+    Check(page.Send("hi") && client.started.size() == 1 && client.started[0] == "hi",
+          "the first message sent is the player's own, without the greeting");
+    client.Turn(1, 25, "2026-11-17T00:00:00Z");
+    client.Text("Hello!");
+    client.Done(StopReason::EndTurn);
+    page.Tick(2, kNoon, true);
+    Check(page.QuotaLine() == "24 left today", "one message sent, one counted: 24 left");
+    Check(Kinds(page.Timeline()) == "GPA", "the greeting stays first, before the conversation");
+    page.NewChat();
+    Check(Kinds(page.Timeline()) == "G" && client.started.size() == 1, "New chat shows the greeting again, sends nothing");
+
+    ChatPage none(nullptr, nullptr);
+    none.Tick(1, kNoon, true);
+    items = none.Timeline();
+    Check(Kinds(items) == "S" && items[0].side == ChatSide::Centre && !items[0].groupStart,
+          "without a client: no greeting, one centred line");
+}
+
+void TimelineSidesAndOrder() {
+    FakeClient client;
+    FakeTools tools;
+    ChatPage page(&client, &tools);
+    page.Tick(1, kNoon, true);
+    page.Send("turn on kill aura");
+    page.Tick(2, kNoon, true);
+    auto items = page.Timeline();
+    Check(Kinds(items) == "GPT" && items[1].side == ChatSide::Player && items[1].message == 0,
+          "the player's message is on the right, after the greeting");
+    Check(Avatars(items) == "111", "each side change starts with an avatar");
+    client.Turn(1, 25, "");
+    client.Text("Sure, ");
+    page.Tick(3, kNoon, true);
+    items = page.Timeline();
+    Check(Kinds(items) == "GPA" && items[2].side == ChatSide::Assistant && items[2].streaming,
+          "the streamed answer is on the left, in its bubble, marked as still arriving");
+    client.Text("let me check.");
+    client.Tools({Use("s1", "set_module_enabled", "{\"module_id\":\"kill_aura\",\"enabled\":true}")});
+    page.Tick(4, kNoon, true);
+    items = page.Timeline();
+    Check(Kinds(items) == "GPAC" && items[3].side == ChatSide::Assistant && items[3].call != nullptr
+              && items[3].call->card.title == "Turn on Kill Aura" && !items[2].streaming,
+          "a confirmation card is an assistant-side item after the answer, from the tools' card");
+    Check(Avatars(items) == "1110", "the card continues the assistant's run: no second avatar");
+    page.Tick(4 + kCardArmSeconds, kNoon, true);
+    page.Allow("s1");
+    client.Text("Done.");
+    client.Done(StopReason::EndTurn);
+    page.Tick(5, kNoon, true);
+    page.Send("thanks");
+    client.Turn(2, 25, "");
+    client.Text("You're welcome.");
+    client.Done(StopReason::EndTurn);
+    page.Tick(6, kNoon, true);
+    items = page.Timeline();
+    Check(Kinds(items) == "GPANPA", "messages keep their order; the applied change is a centred note");
+    std::vector<size_t> order;
+    for (const auto& item : items) {
+        if (item.kind == Kind::Message) {
+            order.push_back(item.message);
+        }
+    }
+    Check(order.size() == 4 && order[0] == 0 && order[1] == 1 && order[2] == 2 && order[3] == 3,
+          "message items follow the conversation's order");
+    Check(items[3].side == ChatSide::Centre && Avatars(items) == "111011",
+          "the note is centred and ends the run; the next message starts with an avatar");
+    Check(page.Conversation().messages[items[2].message].text == "Sure, let me check.Done.",
+          "the assistant's bubble holds its streamed text");
+}
+
+void TypingIndicator() {
+    FakeClient client;
+    FakeTools tools;
+    ChatPage page(&client, &tools);
+    page.Tick(1, kNoon, true);
+    page.Send("find esp");
+    page.Tick(2, kNoon, true);
+    auto items = page.Timeline();
+    Check(items.back().kind == Kind::Typing && items.back().side == ChatSide::Assistant && items.back().text.empty(),
+          "while waiting for the first words: a typing indicator in an assistant bubble");
+    client.Turn(1, 25, "");
+    page.Tick(3, kNoon, true);
+    Check(page.Timeline().back().kind == Kind::Typing, "still typing until text arrives");
+    client.Text("Looking");
+    page.Tick(4, kNoon, true);
+    items = page.Timeline();
+    Check(Kinds(items) == "GPA", "the indicator goes away once the answer streams");
+    client.Tools({Use("r1", "search_modules", "{\"query\":\"esp\"}")});
+    page.Tick(5, kNoon, false);
+    items = page.Timeline();
+    Check(Kinds(items) == "GPAT" && items.back().text == "Searching modules" && !items.back().groupStart,
+          "using tools: the indicator names the tool and continues the assistant's run");
+    page.Tick(6, kNoon, true);
+    client.snap.state = TurnState::Streaming;
+    ++client.snap.revision;
+    page.Tick(7, kNoon, true);
+    Check(page.Timeline().back().kind == Kind::Typing, "after a tool round: typing again until new text");
+    client.Text(" found it.");
+    page.Tick(8, kNoon, true);
+    Check(page.Timeline().back().kind == Kind::Message, "new text replaces the indicator");
+    client.Tools({Use("w1", "set_module_enabled", "{\"module_id\":\"kill_aura\",\"enabled\":true}")});
+    page.Tick(9, kNoon, true);
+    Check(Kinds(page.Timeline()) == "GPAC", "a card waiting for the player: no typing indicator");
+}
+
+void ErrorsAsSystemLines() {
+    FakeClient client;
+    FakeTools tools;
+    ChatPage page(&client, &tools);
+    page.Tick(1, kNoon, true);
+    page.Send("hi");
+    client.Fail("offline", 0, 0);
+    page.Tick(2, kNoon, true);
+    auto items = page.Timeline();
+    Check(Kinds(items) == "GPS" && items.back().side == ChatSide::Centre && items.back().failure
+              && !items.back().groupStart && items.back().text.find("offline") != std::string::npos,
+          "offline is a centred system line, not a bubble");
+    Check(page.Send("again"), "the player can write again after an error");
+    client.Fail("model_unavailable", 503, 0);
+    page.Tick(3, kNoon, true);
+    Check(page.Timeline().back().kind == Kind::System && page.Timeline().back().text.find("busy") != std::string::npos,
+          "busy is a system line");
+    page.Send("more");
+    client.Fail("quota_exceeded", 429, 0);
+    page.Tick(4, kNoon, true);
+    items = page.Timeline();
+    Check(items.back().kind == Kind::System && items.back().text.find("messages") != std::string::npos,
+          "the used-up quota is a system line");
+    int systems = 0;
+    for (const auto& item : items) {
+        systems += item.kind == Kind::System;
+        Check(item.kind == Kind::System || item.text.find("offline") == std::string::npos,
+              "no bubble carries an error text");
+    }
+    Check(systems == 1, "only the current error is shown");
+    page.Tick(70, kNoon, true);
+    page.Send("x");
+    client.Turn(3, 25, "");
+    client.Text("No.");
+    client.Done(StopReason::Refusal);
+    page.Tick(71, kNoon, true);
+    items = page.Timeline();
+    Check(items.back().kind == Kind::System && !items.back().failure && items.back().text == StopText(StopReason::Refusal),
+          "a refusal ends with a grey system line under the answer");
+}
+
+void BubbleToggles() {
+    Check(!BubbleState::BubbleShown(false, true) && !BubbleState::BubbleShown(true, false)
+              && BubbleState::BubbleShown(true, true),
+          "the bubble shows only while Nickel AI is on and the menu is open");
+    BubbleState bubble;
+    Check(!bubble.WindowOpen() && !bubble.EverOpened() && !bubble.TakeOpening(),
+          "the window starts closed: nothing created before the first click");
+    bubble.Click();
+    Check(bubble.WindowOpen() && bubble.EverOpened(), "a click on the bubble opens the window");
+    Check(bubble.TakeOpening() && !bubble.TakeOpening(), "opening focuses the input and scrolls once");
+    bubble.Click();
+    Check(!bubble.WindowOpen(), "a second click closes it");
+    bubble.Click();
+    bubble.Close();
+    Check(!bubble.WindowOpen(), "the x closes it");
+    bubble.Open();
+    bubble.TakeOpening();
+    bubble.Open();
+    Check(bubble.WindowOpen() && !bubble.TakeOpening(), "navigate_ui opens it, and an open window stays open");
+    bubble.Reset();
+    Check(!bubble.WindowOpen() && !bubble.EverOpened(), "turning Nickel AI off closes and forgets it");
+}
+
+bool Near(float a, float b) {
+    return a > b - 0.01f && a < b + 0.01f;
+}
+
+void BubblePlacement() {
+    // 1920 x 1080, default menu centred
+    UiRect menu{454, 251, 1012, 578};
+    BubbleLayout place = PlaceBubble(menu, 1, 1920, 1080);
+    Check(!place.bubbleInSidebar && Near(place.bubble.x, 394) && Near(place.bubble.w, 48)
+              && Near(place.bubble.Right(), menu.x - 12) && Near(place.bubble.Bottom(), menu.Bottom() - 20),
+          "the bubble is just outside the menu's left edge, near its bottom");
+    Check(Near(place.window.w, 380) && Near(place.window.h, 520) && Near(place.window.Right(), place.bubble.Right())
+              && Near(place.window.Bottom(), place.bubble.y - 12),
+          "the window opens on the left, above the bubble, 380 x 520");
+    Check(!place.windowOverMenu && !place.window.Overlaps(menu) && !place.window.Overlaps(place.bubble),
+          "with room it covers neither the menu nor the bubble");
+
+    // 1280 x 720: room for the bubble, not for the window
+    menu = {134, 71, 1012, 578};
+    place = PlaceBubble(menu, 1, 1280, 720);
+    Check(!place.bubbleInSidebar && Near(place.window.x, 8) && place.windowOverMenu
+              && !place.window.Overlaps(place.bubble),
+          "without room the window overlaps the menu's left part, the bubble stays clear");
+
+    // the menu dragged against the left edge: the bubble goes into the sidebar's bottom-left corner
+    menu = {20, 100, 1012, 578};
+    place = PlaceBubble(menu, 1, 1920, 1080);
+    Check(place.bubbleInSidebar && Near(place.bubble.x, menu.x + 16) && Near(place.bubble.Bottom(), menu.Bottom() - 16)
+              && place.bubble.x >= menu.x && place.bubble.Right() <= menu.x + 244,
+          "no room on the left: the bubble sits inside the sidebar's bottom-left corner");
+    Check(Near(place.window.x, place.bubble.x) && place.windowOverMenu && !place.window.Overlaps(place.bubble)
+              && place.window.y >= 8,
+          "its window opens above it, over the menu's left part");
+
+    // a smaller scale shrinks both
+    menu = {600, 300, 1012 * .8f, 578 * .8f};
+    place = PlaceBubble(menu, .8f, 1920, 1080);
+    Check(Near(place.bubble.w, 48 * .8f) && Near(place.window.w, 380 * .8f) && place.window.h <= 520 * .8f + .01f,
+          "the bubble and the window follow the menu's scale");
+
+    // a short screen: the window shrinks to the room above the bubble, and stays on screen
+    menu = {500, 8, 1012, 430};
+    place = PlaceBubble(menu, 1, 1600, 446);
+    Check(place.window.y >= 8 && place.window.Bottom() <= place.bubble.y - 12 + .01f && place.window.h >= 300,
+          "on a short screen the window fits above the bubble");
+}
+
+std::string SourceFile(const char* relative) {
+    std::ifstream file(std::string(NICKEL_SOURCE_DIR) + "/" + relative, std::ios::binary);
+    std::stringstream text;
+    text << file.rdbuf();
+    return text.str();
+}
+
+void NoSidebarEntry() {
+    const std::string menu = SourceFile("native/menu.cpp");
+    const std::string ui = SourceFile("native/ai_ui.hpp");
+    Check(!menu.empty() && !ui.empty(), "the menu's sources are readable");
+    Check(menu.find("static const int order[12]={0,1,2,3,4,5,11,12,6,7,8,9};") != std::string::npos,
+          "the sidebar lists FEATURES, PUBLIC and OTHER without Nickel AI");
+    const size_t names = menu.find("const char* names[]={");
+    Check(names != std::string::npos && menu.find("\"Nickel AI\"", names) > menu.find('\n', names),
+          "no tab is named Nickel AI");
+    Check(menu.find("kAiTab") == std::string::npos && ui.find("kAiTab") == std::string::npos
+              && menu.find("DrawAiIcon") == std::string::npos && ui.find("DrawAiIcon") == std::string::npos,
+          "no Nickel AI tab or sidebar icon is left");
+    Check(menu.find("DrawAiBubble(aiPlace,s,opacity,logo);") != std::string::npos
+              && menu.find("toggle(AiOption());") != std::string::npos,
+          "the menu draws the bubble, and Settings keeps the Nickel AI toggle");
+}
+
 } // namespace
 
 int main() {
@@ -594,6 +881,13 @@ int main() {
     ResultSizeAsTheServiceCounts();
     RefusedPost();
     RefusalIsChecked();
+    Greeting();
+    TimelineSidesAndOrder();
+    TypingIndicator();
+    ErrorsAsSystemLines();
+    BubbleToggles();
+    BubblePlacement();
+    NoSidebarEntry();
     std::printf("%s (%d failed)\n", failed == 0 ? "all ai ui checks passed" : "ai ui checks failed", failed);
     return failed == 0 ? 0 : 1;
 }

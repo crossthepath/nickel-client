@@ -1,22 +1,25 @@
-// Nickel AI panel of the menu: the chat (player messages, the assistant's streamed answer), the quota line, the
-// "thinking / using tools" indicator, error and offline states, and the confirmation cards of action tools.
+// Nickel AI in the menu: a round bubble with the Nickel mark beside the menu's left edge, and the chat window it opens
+// (the assistant's messages on the left with the Nickel avatar, the player's on the right, the streamed answer, a
+// typing indicator, the quota, errors as centred lines, and the confirmation cards of action tools).
 //
 // Two parts in one file:
-// - the page logic (nickel::ai::ChatPage and helpers): no ImGui, no Windows API, checked by tests/ai_ui_checks.cpp on
-//   a fake ChatClient and a fake ToolRunner. Included at the top of menu.cpp like any header.
-// - the drawing (DrawAi, the Settings toggle, the sidebar icon): compiled only when NICKEL_AI_UI_DRAW is defined, which
-//   menu.cpp does when it includes this file a second time inside its anonymous namespace, next to public_ui.hpp (it
-//   reuses Label, UiButton, Animate and the theme).
+// - the logic (nickel::ai::ChatPage, its Timeline, PlaceBubble and BubbleState): no ImGui, no Windows API, checked by
+//   tests/ai_ui_checks.cpp on a fake ChatClient and a fake ToolRunner. Included at the top of menu.cpp like any header.
+// - the drawing (DrawAiBubble, the chat window, the Settings toggle): compiled only when NICKEL_AI_UI_DRAW is defined,
+//   which menu.cpp does when it includes this file a second time inside its anonymous namespace, next to public_ui.hpp
+//   (it reuses Label, Hit, Animate and the theme).
 //
 // Rules the page enforces (docs/design/nickel-ai/permissions-and-safety.md, protocol in ai_types.hpp):
 // - Nickel AI is off by default (Settings > Connection > Nickel AI (assistant)). While it is off nothing is created:
-//   no client, no worker, no install key, no request, and the sidebar entry is hidden.
+//   no client, no worker, no install key, no request, and no bubble. While it is on, the client exists only from the
+//   first time the player opens the chat window.
 // - Read tools run at once; every action tool (settings, modules, scripts) waits for the player's Allow on a card drawn
 //   from ToolRunner::Describe (the registry and the script library), never from the model's text. Decline, or no answer
 //   within 2 minutes, sends the "declined" error and changes nothing.
-// - Tools run only while the panel is visible: nothing changes behind the player's back.
+// - Tools run only while the chat window is visible: nothing changes behind the player's back.
 // - A script write shows the diff and says the script is saved held (it does not run until the player starts it).
-// - A player message is 1..4000 characters; the quota comes from the service ("3/25 today").
+// - A player message is 1..4000 characters; the quota comes from the service ("22 left today").
+// - The greeting is local: it is never sent and does not count in the quota.
 
 #ifndef NICKEL_AI_UI_LOGIC
 #define NICKEL_AI_UI_LOGIC
@@ -331,6 +334,35 @@ enum class Activity {
     Error,
 };
 
+// The assistant's first words in every chat. Local: never sent to the service and not counted in the quota.
+constexpr const char* kGreeting =
+        "Hi! I'm Nickel AI. Ask me anything about Nickel: modules, settings or scripts. I can also turn modules on or "
+        "write a script for you, always after you confirm.";
+
+// Where an item of the chat sits: the assistant on the left, the player on the right, system lines centred.
+enum class ChatSide { Assistant, Player, Centre };
+
+// One thing the chat window draws, in order (ChatPage::Timeline).
+struct ChatItem {
+    enum class Kind {
+        Greeting, // the local greeting (assistant side)
+        Message,  // a message of the conversation (`message` is its index)
+        Typing,   // the assistant is thinking or using tools: three animated dots (`text`: the tool at work, or empty)
+        Card,     // a confirmation card (assistant side, `call`)
+        Note,     // "Applied: ...", "Declined: ..." (centred, `note` is its index)
+        System,   // an error or a stop line (centred, `text`; `failure` for an error)
+    };
+    Kind kind = Kind::System;
+    ChatSide side = ChatSide::Centre;
+    bool groupStart = false; // first item of a run on its side: the avatar is drawn next to it
+    size_t message = 0;
+    size_t note = 0;
+    const PendingCall* call = nullptr;
+    bool streaming = false; // the assistant's answer is still arriving
+    bool failure = false;
+    std::string text;
+};
+
 class ChatPage {
 public:
     ChatPage(ChatClient* client, ToolRunner* tools) : client_(client), tools_(tools) {}
@@ -600,12 +632,13 @@ public:
         }
     }
 
-    // "3/25 today"; before the first answer of the session, the default limit.
+    // "22 left today"; before the first answer of the session, the default limit.
     std::string QuotaLine() const {
         if (!snap_.quota.known) {
             return std::to_string(kDefaultDailyLimit) + " messages a day";
         }
-        return std::to_string(snap_.quota.used) + "/" + std::to_string(snap_.quota.limit) + " today";
+        const int left = std::max(0, snap_.quota.limit - snap_.quota.used);
+        return std::to_string(left) + " left today";
     }
 
     bool QuotaUsedUp() const {
@@ -628,6 +661,79 @@ public:
             return "Nickel AI could not send the results of its tools. Retrying; press Stop to give up.";
         }
         return "";
+    }
+
+    // Everything the chat window shows, top to bottom (see ChatItem). Rebuilt each frame from the conversation, the
+    // notes, the open cards and the activity; the greeting is local and always first.
+    std::vector<ChatItem> Timeline() const {
+        std::vector<ChatItem> items;
+        if (!Available()) {
+            ChatItem line;
+            line.kind = ChatItem::Kind::System;
+            line.text = "Nickel AI is not available in this build.";
+            items.push_back(std::move(line));
+            return items;
+        }
+        ChatItem greeting;
+        greeting.kind = ChatItem::Kind::Greeting;
+        greeting.side = ChatSide::Assistant;
+        greeting.text = kGreeting;
+        items.push_back(std::move(greeting));
+        size_t note = 0;
+        auto notesUpTo = [&](size_t afterMessages) {
+            for (; note < notes_.size() && notes_[note].afterMessages <= afterMessages; ++note) {
+                ChatItem line;
+                line.kind = ChatItem::Kind::Note;
+                line.note = note;
+                line.text = notes_[note].text;
+                items.push_back(std::move(line));
+            }
+        };
+        const Activity activity = CurrentActivity();
+        for (size_t i = 0; i < snap_.messages.size(); ++i) {
+            notesUpTo(i);
+            const ChatMessage& message = snap_.messages[i];
+            const bool player = message.role == ChatMessage::Role::Player;
+            if (!player && message.text.empty()) {
+                continue; // a step that only called tools
+            }
+            ChatItem item;
+            item.kind = ChatItem::Kind::Message;
+            item.side = player ? ChatSide::Player : ChatSide::Assistant;
+            item.message = i;
+            item.streaming = !player && i + 1 == snap_.messages.size() && activity == Activity::Writing;
+            items.push_back(std::move(item));
+        }
+        notesUpTo(SIZE_MAX);
+        for (const PendingCall* call : OpenCards()) {
+            ChatItem card;
+            card.kind = ChatItem::Kind::Card;
+            card.side = ChatSide::Assistant;
+            card.call = call;
+            items.push_back(std::move(card));
+        }
+        if (activity == Activity::Thinking || activity == Activity::UsingTools) {
+            ChatItem typing;
+            typing.kind = ChatItem::Kind::Typing;
+            typing.side = ChatSide::Assistant;
+            if (activity == Activity::UsingTools) {
+                typing.text = ActivityText(); // "Searching modules": the tool at work, from the fixed labels
+            }
+            items.push_back(std::move(typing));
+        }
+        const std::string error = ErrorLine();
+        if (!error.empty()) {
+            ChatItem line;
+            line.kind = ChatItem::Kind::System;
+            line.failure = snap_.state != TurnState::Idle;
+            line.text = error;
+            items.push_back(std::move(line));
+        }
+        // a run of items on one side starts with its avatar; a centred line ends the run
+        for (size_t i = 0; i < items.size(); ++i) {
+            items[i].groupStart = items[i].side != ChatSide::Centre && (i == 0 || items[i - 1].side != items[i].side);
+        }
+        return items;
     }
 
 private:
@@ -732,6 +838,113 @@ private:
     double retryUntil_ = 0;
 };
 
+// ---------------------------------------------------------------------------------------------------------------
+// The floating bubble and its chat window
+
+// Sizes at menu scale 1, in pixels.
+constexpr float kBubbleSize = 48;       // the round button with the Nickel mark
+constexpr float kBubbleGap = 12;        // between the bubble and the menu, and between the bubble and its window
+constexpr float kBubbleBottom = 20;     // from the bubble's bottom to the menu's bottom
+constexpr float kBubbleInset = 16;      // inside the sidebar, from its left and bottom edges
+constexpr float kChatWidth = 380;
+constexpr float kChatHeight = 520;
+constexpr float kChatMinHeight = 300;
+constexpr float kScreenMargin = 8;      // screen pixels, like the menu's own margin
+
+struct UiRect {
+    float x = 0, y = 0, w = 0, h = 0;
+    float Right() const { return x + w; }
+    float Bottom() const { return y + h; }
+    bool Contains(float px, float py) const { return px >= x && px < x + w && py >= y && py < y + h; }
+    bool Overlaps(const UiRect& o) const { return x < o.Right() && o.x < Right() && y < o.Bottom() && o.y < Bottom(); }
+};
+
+struct BubbleLayout {
+    UiRect bubble;
+    UiRect window;
+    bool bubbleInSidebar = false; // no room left of the menu: the bubble sits in the sidebar's bottom-left corner
+    bool windowOverMenu = false;  // no room left of the menu for the window: it covers the menu's left part
+};
+
+// `menu` is the menu window on screen (pixels), `scale` the menu's scale. The bubble sits just outside the menu's left
+// edge near its bottom, or inside the sidebar's bottom-left corner when the screen has no room for it. The window opens
+// above the bubble, on the left: its right edge on the bubble's (left of the menu) when it fits, otherwise from the
+// screen's left margin (over the menu's left part); in the sidebar case its left edge is the bubble's. It never covers
+// the bubble unless the screen is shorter than its minimum height.
+inline BubbleLayout PlaceBubble(const UiRect& menu, float scale, float screenW, float screenH) {
+    BubbleLayout out;
+    const float size = kBubbleSize * scale, gap = kBubbleGap * scale, margin = kScreenMargin;
+    const float outsideX = menu.x - gap - size;
+    if (outsideX >= margin) {
+        out.bubble = {outsideX, menu.Bottom() - kBubbleBottom * scale - size, size, size};
+    } else {
+        out.bubbleInSidebar = true;
+        out.bubble = {menu.x + kBubbleInset * scale, menu.Bottom() - kBubbleInset * scale - size, size, size};
+    }
+    out.bubble.y = std::max(margin, std::min(out.bubble.y, screenH - margin - size));
+    const float w = std::min(kChatWidth * scale, std::max(0.f, screenW - 2 * margin));
+    float h = std::min(kChatHeight * scale, std::max(0.f, screenH - 2 * margin));
+    const float above = out.bubble.y - gap - margin; // room between the screen's top margin and the bubble
+    float y;
+    if (above >= std::min(h, kChatMinHeight * scale)) {
+        h = std::min(h, above);
+        y = out.bubble.y - gap - h;
+    } else {
+        y = margin; // a very short screen: the window may cover the bubble; its close button still closes it
+    }
+    float x = out.bubbleInSidebar ? out.bubble.x : out.bubble.Right() - w;
+    x = std::max(margin, std::min(x, screenW - margin - w));
+    out.window = {x, y, w, h};
+    out.windowOverMenu = out.window.Overlaps(menu);
+    return out;
+}
+
+// Whether the bubble and its window show. The page (and with it the client and the install key) is created the first
+// time the window opens, never before.
+class BubbleState {
+public:
+    // The bubble shows while Nickel AI is on and the menu is drawn; the window only with it.
+    static bool BubbleShown(bool optionOn, bool menuShown) { return optionOn && menuShown; }
+
+    bool WindowOpen() const { return open_; }
+
+    // A click on the bubble opens the window, a second one closes it.
+    void Click() {
+        open_ = !open_;
+        if (open_) {
+            opened_ = true;
+            focus_ = true;
+        }
+    }
+
+    // The window's x button, or Nickel AI turned off.
+    void Close() { open_ = false; }
+
+    // navigate_ui to Nickel AI: opens it (an open window stays open).
+    void Open() {
+        if (!open_) {
+            Click();
+        }
+    }
+
+    // True once since the window last opened: the input takes the keyboard and the chat scrolls to its end.
+    bool TakeOpening() {
+        const bool was = focus_;
+        focus_ = false;
+        return was;
+    }
+
+    // The window was opened at least once since Nickel AI was turned on (the page may exist).
+    bool EverOpened() const { return opened_; }
+
+    void Reset() { *this = BubbleState(); }
+
+private:
+    bool open_ = false;
+    bool opened_ = false;
+    bool focus_ = false;
+};
+
 // What the overlay needs to build the panel: set once by the code that owns the real client and tools (the AI
 // integration), before the player first opens the panel. Without it the panel says Nickel AI is not available.
 struct Services {
@@ -755,8 +968,6 @@ inline ServicesFactory& Factory() {
 #if defined(NICKEL_AI_UI_DRAW) && !defined(NICKEL_AI_UI_DRAWN)
 #define NICKEL_AI_UI_DRAWN
 
-constexpr int kAiTab = 13;
-
 // Settings > Connection > Nickel AI (assistant). Off by default; kept in root\ai\settings.ini, not in the preferences
 // ini, so loading or sharing a config cannot turn it on.
 MenuOption aiAssistantOption = {"nickel-ai",
@@ -779,6 +990,7 @@ std::wstring AiSettingPath() {
 struct AiMenu {
     bool settingRead = false;
     bool created = false;
+    nickel::ai::BubbleState bubble;
     std::unique_ptr<nickel::ai::ChatClient> client;
     std::unique_ptr<nickel::ai::ToolRunner> tools;
     std::unique_ptr<nickel::ai::ChatPage> page;
@@ -805,6 +1017,7 @@ void AiShutdown() {
     m.tools.reset();
     m.client.reset();
     m.created = false;
+    m.bubble.Reset();
     m.input[0] = 0;
     m.seenItems = 0;
 }
@@ -836,20 +1049,6 @@ void AiTick() {
     if (!AiOption().value && m.created) {
         AiShutdown();
     }
-}
-
-// Sidebar icon: a four-point spark with a small cross beside it (stroked like theme.hpp's icons).
-void DrawAiIcon(ImDrawList* d, ImVec2 lo, float size, ImU32 c) {
-    const float k = size / 24.f;
-    const float th = std::max(1.f, 1.7f * k);
-    auto P = [&](float x, float y) {
-        return ImVec2(lo.x + x * k, lo.y + y * k);
-    };
-    const ImVec2 spark[8] = {P(10, 3), P(12, 9), P(18, 11), P(12, 13), P(10, 19), P(8, 13), P(2, 11), P(8, 9)};
-    d->AddPolyline(spark, 8, c, ImDrawFlags_Closed, th);
-    d->AddLine(P(19, 3), P(19, 9), c, th);
-    d->AddLine(P(16, 6), P(22, 6), c, th);
-    d->AddCircleFilled(P(19, 19), 1.6f * k, c, 12);
 }
 
 // Height in pixels of wrapped text; `size` in pixels (already scaled, as for Label), `width` in pixels.
@@ -890,6 +1089,28 @@ void AiArrow(ImDrawList* d, ImVec2 at, float s, ImU32 c) {
     d->AddLine(at, ImVec2(at.x + 10 * s, at.y), c, 1.4f * s);
     d->AddLine(ImVec2(at.x + 6 * s, at.y - 3.5f * s), ImVec2(at.x + 10 * s, at.y), c, 1.4f * s);
     d->AddLine(ImVec2(at.x + 6 * s, at.y + 3.5f * s), ImVec2(at.x + 10 * s, at.y), c, 1.4f * s);
+}
+
+// A small rounded button of the chat window: style 0 neutral, 1 accent, 3 red; disabled = 40 %. True on a click.
+bool AiButton(ImDrawList* d, const std::string& id, const char* label, ImVec2 lo, float width, float height, int style,
+              bool enabled, float a, float s) {
+    const ImVec2 hi(lo.x + width * s, lo.y + height * s);
+    const bool clicked = Hit(("##" + id).c_str(), lo, ImVec2(width * s, height * s)) && enabled;
+    const bool over = enabled && ImGui::IsItemHovered();
+    const float glow = Animate("ai-button" + id, over ? 1.f : 0.f, ImGui::GetIO().DeltaTime);
+    const float fade = a * (enabled ? 1.f : .4f);
+    const ImU32 fill = style == 3   ? Rgba(240, 86, 106, (.15f + .09f * glow) * fade)
+                       : style == 1 ? ToU32(MixColor(themeLive.accentDeep, ImVec4(1, 1, 1, 1), .14f * glow), fade)
+                                    : Rgba(255, 255, 255, (.07f + .05f * glow) * fade);
+    d->AddRectFilled(lo, hi, fill, 8 * s);
+    const float size = 13;
+    const ImU32 ink = style == 3   ? Rgba(246, 160, 171, fade)
+                      : style == 1 ? Rgba(255, 255, 255, fade)
+                                   : Rgba(230, 230, 235, fade);
+    Label(d, semibold, size * s, ImVec2(lo.x + (width - TextWidth(semibold, size, label)) / 2 * s,
+                                        lo.y + (height / 2 - .7f * size) * s),
+          label, ink);
+    return clicked;
 }
 
 // The source diff of a script write in a small scrolling box (computed once by the page when the card opened);
@@ -935,7 +1156,6 @@ float DrawAiDiff(const nickel::ai::PendingCall& call, ImVec2 at, float width, fl
 // that ToolRunner::Describe built from the registry and the script library.
 float DrawAiCard(ImDrawList* d, nickel::ai::ChatPage& page, const nickel::ai::PendingCall& call, ImVec2 p, float w,
                  float s, float a) {
-    const float U = 242.f / 210.f;
     const float pad = 14 * s;
     const float inner = w - 2 * pad;
     const float x0 = p.x + pad;
@@ -985,25 +1205,25 @@ float DrawAiCard(ImDrawList* d, nickel::ai::ChatPage& page, const nickel::ai::Pe
     }
     y += 6 * s;
     // time left, then Decline and Allow (Save for a script)
-    const float bw = 84 * U;
-    const float bh = 30 * U;
+    const float bw = 72;
+    const float bh = 28;
     const int left = static_cast<int>(page.SecondsLeft(call));
     char timer[48];
-    std::snprintf(timer, sizeof(timer), "Declines itself in %d:%02d", left / 60, left % 60);
-    Label(d, regular, 12 * s, ImVec2(x0, y + (bh * s - 14 * s) / 2), timer, Rgba(120, 120, 132, a));
+    std::snprintf(timer, sizeof(timer), "Declines in %d:%02d", left / 60, left % 60);
+    Label(d, regular, 11.5f * s, ImVec2(x0, y + (bh * s - 13 * s) / 2), timer, Rgba(120, 120, 132, a));
     const std::string id = call.use.id;
     // a card that just appeared or moved (the one above it was answered, the chat scrolled) is not clickable yet
     page.PlaceCard(id, p.x, p.y);
     const bool armed = page.Armed(call);
     const ImVec2 allowAt(p.x + w - pad - bw * s, y);
-    const ImVec2 declineAt(allowAt.x - bw * s - 8 * s, y);
+    const ImVec2 declineAt(allowAt.x - bw * s - 6 * s, y);
     const char* yes = card.isScriptWrite ? "Save" : "Allow";
-    const bool allow = UiButton(d, "ai-allow" + id, yes, allowAt, bw, bh, 1, armed, a, s);
-    const bool decline = UiButton(d, "ai-decline" + id, "Decline", declineAt, bw, bh, 0, armed, a, s);
+    const bool allow = AiButton(d, "ai-allow" + id, yes, allowAt, bw, bh, 1, armed, a, s);
+    const bool decline = AiButton(d, "ai-decline" + id, "Decline", declineAt, bw, bh, 0, armed, a, s);
     y += bh * s + pad;
     d->ChannelsSetCurrent(0);
-    d->AddRectFilled(p, ImVec2(p.x + w, y), Rgba(20, 20, 27, a));
-    d->AddRect(p, ImVec2(p.x + w, y), Acc(.7f * a), 0, 0, 1.2f * s);
+    d->AddRectFilled(p, ImVec2(p.x + w, y), Rgba(23, 23, 29, a), 14 * s);
+    d->AddRect(p, ImVec2(p.x + w, y), Acc(.6f * a), 14 * s, 0, 1.2f * s);
     d->ChannelsMerge();
     if (allow) {
         page.Allow(id); // the card is gone from the next frame
@@ -1013,67 +1233,146 @@ float DrawAiCard(ImDrawList* d, nickel::ai::ChatPage& page, const nickel::ai::Pe
     return y - p.y;
 }
 
-// The bottom of the page: the message field (Enter sends, Ctrl+Enter adds a line), Send or Stop, the character count
-// near the limit, and why a message cannot go now.
-void DrawAiInput(AiMenu& m, ImVec2 origin, float s, float opacity, float left, float right, float inputTop,
-                 float inputH) {
+// ---- the bubble and the chat window
+
+// The bubble and window of this frame from the menu's place on screen; DrawMenu asks before it draws anything, so the
+// sidebar can keep room for a bubble placed inside it and the menu ignores the mouse over the bubble or the window.
+nickel::ai::BubbleLayout AiLayout(ImVec2 origin, float s) {
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+    return nickel::ai::PlaceBubble({origin.x, origin.y, menuW * s, menuH * s}, s, screen.x, screen.y);
+}
+
+// True while the mouse is over the bubble or the open chat window: the menu under them must not start a drag or resize.
+bool AiCovers(const nickel::ai::BubbleLayout& place, ImVec2 mouse) {
+    if (!AiOption().value) {
+        return false;
+    }
+    return place.bubble.Contains(mouse.x, mouse.y)
+           || (Ai().bubble.WindowOpen() && place.window.Contains(mouse.x, mouse.y));
+}
+
+// Units the sidebar keeps free at its bottom when the bubble sits inside it (0 otherwise).
+float AiSidebarReserve(const nickel::ai::BubbleLayout& place) {
+    return AiOption().value && place.bubbleInSidebar ? nickel::ai::kBubbleSize + nickel::ai::kBubbleInset + 6 : 0.f;
+}
+
+// The Nickel mark (the logo texture of the menu header, branding/nickel/logo/nickel-mark-256.png) in a filled circle:
+// the bubble and the assistant's avatar. Without the texture, an "N".
+void DrawAiMark(ImDrawList* d, ImTextureID logo, ImVec2 c, float r, ImU32 fill, float a) {
+    d->AddCircleFilled(c, r, fill, 40);
+    if (logo) {
+        const float half = r * .66f;
+        d->AddImage(logo, ImVec2(c.x - half, c.y - half), ImVec2(c.x + half, c.y + half), ImVec2(0, 0), ImVec2(1, 1),
+                    Rgba(255, 255, 255, a));
+    } else {
+        const float size = r * 1.1f;
+        Label(d, bold, size, ImVec2(c.x - TextWidth(bold, size, "N") / 2, c.y - size * .55f), "N",
+              Rgba(255, 255, 255, a));
+    }
+}
+
+// The player's default avatar: a neutral grey circle with a head and shoulders.
+void DrawAiPlayerAvatar(ImDrawList* d, ImVec2 c, float r, float a) {
+    d->AddCircleFilled(c, r, Rgba(52, 52, 62, a), 40);
+    const ImU32 ink = Rgba(150, 150, 162, a);
+    d->AddCircleFilled(ImVec2(c.x, c.y - r * .22f), r * .3f, ink, 24);
+    d->PathArcTo(ImVec2(c.x, c.y + r * .62f), r * .52f, 3.14159265f, 6.28318531f, 20);
+    d->PathFillConvex(ink);
+}
+
+// Three dots rising one after the other: the assistant is writing.
+void DrawAiTypingDots(ImDrawList* d, ImVec2 first, float s, float a) {
+    const float t = static_cast<float>(ImGui::GetTime());
+    for (int i = 0; i < 3; ++i) {
+        const float wave = std::max(0.f, std::sin(t * 6.f - i * .9f));
+        d->AddCircleFilled(ImVec2(first.x + i * 10 * s, first.y - wave * 3 * s), 3 * s,
+                           Rgba(200, 200, 210, (.35f + .5f * wave) * a), 12);
+    }
+}
+
+// The input at the bottom of the window: the field (Enter sends, Shift+Enter adds a line), the round send button (Stop
+// while an answer runs), the character count near the limit and why a message cannot go now.
+void DrawAiInput(AiMenu& m, ImVec2 origin, float W, float H, float s, float a) {
     namespace ai = nickel::ai;
     ai::ChatPage& page = *m.page;
-    const float U = 242.f / 210.f;
-    const float sendW = 76 * U;
-    const float areaW = right - left;
     auto* d = ImGui::GetWindowDrawList();
     auto P = [&](float x, float y) {
         return ImVec2(origin.x + x * s, origin.y + y * s);
     };
+    const float boxH = 64, left = 12, boxW = W - 24, top = H - 12 - boxH, button = 32;
     const std::string draft = m.input;
     const std::string blocked = page.SendBlockedReason(draft);
     const bool busy = page.Busy();
-    ImGui::SetCursorScreenPos(P(left, inputTop));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * s, 8 * s));
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(.1f, .1f, .125f, .96f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(.12f, .12f, .15f, .96f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(.12f, .12f, .15f, .96f));
+    d->AddRectFilled(P(left, top), P(left + boxW, top + boxH), Rgba(23, 23, 29, a), 14 * s);
     if (m.focusInput && page.Available()) {
-        ImGui::SetKeyboardFocusHere();
+        ImGui::SetKeyboardFocusHere(); // applies to the field submitted next
         m.focusInput = false;
     }
-    ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine
-                                | ImGuiInputTextFlags_CallbackEdit | ImGuiInputTextFlags_CallbackAlways;
+    ImGui::SetCursorScreenPos(P(left + 2, top + 2));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * s, 8 * s));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0, 0, 0, 0));
+    // Enter validates, Ctrl+Enter or Shift+Enter (no newline flag while Shift is down) adds a line
+    ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackEdit
+                                | ImGuiInputTextFlags_CallbackAlways;
+    if (!ImGui::GetIO().KeyShift) {
+        flags |= ImGuiInputTextFlags_CtrlEnterForNewLine;
+    }
     if (!page.Available()) {
         flags |= ImGuiInputTextFlags_ReadOnly;
     }
-    const ImVec2 fieldSize((areaW - sendW - 8) * s, inputH * s);
+    const ImVec2 fieldSize((boxW - 4 - button - 10) * s, (boxH - 4) * s);
     bool send = ImGui::InputTextMultiline("##ai-input", m.input, sizeof(m.input), fieldSize, flags, AiInputCallback);
     const bool editing = ImGui::IsItemActive();
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar(2);
-    if (m.input[0] == 0 && !editing) {
-        const char* hint = page.Available() ? "Ask Nickel AI about modules, settings or scripts..."
-                                            : "Nickel AI is not available in this build.";
-        Label(d, regular, 13 * s, P(left + 10, inputTop + 9), hint, Rgba(110, 110, 122, opacity));
+    if (send) {
+        m.focusInput = true; // Enter took the focus away; keep typing in the field
     }
-    const size_t chars = ai::CountChars(m.input);
-    if (chars + 500 > ai::kMaxMessageChars) {
-        const std::string count = std::to_string(chars) + "/" + std::to_string(ai::kMaxMessageChars);
-        const float x = right - sendW - 14 - TextWidth(regular, 11.5f, count.c_str());
-        Label(d, regular, 11.5f * s, P(x, inputTop + inputH - 17), count.c_str(), Rgba(148, 148, 160, opacity));
+    d->AddRect(P(left, top), P(left + boxW, top + boxH), editing ? Acc(.55f * a) : Rgba(40, 40, 50, a), 14 * s, 0,
+               1 * s);
+    if (m.input[0] == 0) {
+        const char* hint = page.Available() ? "Message Nickel AI..." : "Nickel AI is not available in this build.";
+        Label(d, regular, 13.5f * s, P(left + 12, top + 11), hint, Rgba(110, 110, 122, a));
     }
+    // send (or stop): a round button in the field's bottom-right corner
+    const ImVec2 c = P(left + boxW - 8 - button / 2, top + boxH - 8 - button / 2);
+    const float r = button / 2 * s;
+    const bool pressed = Hit("##ai-send", ImVec2(c.x - r, c.y - r), ImVec2(2 * r, 2 * r));
+    const bool over = ImGui::IsItemHovered();
     if (busy) {
-        if (UiButton(d, "ai-stop", "Stop", P(right - sendW, inputTop), sendW, inputH, 3, true, opacity, s)) {
+        d->AddCircleFilled(c, r, Rgba(240, 86, 106, (over ? .3f : .2f) * a), 32);
+        d->AddRectFilled(ImVec2(c.x - 5 * s, c.y - 5 * s), ImVec2(c.x + 5 * s, c.y + 5 * s), Rgba(246, 160, 171, a),
+                         2 * s);
+        if (pressed) {
             page.Cancel();
         }
     } else {
-        const ImVec2 at = P(right - sendW, inputTop);
-        if (UiButton(d, "ai-send", "Send", at, sendW, inputH, 1, blocked.empty(), opacity, s)) {
+        const bool ready = blocked.empty();
+        const ImU32 fill = ready ? (over ? AccHover(a) : AccDeep(a)) : Rgba(255, 255, 255, .08f * a);
+        d->AddCircleFilled(c, r, fill, 32);
+        const ImU32 ink = ready ? Rgba(255, 255, 255, a) : Rgba(120, 120, 132, a);
+        const float th = 2 * s;
+        d->AddLine(ImVec2(c.x, c.y + 6 * s), ImVec2(c.x, c.y - 6 * s), ink, th);
+        d->AddLine(ImVec2(c.x - 5 * s, c.y - 1 * s), ImVec2(c.x, c.y - 6 * s), ink, th);
+        d->AddLine(ImVec2(c.x + 5 * s, c.y - 1 * s), ImVec2(c.x, c.y - 6 * s), ink, th);
+        if (pressed && ready) {
             send = true;
         }
     }
-    // the reason a typed message cannot go now (an empty field needs none), and always a used-up quota
+    // above the field: the character count near the limit (right), why the message cannot go now (left)
+    const size_t chars = ai::CountChars(m.input);
+    float countW = 0;
+    if (chars + 500 > ai::kMaxMessageChars) {
+        const std::string count = std::to_string(chars) + "/" + std::to_string(ai::kMaxMessageChars);
+        countW = TextWidth(regular, 11.5f, count.c_str());
+        Label(d, regular, 11.5f * s, P(left + boxW - 2 - countW, top - 17), count.c_str(), Rgba(148, 148, 160, a));
+    }
     if (!blocked.empty() && !busy && (!ai::Trim(draft).empty() || page.QuotaUsedUp())) {
-        const std::string why = Fit(regular, 12, blocked, areaW);
-        Label(d, regular, 12 * s, P(left + 2, inputTop - 20), why.c_str(), Rgba(240, 190, 90, opacity));
+        const std::string why = Fit(regular, 11.5f, blocked, boxW - countW - 12);
+        Label(d, regular, 11.5f * s, P(left + 2, top - 17), why.c_str(), Rgba(240, 190, 90, a));
     }
     if (send && !busy && page.Send(draft)) {
         m.input[0] = 0;
@@ -1082,12 +1381,187 @@ void DrawAiInput(AiMenu& m, ImVec2 origin, float s, float opacity, float left, f
     }
 }
 
-// The Nickel AI page (tab 13), in the main panel: quota and activity, New chat, the conversation with its notes,
-// cards and error line, then the input.
-void DrawAi(ImVec2 origin, float s, float opacity) {
+// The chat window: header (mark, "Nickel AI", quota, New chat, close), the conversation, the input.
+void DrawAiWindow(const nickel::ai::UiRect& rect, float s, float opacity, ImTextureID logo) {
     namespace ai = nickel::ai;
     AiMenu& m = Ai();
-    if (!m.created) { // first use: the client (and with it the install key) exists from here
+    ai::ChatPage& page = *m.page;
+    const float W = rect.w / s, H = rect.h / s, headH = 58;
+    const ImVec2 origin(rect.x, rect.y);
+    auto P = [&](float x, float y) {
+        return ImVec2(origin.x + x * s, origin.y + y * s);
+    };
+    ImGui::SetNextWindowPos(origin);
+    ImGui::SetNextWindowSize(ImVec2(rect.w, rect.h));
+    ImGui::Begin("##NickelAiChat", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
+                         | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollWithMouse
+                         | (opened.load() ? 0 : ImGuiWindowFlags_NoInputs));
+    WindowFont(s * 13.5f * FontEmFactor);
+    auto* d = ImGui::GetWindowDrawList();
+    const float radius = 16 * s;
+    d->AddRectFilled(origin, P(W, H), Rgba(15, 15, 20, .98f * opacity), radius);
+    d->AddRect(origin, P(W, H), Rgba(26, 26, 33, opacity), radius, 0, 1 * s);
+    const bool opening = m.bubble.TakeOpening();
+    if (opening) {
+        m.focusInput = true;
+    }
+    const ai::ConversationSnapshot& conv = page.Conversation();
+
+    // ---- header
+    DrawAiMark(d, logo, P(32, headH / 2), 17 * s, Rgba(28, 28, 36, opacity), opacity);
+    Label(d, semibold, 15 * s, P(58, 12), "Nickel AI", Rgba(255, 255, 255, opacity));
+    Label(d, regular, 12 * s, P(58, 32), page.QuotaLine().c_str(), Rgba(148, 148, 160, opacity));
+    const float closeX = W - 12 - 28, rowY = (headH - 28) / 2;
+    const bool closing = Hit("##ai-close", P(closeX, rowY), ImVec2(28 * s, 28 * s));
+    const float closeGlow = Animate("ai-close", ImGui::IsItemHovered() ? 1.f : 0.f, ImGui::GetIO().DeltaTime);
+    if (closeGlow > .001f) {
+        d->AddCircleFilled(P(closeX + 14, rowY + 14), 14 * s, Rgba(255, 255, 255, .08f * closeGlow * opacity), 24);
+    }
+    {
+        const ImVec2 c = P(closeX + 14, rowY + 14);
+        const float k = 5 * s;
+        const ImU32 ink = Rgba(200, 200, 210, opacity);
+        d->AddLine(ImVec2(c.x - k, c.y - k), ImVec2(c.x + k, c.y + k), ink, 1.6f * s);
+        d->AddLine(ImVec2(c.x - k, c.y + k), ImVec2(c.x + k, c.y - k), ink, 1.6f * s);
+    }
+    const bool hasChat = !conv.messages.empty() || !page.Notes().empty();
+    const float newW = 78;
+    if (AiButton(d, "ai-new-chat", "New chat", P(closeX - 6 - newW, rowY), newW, 28, 0, page.Available() && hasChat,
+                 opacity, s)) {
+        page.NewChat();
+        m.seenItems = 0;
+    }
+    d->AddLine(P(0, headH), P(W, headH), Rgba(26, 26, 33, opacity), 1 * s);
+
+    // ---- input (drawn first so a message sent this frame shows in the conversation below)
+    DrawAiInput(m, origin, W, H, s, opacity);
+
+    // ---- conversation
+    const float chatTop = headH + 1, chatBottom = H - 12 - 64 - 22;
+    ImGui::SetCursorScreenPos(P(0, chatTop));
+    ImGui::BeginChild("##ai-chat", ImVec2(W * s, (chatBottom - chatTop) * s), false,
+                      ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
+    d = ImGui::GetWindowDrawList();
+    const bool atBottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 8 * s;
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    const float x0 = start.x + 12 * s, cw = (W - 24) * s;
+    const float avatarR = 14 * s, lane = 2 * avatarR + 8 * s, bubbleMax = cw - lane - 28 * s;
+    const float padX = 12 * s, padY = 9 * s, round = 14 * s, textSize = 13.5f * s;
+    const std::vector<ai::ChatItem> items = page.Timeline();
+    float y = start.y + 14 * s;
+    for (size_t k = 0; k < items.size(); ++k) {
+        const ai::ChatItem& item = items[k];
+        if (item.groupStart && k > 0) {
+            y += 8 * s; // a little more room between turns
+        }
+        const bool player = item.side == ai::ChatSide::Player;
+        float h = 0;
+        switch (item.kind) {
+            case ai::ChatItem::Kind::Greeting:
+            case ai::ChatItem::Kind::Message: {
+                const std::string& text =
+                        item.kind == ai::ChatItem::Kind::Greeting ? item.text : conv.messages[item.message].text;
+                const float px = textSize * FontEmFactor;
+                const ImVec2 box = Sized(regular, px)->CalcTextSizeA(px, FLT_MAX, bubbleMax - 2 * padX, text.c_str(),
+                                                                     text.c_str() + text.size());
+                const float bw = std::min(bubbleMax, box.x + 2 * padX + (item.streaming ? 10 * s : 0));
+                h = std::max(box.y + 2 * padY, 2 * avatarR);
+                const float x = player ? x0 + cw - lane - bw : x0 + lane;
+                const ImU32 fill = player ? AccDeep(opacity) : Rgba(28, 28, 36, opacity);
+                d->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + h), fill, round);
+                const ImU32 ink = player ? Rgba(255, 255, 255, opacity) : Rgba(228, 228, 235, opacity);
+                AiText(d, regular, textSize, ImVec2(x + padX, y + (h - box.y) / 2), text, ink, bubbleMax - 2 * padX);
+                if (item.streaming && std::fmod(ImGui::GetTime(), 1.0) < .6) { // a blinking caret while it streams
+                    const ImVec2 caret(x + bw - padX - 3 * s, y + h - padY - 13 * s);
+                    d->AddRectFilled(caret, ImVec2(caret.x + 2 * s, caret.y + 13 * s), Acc(opacity));
+                }
+                break;
+            }
+            case ai::ChatItem::Kind::Typing: {
+                const std::string caption = Fit(regular, 12, item.text, (bubbleMax - 70 * s) / s);
+                const float captionW = caption.empty() ? 0 : TextWidth(regular, 12, caption.c_str()) * s + 8 * s;
+                const float bw = 56 * s + captionW;
+                h = 2 * avatarR + 6 * s;
+                const float x = x0 + lane;
+                d->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + h), Rgba(28, 28, 36, opacity), round);
+                DrawAiTypingDots(d, ImVec2(x + 18 * s, y + h / 2 + 1 * s), s, opacity);
+                if (!caption.empty()) {
+                    Label(d, regular, 12 * s, ImVec2(x + 50 * s, y + h / 2 - 7 * s), caption.c_str(),
+                          Rgba(148, 148, 160, opacity));
+                }
+                break;
+            }
+            case ai::ChatItem::Kind::Card:
+                h = DrawAiCard(d, page, *item.call, ImVec2(x0 + lane, y), cw - lane, s, opacity);
+                break;
+            case ai::ChatItem::Kind::Note: {
+                const ai::ChatNote& note = page.Notes()[item.note];
+                const ImU32 dot = note.kind == ai::ChatNote::Kind::Applied  ? Acc(opacity)
+                                  : note.kind == ai::ChatNote::Kind::Failed ? Rgba(246, 160, 171, opacity)
+                                                                            : Rgba(148, 148, 160, opacity);
+                const std::string text = Fit(regular, 11.5f, note.text, cw / s - 24);
+                const float tw = TextWidth(regular, 11.5f, text.c_str()) * s, x = x0 + (cw - tw - 10 * s) / 2;
+                d->AddCircleFilled(ImVec2(x + 2.5f * s, y + 8 * s), 2.5f * s, dot, 12);
+                Label(d, regular, 11.5f * s, ImVec2(x + 10 * s, y + 1 * s), text.c_str(), Rgba(160, 160, 172, opacity));
+                h = 17 * s;
+                break;
+            }
+            case ai::ChatItem::Kind::System: {
+                const float size = 12 * s, wrap = cw * .86f, px = size * FontEmFactor;
+                const ImVec2 box = Sized(regular, px)->CalcTextSizeA(px, FLT_MAX, wrap, item.text.c_str(),
+                                                                     item.text.c_str() + item.text.size());
+                const ImU32 ink = item.failure ? Rgba(246, 160, 171, opacity) : Rgba(148, 148, 160, opacity);
+                AiText(d, regular, size, ImVec2(x0 + (cw - box.x) / 2, y + 2 * s), item.text, ink, wrap);
+                h = box.y + 4 * s;
+                break;
+            }
+        }
+        if (item.groupStart && item.side != ai::ChatSide::Centre) {
+            const ImVec2 c(player ? x0 + cw - avatarR : x0 + avatarR, y + avatarR);
+            if (player) {
+                DrawAiPlayerAvatar(d, c, avatarR, opacity);
+            } else {
+                DrawAiMark(d, logo, c, avatarR, Rgba(28, 28, 36, opacity), opacity);
+            }
+        }
+        y += h + 6 * s;
+    }
+    ImGui::SetCursorScreenPos(ImVec2(start.x, y + 4 * s));
+    ImGui::Dummy(ImVec2(1, 1));
+    // follow the conversation while the player is at the bottom (new items, streamed text); jump there on opening
+    const size_t lastText = conv.messages.empty() ? 0 : conv.messages.back().text.size();
+    const size_t signature = items.size() * 1000003u + lastText;
+    if (opening || (signature != m.seenItems && atBottom)) {
+        ImGui::SetScrollHereY(1.f);
+    }
+    m.seenItems = signature;
+    const float listScroll = ImGui::GetScrollY(), listLimit = ImGui::GetScrollMaxY();
+    FadeEdges(s, opacity);
+    EndChildWindow();
+    // thin accent scrollbar at the window's right edge, only when the conversation overflows
+    if (listLimit > 0) {
+        const float view = chatBottom - chatTop, total = view + listLimit / s;
+        const float bar = std::max(30.f, view * view / total);
+        const float barTop = chatTop + (view - bar) * (listScroll / listLimit);
+        ImGui::GetWindowDrawList()->AddRectFilled(P(W - 6, barTop + 6), P(W - 3, barTop + bar - 6),
+                                                  Acc(.85f * opacity), 1.5f * s);
+    }
+    EndWindow();
+    if (closing) {
+        m.bubble.Close();
+    }
+}
+
+// Called by DrawMenu after the menu and its side panels while Nickel AI is on: the page's tick, the chat window when it
+// is open, then the bubble. The page (client, worker, install key) is created the first time the window opens.
+void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity, ImTextureID logo) {
+    namespace ai = nickel::ai;
+    AiMenu& m = Ai();
+    if (!ai::BubbleState::BubbleShown(AiOption().value, opacity > 0)) {
+        return;
+    }
+    if (m.bubble.WindowOpen() && !m.created) {
         m.created = true;
         if (ai::Factory() != nullptr) {
             ai::Services services = ai::Factory()();
@@ -1095,134 +1569,50 @@ void DrawAi(ImVec2 origin, float s, float opacity) {
             m.tools = std::move(services.tools);
         }
         m.page = std::make_unique<ai::ChatPage>(m.client.get(), m.tools.get());
-        m.focusInput = true;
     }
-    ai::ChatPage& page = *m.page;
-    page.Tick(ImGui::GetTime(), static_cast<int64_t>(std::time(nullptr)), opened.load() && opacity > .05f);
-    const float U = 242.f / 210.f;
-    const float left = 257, right = menuW - 22, top = 72, bottom = menuH - 22, areaW = right - left;
+    // tool calls run only while the window shows; a closed window keeps the conversation and its open cards
+    if (m.page) {
+        m.page->Tick(ImGui::GetTime(), static_cast<int64_t>(std::time(nullptr)),
+                     m.bubble.WindowOpen() && opened.load() && opacity > .05f);
+    }
+    if (m.bubble.WindowOpen() && m.page) {
+        DrawAiWindow(place.window, s, opacity, logo);
+    }
+    // the bubble in its own small window (a few pixels larger for the ring), above the menu
+    const ai::UiRect& b = place.bubble;
+    const float margin = 4 * s;
+    ImGui::SetNextWindowPos(ImVec2(b.x - margin, b.y - margin));
+    ImGui::SetNextWindowSize(ImVec2(b.w + 2 * margin, b.h + 2 * margin));
+    ImGui::Begin("##NickelAiBubble", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
+                         | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollWithMouse
+                         | (opened.load() ? 0 : ImGuiWindowFlags_NoInputs));
     auto* d = ImGui::GetWindowDrawList();
-    auto P = [&](float x, float y) {
-        return ImVec2(origin.x + x * s, origin.y + y * s);
-    };
-    const ai::ConversationSnapshot& conv = page.Conversation();
-
-    // ---- top row: quota and activity on the left, New chat on the right
-    const std::string quota = page.QuotaLine();
-    Label(d, semibold, 13 * s, P(left + 4, top + 6), quota.c_str(), Rgba(170, 170, 182, opacity));
-    const std::string activity = page.ActivityText();
-    if (!activity.empty()) {
-        const float x = left + 4 + TextWidth(semibold, 13, quota.c_str()) + 18;
-        const float pulse = .55f + .45f * std::sin(static_cast<float>(ImGui::GetTime()) * 5);
-        d->AddCircleFilled(P(x, top + 14), 3 * s, Acc(opacity * pulse));
-        const std::string dots(static_cast<size_t>(ImGui::GetTime() * 3) % 4, '.');
-        Label(d, regular, 13 * s, P(x + 10, top + 6), (activity + dots).c_str(), Rgba(148, 148, 160, opacity));
+    const bool click = Hit("##ai-bubble", ImVec2(b.x, b.y), ImVec2(b.w, b.h));
+    const bool over = ImGui::IsItemHovered();
+    if (over) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     }
-    const bool hasChat = !conv.messages.empty() || !page.Notes().empty();
-    if (UiButton(d, "ai-new-chat", "New chat", P(right - 84 * U, top), 84 * U, 28 * U, 0, page.Available() && hasChat,
-                 opacity, s)) {
-        page.NewChat();
-        m.seenItems = 0;
+    const float glow = Animate("ai-bubble", over ? 1.f : 0.f, ImGui::GetIO().DeltaTime);
+    const bool open = m.bubble.WindowOpen();
+    const ImVec2 c(b.x + b.w / 2, b.y + b.h / 2);
+    const float r = b.w / 2;
+    d->AddCircleFilled(ImVec2(c.x, c.y + 1.5f * s), r + 1 * s, Rgba(0, 0, 0, .35f * opacity), 48); // soft shadow
+    DrawAiMark(d, logo, c, r, Rgba(15, 15, 20, .98f * opacity), opacity);
+    d->AddCircle(c, r, Rgba(26, 26, 33, opacity), 48, 1 * s);
+    const float ring = std::max(glow, open ? .55f : 0.f);
+    if (ring > .001f) {
+        d->AddCircle(c, r + 1.5f * s, Acc(ring * opacity), 48, 2 * s);
     }
-
-    // ---- input (drawn first so a Send of this frame shows in the conversation below)
-    const float inputH = 64, inputTop = bottom - inputH;
-    DrawAiInput(m, origin, s, opacity, left, right, inputTop, inputH);
-
-    // ---- conversation
-    const float chatTop = top + 40, chatBottom = inputTop - 26;
-    ImGui::SetCursorScreenPos(P(left, chatTop));
-    ImGui::BeginChild("##ai-chat", ImVec2(areaW * s, (chatBottom - chatTop) * s), false,
-                      ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
-    d = ImGui::GetWindowDrawList();
-    const bool atBottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 8 * s;
-    const ImVec2 start = ImGui::GetCursorScreenPos();
-    const float width = areaW * s, bubbleMax = width * .78f, pad = 10 * s;
-    auto centred = [&](ImFont* font, float size, const char* text, float y, ImU32 color) {
-        Label(d, font, size * s, ImVec2(start.x + (width - TextWidth(font, size, text) * s) / 2, start.y + y * s), text,
-              color);
-    };
-    if (!page.Available()) {
-        centred(bold, 16, "Nickel AI is not available in this build.", 120, Rgba(255, 255, 255, opacity));
-    } else if (!hasChat) {
-        centred(bold, 17, "Ask Nickel AI", 110, Rgba(255, 255, 255, opacity));
-        const ImU32 grey = Rgba(148, 148, 160, opacity);
-        centred(regular, 13, "It finds modules, explains settings and writes scripts.", 140, grey);
-        centred(regular, 13, "It asks you before it changes anything.", 160, grey);
+    // a closed window with an answer on its way or a card waiting: an accent dot
+    if (!open && m.page && (m.page->Busy() || !m.page->OpenCards().empty())) {
+        const ImVec2 dot(c.x + r * .72f, c.y - r * .72f);
+        d->AddCircleFilled(dot, 5 * s, Rgba(15, 15, 20, opacity), 16);
+        d->AddCircleFilled(dot, 3.5f * s, Acc(opacity), 16);
     }
-    float y = start.y + 4 * s;
-    const auto& notes = page.Notes();
-    size_t note = 0;
-    auto drawNotes = [&](size_t afterMessages) {
-        for (; note < notes.size() && notes[note].afterMessages <= afterMessages; ++note) {
-            const auto& n = notes[note];
-            const ImU32 dot = n.kind == ai::ChatNote::Kind::Applied  ? Acc(opacity)
-                              : n.kind == ai::ChatNote::Kind::Failed ? Rgba(246, 160, 171, opacity)
-                                                                     : Rgba(148, 148, 160, opacity);
-            d->AddCircleFilled(ImVec2(start.x + 8 * s, y + 8 * s), 2.5f * s, dot);
-            const ImVec2 at(start.x + 18 * s, y);
-            y += AiText(d, regular, 12 * s, at, n.text, Rgba(170, 170, 182, opacity), width - 24 * s) + 8 * s;
-        }
-    };
-    for (size_t i = 0; i < conv.messages.size(); ++i) {
-        drawNotes(i);
-        const auto& msg = conv.messages[i];
-        const bool player = msg.role == ai::ChatMessage::Role::Player;
-        if (!player && msg.text.empty()) {
-            continue; // a step that only called tools
-        }
-        const bool streaming = !player && i + 1 == conv.messages.size()
-                               && page.CurrentActivity() == ai::Activity::Writing;
-        const float px = 13.5f * s * FontEmFactor;
-        const ImVec2 box = Sized(regular, px)->CalcTextSizeA(px, FLT_MAX, bubbleMax - 2 * pad, msg.text.c_str(),
-                                                             msg.text.c_str() + msg.text.size());
-        const float bw = std::min(bubbleMax, box.x + 2 * pad + (streaming ? 8 * s : 0));
-        const float bh = box.y + 2 * pad;
-        const float x = player ? start.x + width - bw - 4 * s : start.x;
-        const ImU32 fill = player ? AccDeep(.9f * opacity) : Rgba(23, 23, 29, opacity);
-        d->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + bh), fill);
-        const ImU32 ink = player ? Rgba(255, 255, 255, opacity) : Rgba(225, 225, 232, opacity);
-        AiText(d, regular, 13.5f * s, ImVec2(x + pad, y + pad), msg.text, ink, bubbleMax - 2 * pad);
-        if (streaming && std::fmod(ImGui::GetTime(), 1.0) < .6) { // a blinking caret while the answer streams
-            const ImVec2 caret(x + bw - pad - 2 * s, y + bh - pad - 14 * s);
-            d->AddRectFilled(caret, ImVec2(caret.x + 6 * s, caret.y + 14 * s), Acc(opacity));
-        }
-        y += bh + 10 * s;
-    }
-    drawNotes(SIZE_MAX);
-    for (const auto* call : page.OpenCards()) {
-        y += DrawAiCard(d, page, *call, ImVec2(start.x, y), width - 4 * s, s, opacity) + 10 * s;
-    }
-    const std::string error = page.ErrorLine();
-    if (!error.empty()) {
-        const bool failed = conv.state == ai::TurnState::Failed;
-        const float textW = width - 2 * pad - 4 * s;
-        const float h = AiTextHeight(regular, 13 * s, error, textW) + 2 * pad;
-        const ImU32 fill = failed ? Rgba(240, 86, 106, .14f * opacity) : Rgba(255, 255, 255, .06f * opacity);
-        d->AddRectFilled(ImVec2(start.x, y), ImVec2(start.x + width - 4 * s, y + h), fill);
-        const ImU32 ink = failed ? Rgba(246, 160, 171, opacity) : Rgba(200, 200, 210, opacity);
-        AiText(d, regular, 13 * s, ImVec2(start.x + pad, y + pad), error, ink, textW);
-        y += h + 10 * s;
-    }
-    ImGui::SetCursorScreenPos(ImVec2(start.x, y));
-    ImGui::Dummy(ImVec2(1, 1));
-    // follow the conversation while the player is at the bottom (new messages, streamed text, notes, cards)
-    const size_t items = conv.messages.size() + notes.size() + page.OpenCards().size()
-                         + (conv.messages.empty() ? 0 : conv.messages.back().text.size());
-    if (items != m.seenItems && atBottom) {
-        ImGui::SetScrollHereY(1.f);
-    }
-    m.seenItems = items;
-    const float listScroll = ImGui::GetScrollY(), listLimit = ImGui::GetScrollMaxY();
-    FadeEdges(s, opacity);
-    EndChildWindow();
-    // scrollbar to the right of the conversation, only when it overflows (theme accent colour)
-    if (listLimit > 0) {
-        const float view = chatBottom - chatTop, total = view + listLimit / s;
-        const float bar = std::max(30.f, view * view / total);
-        const float barTop = chatTop + (view - bar) * (listScroll / listLimit);
-        ImGui::GetWindowDrawList()->AddRectFilled(P(right + 3, barTop + 6), P(right + 6, barTop + bar - 6),
-                                                  Acc(.85f * opacity), 0);
+    EndWindow();
+    if (click) {
+        m.bubble.Click();
     }
 }
 

@@ -162,7 +162,7 @@ void WindowFont(float px){ImDrawList* list=ImGui::GetWindowDrawList();if(!window
  ImFont* font=Sized(regular,px);if(std::fabs(font->FontSize-px)<1.f)px=font->FontSize;ImGui::PushFont(font);ImGui::SetWindowFontScale(px/font->FontSize);windowFonts.push_back(list);}
 void EndChildWindow(){if(!windowFonts.empty()&&windowFonts.back()==ImGui::GetWindowDrawList()){ImGui::PopFont();windowFonts.pop_back();}ImGui::EndChild();}   // same for a child window
 void EndWindow(){if(!windowFonts.empty()&&windowFonts.back()==ImGui::GetWindowDrawList()){ImGui::PopFont();windowFonts.pop_back();}ImGui::End();}
-const char* names[]={"Combat","Movement","Player","Visuals","Utility","HUD","Settings","Configs","Scripting","Schematics","Wardrobe","Scripts","Configs","Nickel AI"};   // 11, 12: PUBLIC (public_ui.hpp); 13: Nickel AI (ai_ui.hpp)
+const char* names[]={"Combat","Movement","Player","Visuals","Utility","HUD","Settings","Configs","Scripting","Schematics","Wardrobe","Scripts","Configs"};   // 11, 12: PUBLIC (public_ui.hpp); Nickel AI is a bubble beside the menu (ai_ui.hpp)
 const char* glyphs[]={"\xee\x80\x80","\xee\x80\x81","\xee\x80\x82","\xee\x80\x83","\xee\x80\x84","\xee\x80\x83","\xee\x80\x85","\xee\x80\x87","\xee\x80\x88","\xee\x80\xa2","\xee\x80\xa8"};
 std::wstring configPath;RECT previousClip{};int cursorBalance=0;
 // Settings screen entries: label, description, key and default value.
@@ -2698,7 +2698,7 @@ void JumpPostAll(uint64_t a8){game::Move2JumpPost(a8);game::LongJumpPost(a8);Scr
 #include "schematic_ui.hpp"
 #include "public_ui.hpp"
 #define NICKEL_AI_UI_DRAW
-#include "ai_ui.hpp"   // Nickel AI panel (tab 13), its Settings toggle and sidebar icon
+#include "ai_ui.hpp"   // Nickel AI: the bubble beside the menu, its chat window and its Settings toggle
 #include "ai_menu.hpp"  // Nickel AI services of the game (MakeAiServices)
 // Details panel for the selected config, inside the floating right panel.
 // Rows (height / gap in u): title 22/4 (or field + Save 32/10), "Updated ..." 16/10, rule 1/10, MODULES 12/6 then one
@@ -2916,6 +2916,7 @@ void DrawMenu(float opacity,ImTextureID logo){
  // keep the settings panel on screen: in a narrow window the menu shifts left
  const bool panel=(tab<6&&selected>=0)||tab==7||tab==8||PublicTab(tab);if(panel&&!dragMode&&origin.x+(menuW+19+297)*s>io.DisplaySize.x-8)origin.x=std::max(8.f,std::floor(io.DisplaySize.x-8-(menuW+19+297)*s));
  auto P=[&](float x,float y){return ImVec2(origin.x+x*s,origin.y+y*s);};
+ const nickel::ai::BubbleLayout aiPlace=AiLayout(origin,s);   // Nickel AI bubble and chat window, left of the menu (ai_ui.hpp)
  ImGui::SetNextWindowPos(origin);ImGui::SetNextWindowSize(ImVec2(menuW*s,menuH*s));ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(0,0));ImGui::PushStyleVar(ImGuiStyleVar_Alpha,opacity);
  ImGui::Begin("##NickelInGame",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoBringToFrontOnFocus|(opened.load()?0:ImGuiWindowFlags_NoInputs));
  // backdrop behind the menu
@@ -2924,7 +2925,7 @@ void DrawMenu(float opacity,ImTextureID logo){
  if(opened){
   // edge bits: 1 left, 2 right, 4 top, 8 bottom; 16 = moving by the title bar
   const ImVec2 mouse=io.MousePos,corner=P(menuW,menuH);const float grip=7;auto close=[&](float a,float b){return std::fabs(a-b)<=grip;};
-  const bool inside=mouse.x>=origin.x-grip&&mouse.x<=corner.x+grip&&mouse.y>=origin.y-grip&&mouse.y<=corner.y+grip;int edge=0;
+  const bool inside=!AiCovers(aiPlace,mouse)&&mouse.x>=origin.x-grip&&mouse.x<=corner.x+grip&&mouse.y>=origin.y-grip&&mouse.y<=corner.y+grip;int edge=0;
   if(inside){if(close(mouse.x,origin.x))edge|=1;if(close(mouse.x,corner.x))edge|=2;if(close(mouse.y,origin.y))edge|=4;if(close(mouse.y,corner.y))edge|=8;}
   const bool header=inside&&!edge&&mouse.y<origin.y+64*s&&mouse.x>origin.x+244*s&&mouse.x<corner.x-(tab==5?425:tab<6?270:tab==7||tab==8||PublicTab(tab)?296:140)*s;const int mode=dragMode?dragMode:edge;
   if(mode&&mode!=16)ImGui::SetMouseCursor(((mode&3)&&(mode&12))?((((mode&1)&&(mode&4))||((mode&2)&&(mode&8)))?ImGuiMouseCursor_ResizeNWSE:ImGuiMouseCursor_ResizeNESW):(mode&3)?ImGuiMouseCursor_ResizeEW:ImGuiMouseCursor_ResizeNS);
@@ -2951,18 +2952,19 @@ void DrawMenu(float opacity,ImTextureID logo){
  if(logo)d->AddImage(logo,P(26,24),P(56,54),ImVec2(0,0),ImVec2(1,1),Rgba(255,255,255,opacity));
  {Label(d,semibold,20*s,P(66,28),"Nickel",Rgba(255,255,255,opacity));const float pill=66+TextWidth(semibold,20,"Nickel")+10;
   const float pillW=16+TextWidth(semibold,11,"V1 Beta");d->AddRectFilled(P(pill,31),P(pill+pillW,51),Rgba(35,35,44,opacity),0);Label(d,semibold,11*s,P(pill+8,34.5f),"V1 Beta",Rgba(148,148,160,opacity));}
- // Three groups: FEATURES (tabs 0-5), PUBLIC (11, 12) and OTHER (6-9, then 13 Nickel AI while its option is on). Entries
- // are drawn 2 u shorter than their pitch (32 u at the default height); OTHER sits at the bottom of the column when there
- // is room, and in a short menu the pitch shrinks so that every entry stays inside the column.
- const int entries=AiOption().value?13:12,others=entries-8;
- const float pitch=std::clamp((menuH-194.f)/entries,19.f,32.f),entryH=pitch-2,publicCaption=106+6*pitch+16,publicTop=publicCaption+18;
- const float otherTop=std::max(menuH-26-others*pitch,publicTop+2*pitch+16+18);
+ // Three groups: FEATURES (tabs 0-5), PUBLIC (11, 12) and OTHER (6-9). Entries are drawn 2 u shorter than their pitch
+ // (32 u at the default height); OTHER sits at the bottom of the column when there is room, and in a short menu the pitch
+ // shrinks so that every entry stays inside the column. When the Nickel AI bubble has no room left of the menu it sits in
+ // the column's bottom-left corner, and the entries keep clear of it.
+ const int entries=12,others=entries-8;const float aiReserve=AiSidebarReserve(aiPlace);
+ const float pitch=std::clamp((menuH-194.f-aiReserve)/entries,19.f,32.f),entryH=pitch-2,publicCaption=106+6*pitch+16,publicTop=publicCaption+18;
+ const float otherTop=std::max(menuH-26-aiReserve-others*pitch,publicTop+2*pitch+16+18);
  Label(d,semibold,10.5f*s,P(28,88),"FEATURES",Rgba(120,120,132,opacity));Label(d,semibold,10.5f*s,P(28,publicCaption),"PUBLIC",Rgba(120,120,132,opacity));Label(d,semibold,10.5f*s,P(28,otherTop-18),"OTHER",Rgba(120,120,132,opacity));
- static const int order[13]={0,1,2,3,4,5,11,12,6,7,8,9,kAiTab};
+ static const int order[12]={0,1,2,3,4,5,11,12,6,7,8,9};
  for(int n=0;n<entries;++n){const int i=order[n];
   const float y=n<6?106.f+n*pitch:n<8?publicTop+(n-6)*pitch:otherTop+(n-8)*pitch;bool active=tab==i;auto id="nav"+std::to_string(i);const float hover=NavHover(id,Hover(P(16,y),ImVec2(212*s,pitch*s))?1:0,io.DeltaTime);
   if(active)d->AddRectFilled(P(16,y),P(228,y+entryH),Rgba(20,20,27,opacity),0);else if(hover>.001f)d->AddRectFilled(P(16,y),P(228,y+entryH),Rgba(15,15,20,hover*opacity),0);
-  const float glyph=std::min(17.f,entryH-4);if(i==kAiTab)DrawAiIcon(d,P(27,y+(entryH-glyph)/2),glyph*s,active?Acc(opacity):Rgba(148,148,160,opacity));else DrawIcon(d,i,P(27,y+(entryH-glyph)/2),glyph*s,active?Acc(opacity):Rgba(148,148,160,opacity));Label(d,semibold,13.5f*s,P(52,y+(entryH-16)/2),names[i],active?Rgba(255,255,255,opacity):Rgba(148,148,160,opacity));
+  const float glyph=std::min(17.f,entryH-4);DrawIcon(d,i,P(27,y+(entryH-glyph)/2),glyph*s,active?Acc(opacity):Rgba(148,148,160,opacity));Label(d,semibold,13.5f*s,P(52,y+(entryH-16)/2),names[i],active?Rgba(255,255,255,opacity):Rgba(148,148,160,opacity));
   if(PublicTab(i)&&Public().page&&Public().page->AnyUpdate(PublicKindOf(i)))d->AddCircleFilled(P(210,y+entryH/2),2.5f*s,Acc(opacity));   // an installed item of this kind has an update
   if(Hit(id.c_str(),P(16,y),ImVec2(212*s,pitch*s))){tab=i;if(i<6)category=i;selected=-1;listening=-1;search[0]=0;}
  }
@@ -3040,7 +3042,6 @@ const bool modulesTab=tab<6;const float panelTop=64.f;const std::string crumb=st
  else if(tab==8){if(!DrawPublishForm(origin,s,opacity,true))DrawScripting(origin,s,opacity);}
  else if(tab==9)DrawSchematics(origin,s,opacity);
  else if(PublicTab(tab))DrawPublic(origin,s,opacity);
- else if(tab==kAiTab){if(AiOption().value)DrawAi(origin,s,opacity);else tab=6;}   // the option was turned off: back to Settings
  else{ImGui::SetCursorScreenPos(P(273,90));ImGui::BeginGroup();ImGui::TextWrapped("%s","This section is being reconstructed from the original client.");ImGui::EndGroup();}
  EndWindow();
  // `selected` and `tab` may have changed during this frame (category click or the open card), so read them again
@@ -3053,6 +3054,7 @@ const bool modulesTab=tab<6;const float panelTop=64.f;const std::string crumb=st
  // open item profile: 0.2 s cubic entry, 6 u slide
  if(tab==6&&profileOpen>=0&&profileOpen<(int)itemProfiles.size()){const float t=std::clamp((float)(ImGui::GetTime()-profileOpenedAt)/.2f,0.f,1.f),e=1-(1-t)*(1-t)*(1-t);
   DrawSettingsPanel(profileModule,P(menuW+19+(1-e)*6,0),s,opacity*e);SyncProfile();}
+ DrawAiBubble(aiPlace,s,opacity,logo);   // Nickel AI: the bubble left of the menu and its chat window (only while the option is on)
  ImGui::PopStyleVar(2);
 }
 }
