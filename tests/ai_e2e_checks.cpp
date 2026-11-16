@@ -310,7 +310,7 @@ int main() {
 
     FakeRegistry registry;
     registry.list.push_back(MakeModule("kill_aura", "Kill Aura", "Combat", false));
-    registry.list.push_back(MakeModule("fly", "Fly", "Movement", true));
+    registry.list.push_back(MakeModule("flight", "Flight", "Movement", true));
     FakeLibrary library;
     ai::tools::RegistrySettingsWriter writer(registry);
     FakeUi ui;
@@ -368,16 +368,16 @@ int main() {
     Check(page.QuotaLine() == "2/5 today", "a turn with tools counts once: " + page.QuotaLine());
 
     // ---- 3. an action the player declines
-    Check(page.Send("turn off fly"), "the third message is sent");
-    Check(Pump(page, [&] { return OnlyCard(page) != nullptr; }), "a card asks to turn off Fly");
+    Check(page.Send("turn off flight"), "the third message is sent");
+    Check(Pump(page, [&] { return OnlyCard(page) != nullptr; }), "a card asks to turn off Flight");
     if (const ai::PendingCall* call = OnlyCard(page)) {
-        Check(call->card.title == "Turn off Fly", "the card is Turn off Fly: " + call->card.title);
+        Check(call->card.title == "Turn off Flight", "the card is Turn off Flight: " + call->card.title);
         LetCardArm(page);
         Check(page.Decline(call->use.id), "the player declines");
     }
     Check(Pump(page, [&] { return Idle(page); }), "the turn ends after the refusal");
-    Check(registry.ById("fly")->enabled && registry.saves == 1, "Fly is still on and nothing was saved");
-    Check(LastAssistant(page) == "ok: Understood, I left Fly on.",
+    Check(registry.ById("flight")->enabled && registry.saves == 1, "Flight is still on and nothing was saved");
+    Check(LastAssistant(page) == "ok: Understood, I left Flight as it was.",
           "the model received the declined error: " + LastAssistant(page));
 
     // ---- 4. write_script, saved held
