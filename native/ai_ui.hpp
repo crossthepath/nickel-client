@@ -966,8 +966,11 @@ constexpr float kBubbleSize = 48;       // the round button with the Nickel mark
 constexpr float kBubbleGap = 12;        // between the bubble and the menu, and between the bubble and its window
 constexpr float kBubbleBottom = 20;     // from the bubble's bottom to the menu's bottom
 constexpr float kBubbleInset = 16;      // inside the sidebar, from its left and bottom edges
-constexpr float kChatWidth = 380;
-constexpr float kChatHeight = 520;
+// The chat window's size in menu units: the player's own (drag its bottom-right corner, kept in ai/settings.ini as
+// [ai] size=w,h), independent from the menu's size.
+inline float kChatWidth = 380;
+inline float kChatHeight = 520;
+constexpr float kChatSizeMinW = 300, kChatSizeMaxW = 1000, kChatSizeMinH = 360, kChatSizeMaxH = 1200;
 constexpr float kChatMinHeight = 300;
 constexpr float kScreenMargin = 8;      // screen pixels, like the menu's own margin
 
@@ -1364,6 +1367,13 @@ void AiTick() {
         wchar_t place[64] = {};
         GetPrivateProfileStringW(L"ai", L"bubble", L"", place, 64, AiSettingPath().c_str());
         m.placed = nickel::ai::ReadBubblePlace(Utf8(place), &m.placeX, &m.placeY);
+        wchar_t size[64] = {};
+        GetPrivateProfileStringW(L"ai", L"size", L"", size, 64, AiSettingPath().c_str());
+        float w = 0, h = 0;
+        if (swscanf_s(size, L"%f,%f", &w, &h) == 2) {
+            nickel::ai::kChatWidth = std::clamp(w, nickel::ai::kChatSizeMinW, nickel::ai::kChatSizeMaxW);
+            nickel::ai::kChatHeight = std::clamp(h, nickel::ai::kChatSizeMinH, nickel::ai::kChatSizeMaxH);
+        }
         // offline review (probe only): Nickel AI on in memory, its window open
         char value[8] = {};
         if (OwnProbe() && GetEnvironmentVariableA("NICKEL_REVIEW_AI", value, sizeof(value))) {
@@ -2145,6 +2155,32 @@ void DrawAiWindow(const nickel::ai::BubbleLayout& place, float s, float opacity,
         const float barTop = chatTop + (view - bar) * (listScroll / listLimit);
         ImGui::GetWindowDrawList()->AddRectFilled(P(W - 6, barTop + 6), P(W - 3, barTop + bar - 6),
                                                   Acc(.85f * opacity), 1.5f * s);
+    }
+    // the size grip (bottom-right corner): the chat window's own size, independent from the menu's
+    {
+        ImGui::SetCursorScreenPos(P(W - 18, H - 18));
+        ImGui::InvisibleButton("##ai-resize", ImVec2(18 * s, 18 * s));
+        const bool over = ImGui::IsItemHovered(), held = ImGui::IsItemActive();
+        if (over || held) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+        }
+        if (held) {
+            const ImVec2 delta = ImGui::GetIO().MouseDelta;
+            ai::kChatWidth = std::clamp(ai::kChatWidth + delta.x / s, ai::kChatSizeMinW, ai::kChatSizeMaxW);
+            ai::kChatHeight = std::clamp(ai::kChatHeight + delta.y / s, ai::kChatSizeMinH, ai::kChatSizeMaxH);
+        }
+        if (ImGui::IsItemDeactivated()) {
+            wchar_t size[64];
+            swprintf_s(size, L"%.0f,%.0f", ai::kChatWidth, ai::kChatHeight);
+            CreateDirectoryW(AiSettingPath().substr(0, AiSettingPath().find_last_of(L"\\/")).c_str(), nullptr);
+            WritePrivateProfileStringW(L"ai", L"size", size, AiSettingPath().c_str());
+        }
+        auto* wd = ImGui::GetWindowDrawList();
+        const ImU32 c = held ? Acc(opacity) : over ? Rgba(200, 200, 210, opacity) : Rgba(90, 90, 104, opacity);
+        for (int k = 0; k < 3; ++k) {
+            const float o = 5 + k * 4.f;
+            wd->AddLine(P(W - o, H - 4), P(W - 4, H - o), c, 1.3f * s);
+        }
     }
     EndWindow();
     if (closing) {
