@@ -219,3 +219,28 @@ if(WIN32)
   target_compile_definitions(nickel_script_files_checks PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
   add_test(NAME script_files_checks COMMAND nickel_script_files_checks)
 endif()
+# PUBLIC client core: the model's validation, the community API calls against a server the test starts on 127.0.0.1
+# (reads, and the writes with the install key: publish, publish update, check, reports), the install identity,
+# the local starred (favourites) and published lists, and the installer on a temporary folder (native/public_model.hpp,
+# native/public_client.hpp, native/public_identity.hpp, native/public_local.hpp, native/public_installer.hpp)
+if(WIN32)
+  add_executable(nickel_public_client_checks tests/public_client_checks.cpp)
+  target_include_directories(nickel_public_client_checks PRIVATE native)
+  target_compile_definitions(nickel_public_client_checks PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE
+    NICKEL_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  target_compile_options(nickel_public_client_checks PRIVATE /bigobj)
+  target_link_libraries(nickel_public_client_checks PRIVATE winhttp bcrypt ws2_32)
+  add_test(NAME public_client_checks COMMAND nickel_public_client_checks)
+  set_tests_properties(public_client_checks PROPERTIES TIMEOUT 120)
+endif()
+# PUBLIC pages of the menu without ImGui: the requests they make (recorded), installs on a temporary folder, stars and
+# the Starred tab, publishing and publish updates of local scripts and configs (native/public_page.hpp)
+if(WIN32)
+  add_executable(nickel_public_page_checks tests/public_page_checks.cpp)
+  target_include_directories(nickel_public_page_checks PRIVATE native)
+  target_compile_definitions(nickel_public_page_checks PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE
+    NICKEL_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  target_compile_options(nickel_public_page_checks PRIVATE /bigobj)
+  target_link_libraries(nickel_public_page_checks PRIVATE winhttp bcrypt ws2_32)
+  add_test(NAME public_page_checks COMMAND nickel_public_page_checks)
+endif()

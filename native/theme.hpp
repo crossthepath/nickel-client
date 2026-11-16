@@ -138,7 +138,7 @@ inline void DrawBackdrop(ImDrawList* d,ImVec2 lo,ImVec2 hi,float r,float s,float
  d->PopClipRect();}
 
 // ---- Nickel icons: stroked paths on a 24-unit grid (stroke 1.7). Order matches the menu tabs: Combat, Movement,
-// Player, Visuals, Utility, HUD, Settings, Configs, Scripting, Schematics.
+// Player, Visuals, Utility, HUD, Settings, Configs, Scripting, Schematics; 11 and 12 are the PUBLIC Scripts and Configs.
 // Icon font (ui/assets/nickel-icons.ttf, see icon_codepoints.hpp): Lucide glyphs and brand logos. The em square
 // (1000 units, ascent 1000, descent 0) is the 24 x 24 icon box, so a glyph drawn at `size` from `lo` fills [lo, lo+size].
 inline ImFont* iconFont=nullptr;
@@ -148,7 +148,7 @@ inline bool DrawGlyph(ImDrawList* d,unsigned code,ImVec2 lo,float size,ImU32 c){
 inline void DrawIcon(ImDrawList* d,int kind,ImVec2 lo,float size,ImU32 c){
  {static const unsigned codes[10]={nicons::k_cat_combat,nicons::k_cat_movement,nicons::k_cat_player,nicons::k_cat_visuals,nicons::k_cat_utility,
    nicons::k_cat_hud,nicons::k_cat_settings,nicons::k_cat_configs,nicons::k_cat_scripting,nicons::k_cat_schematics};
-  if(DrawGlyph(d,codes[kind>=0&&kind<10?kind:9],lo,size,c))return;}   // line drawings below are the fallback when the font is missing
+  if(kind<11&&DrawGlyph(d,codes[kind>=0&&kind<10?kind:9],lo,size,c))return;}   // line drawings below are the fallback when the font is missing (11, 12: PUBLIC, line drawings only)
  const float k=size/24.f,th=std::max(1.f,1.7f*k);auto P=[&](float x,float y){return ImVec2(lo.x+x*k,lo.y+y*k);};
  auto L=[&](float x0,float y0,float x1,float y1){d->AddLine(P(x0,y0),P(x1,y1),c,th);};
  auto poly=[&](std::initializer_list<ImVec2> pts,bool closed){std::vector<ImVec2> v;for(auto& q:pts)v.push_back(P(q.x,q.y));d->AddPolyline(v.data(),(int)v.size(),c,closed?ImDrawFlags_Closed:0,th);};
@@ -166,6 +166,9 @@ inline void DrawIcon(ImDrawList* d,int kind,ImVec2 lo,float size,ImU32 c){
           L(3,18,14.8f,18);L(19.2f,18,21,18);d->AddCircle(P(17,18),2.2f*k,c,16,th);break;                                       // Settings: sliders
   case 7: poly({ImVec2(3,7),ImVec2(3,19),ImVec2(21,19),ImVec2(21,9),ImVec2(11.5f,9),ImVec2(9.5f,6),ImVec2(3,6)},true);break;     // Configs: folder
   case 8: poly({ImVec2(8,7),ImVec2(3,12),ImVec2(8,17)},false);poly({ImVec2(16,7),ImVec2(21,12),ImVec2(16,17)},false);L(14,5,10,19);break; // Scripting
+  case 11: d->AddCircle(P(12,12),9*k,c,32,th);d->AddEllipse(P(12,12),ImVec2(4*k,9*k),c,0,24,th);L(3,12,21,12);break;                // PUBLIC Scripts: globe
+  case 12: poly({ImVec2(3,7),ImVec2(3,19),ImVec2(21,19),ImVec2(21,9),ImVec2(11.5f,9),ImVec2(9.5f,6),ImVec2(3,6)},true);
+           L(12,11.5f,12,16.5f);poly({ImVec2(9.5f,14.2f),ImVec2(12,16.7f),ImVec2(14.5f,14.2f)},false);break;                    // PUBLIC Configs: folder with an arrow
   default: poly({ImVec2(12,3),ImVec2(20,7.5f),ImVec2(20,16.5f),ImVec2(12,21),ImVec2(4,16.5f),ImVec2(4,7.5f)},true);
           poly({ImVec2(4,7.5f),ImVec2(12,12),ImVec2(20,7.5f)},false);L(12,12,12,21);break;                                   // Schematics: cube
  }}
