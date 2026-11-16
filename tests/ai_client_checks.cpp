@@ -5,6 +5,7 @@
 // - 429 quota_exceeded / rate_limited with Retry-After (Send blocked meanwhile), 401, 403, 400;
 // - malformed and oversized events, unknown events ignored, a stream without done, an error event, caps on text;
 // - Cancel in the middle of a stream; Stop; the host policy and NICKEL_AI_LOCAL_SERVER rule;
+// - a step left pending on the server (Cancel while tools wait, a failed tool-results post) and its 409 conflict;
 // - the install key reaches the server's Authorization header and nowhere else (log lines, snapshots).
 // winsock2.h before windows.h (included by https_client.hpp), or windows.h pulls in the old winsock.h.
 #include <winsock2.h>
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cstdio>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -233,6 +235,22 @@ private:
             return;
         }
         const std::string path = request.path.substr(prefix.size());
+        // Steps left waiting for tool results, like the service: a new turn in that conversation is a 409 conflict.
+        if (path == "/turns/t-pend/tool-results") {
+            SetBusy("c-pend", false);
+            Stream(client, {Event("text", "{\"delta\":\"done\"}"), Done("end_turn")});
+            return;
+        }
+        if (path == "/turns/t-pfail/tool-results") {
+            Send(client, Reply("503 Service Unavailable", "Content-Type: application/problem+json\r\n",
+                                 "{\"code\":\"service_unavailable\",\"title\":\"Nickel AI is busy.\"}"));
+            return;
+        }
+        if (path == "/turns/t-pslow/tool-results") {
+            Pause(1500);
+            Stream(client, {Event("text", "{\"delta\":\"late\"}"), Done("end_turn")});
+            return;
+        }
         if (path == "/turns/t-tools/tool-results") {
             Stream(client, {Event("text", "{\"delta\":\"Found \"}"), ": keep-alive\n\n",
                                    Event("text", "{\"delta\":\"Fly.\"}"), Done("end_turn")});
@@ -254,7 +272,29 @@ private:
         json::Value body;
         json::Parse(request.body, &body);
         const std::string message = body["message"].AsString();
-        if (message == "hello" || message.rfind("Bonjour", 0) == 0) {
+        if (body["conversation_id"].IsString() && Busy(body["conversation_id"].AsString())) {
+            Send(client, Reply("409 Conflict", "Content-Type: application/problem+json\r\n",
+                                 "{\"code\":\"conflict\",\"title\":\"A turn is already running in this "
+                                 "conversation.\"}"));
+            return;
+        }
+        if (message == "pending" || message == "pending-fail" || message == "pending-slow") {
+            const std::string turn = message == "pending" ? "t-pend" : message == "pending-fail" ? "t-pfail" : "t-pslow";
+            const std::string conversation =
+                    message == "pending" ? "c-pend" : message == "pending-fail" ? "c-pfail" : "c-pslow";
+            SetBusy(conversation, true);
+            Stream(client, {TurnEvent(turn, conversation, 2),
+                                   Event("tool_use",
+                                           "{\"id\":\"tu_1\",\"name\":\"set_module_enabled\",\"input\":{"
+                                           "\"module_id\":\"fly\",\"enabled\":true}}"),
+                                   Done("tool_use")});
+        } else if (message == "busy-next") {
+            // A conversation the service will find busy at the next turn (a step pending from an earlier request).
+            SetBusy("c-busy", true);
+            Stream(client, {TurnEvent("t-busy", "c-busy", 1), Event("text", "{\"delta\":\"ok\"}"), Done("end_turn")});
+        } else if (message == "dot-turn-id") {
+            Stream(client, {Event("turn", "{\"turn_id\":\"..\",\"conversation_id\":\"c-1\"}"), Done("end_turn")});
+        } else if (message == "hello" || message.rfind("Bonjour", 0) == 0) {
             Stream(client, {TurnEvent("t-hello", "c-1", 1), Event("text", "{\"delta\":\"Bon\"}"),
                                    Event("text", "{\"delta\":\"jour \\u00e9\"}"), Done("end_turn")});
         } else if (message == "tools" || message == "again" || message == "other") {
@@ -344,6 +384,17 @@ private:
         }
     }
 
+    void SetBusy(const std::string& conversation, bool busy) {
+        std::lock_guard<std::mutex> lock(seenMutex_);
+        busy_[conversation] = busy;
+    }
+
+    bool Busy(const std::string& conversation) {
+        std::lock_guard<std::mutex> lock(seenMutex_);
+        const auto it = busy_.find(conversation);
+        return it != busy_.end() && it->second;
+    }
+
     SOCKET listener_ = INVALID_SOCKET;
     uint16_t port_ = 0;
     std::atomic<bool> stopping_{false};
@@ -352,6 +403,7 @@ private:
     std::vector<std::thread> handlers_;
     std::mutex seenMutex_;
     std::vector<Seen> seen_;
+    std::map<std::string, bool> busy_;
 };
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -454,6 +506,9 @@ void PureChecks() {
     Check(ai::detail::ValidId("t_01-A.b") && !ai::detail::ValidId("") && !ai::detail::ValidId("a/b")
                     && !ai::detail::ValidId("a b") && !ai::detail::ValidId(std::string(129, 'a')),
             "ids are path-safe and bounded");
+    Check(!ai::detail::ValidId(".") && !ai::detail::ValidId("..") && !ai::detail::ValidId(".x")
+                    && !ai::detail::ValidId("-x") && !ai::detail::ValidId("_x") && ai::detail::ValidId("9a..b"),
+            "ids start with a letter or a digit, so never a dot segment");
 
     const ToolResult declined = AssistantClient::MakeErrorResult("tu_1", "declined", "The player said no.");
     json::Value parsed;
@@ -628,6 +683,8 @@ void ToolFlow(TestServer& server) {
     snap = WaitFor(client, [](const Conversation& c) { return Settled(c); });
     Check(snap->status == Status::Failed && snap->error.kind == ErrorKind::Malformed,
             "a continuation answering for another turn is malformed");
+    Check(snap->conversationId == "c-1",
+            "a continuation that failed after the server answered keeps the conversation (that step is over there)");
 
     // Cancel while tools are pending drops them.
     SendAndWait(client, "tools");
@@ -649,9 +706,13 @@ void ErrorAnswers(TestServer& server) {
                 "429 quota_exceeded with Retry-After");
         Check(snap->quota.used == 25 && snap->quota.limit == 25, "the problem's quota is kept");
         const size_t before = server.RequestCount();
-        Check(!client.Send("hello") && client.Snap()->error.kind == ErrorKind::RateLimited
-                        && client.Snap()->error.retryAfter > 0 && server.RequestCount() == before,
-                "Send is refused without a request while Retry-After runs");
+        Check(!client.Send("hello") && server.RequestCount() == before, "Send is refused without a request while Retry-After runs");
+        snap = client.Snap();
+        Check(snap->status == Status::Failed && snap->error.kind == ErrorKind::QuotaExceeded
+                        && snap->error.code == "quota_exceeded" && snap->error.httpStatus == 429
+                        && snap->error.message == "The daily Nickel AI limit is reached." && snap->error.retryAfter > 0
+                        && snap->error.retryAfter <= 2,
+                "a Send refused during the wait repeats the daily quota error, with the time left");
         std::this_thread::sleep_for(std::chrono::milliseconds(2100));
         snap = SendAndWait(client, "hello");
         Check(snap->status == Status::Idle && snap->error.Ok(), "Send works again once Retry-After has elapsed");
@@ -699,6 +760,7 @@ void MalformedStreams(TestServer& server) {
             {"bad-tool", ErrorKind::Malformed, "a tool_use whose input is not an object"},
             {"bad-tool-id", ErrorKind::Malformed, "a tool_use id that is not path-safe"},
             {"bad-turn-id", ErrorKind::Malformed, "a turn id that is not path-safe"},
+            {"dot-turn-id", ErrorKind::Malformed, "a turn id that is a dot segment"},
             {"no-done", ErrorKind::Interrupted, "a stream that ends without done is interrupted"},
             {"big-event", ErrorKind::TooLarge, "an event over the cap"},
             {"done-without-tools", ErrorKind::Malformed, "done tool_use without tool calls"},
@@ -754,6 +816,7 @@ void CancelMidStream(TestServer& server) {
                     && snap->messages.back()->text == "partial" && snap->messages.back()->interrupted
                     && !snap->messages.back()->streaming,
             "Cancel ends the turn at once, keeping the text received");
+    Check(snap->conversationId == "c-1", "Cancel of a streamed step keeps the conversation (the server ends that step)");
     Check(client.Send("hello"), "a new message can be sent right after Cancel");
     snap = WaitFor(client, [](const Conversation& c) { return Settled(c); });
     const auto elapsed =
@@ -768,6 +831,79 @@ void CancelMidStream(TestServer& server) {
 
     client.Stop();
     Check(!client.Send("hello"), "nothing is sent after Stop");
+}
+
+// The service keeps a conversation busy while a step waits for tool results (409 conflict for a new turn), until the
+// step expires. The client must never stay stuck on such a conversation.
+void PendingSteps(TestServer& server) {
+    Fixture f(server);
+    AssistantClient client(f.config, &f.identity);
+    const auto lastBody = [&server]() {
+        json::Value body;
+        json::Parse(server.Requests().back().body, &body);
+        return body;
+    };
+
+    // Cancel while the tools wait: nothing is posted, the conversation is dropped, the next message works.
+    Snapshot snap = SendAndWait(client, "pending");
+    Check(snap->status == Status::AwaitingTools && snap->conversationId == "c-pend", "a step waits for its tools");
+    size_t before = server.RequestCount();
+    client.Cancel();
+    snap = client.Snap();
+    Check(snap->status == Status::Idle && snap->error.kind == ErrorKind::Cancelled && snap->conversationId.empty()
+                    && snap->messages.size() == 2 && server.RequestCount() == before,
+            "Cancel while tools wait posts nothing, keeps the history and drops the server conversation");
+    snap = SendAndWait(client, "hello");
+    Check(lastBody()["conversation_id"].IsNull() && snap->status == Status::Idle && snap->error.Ok(),
+            "the next message opens a new conversation instead of meeting a 409");
+
+    // A 409 conflict on a new turn drops the conversation, so only that one message fails.
+    client.NewConversation();
+    snap = SendAndWait(client, "busy-next");
+    Check(snap->status == Status::Idle && snap->conversationId == "c-busy", "a conversation the server will find busy");
+    snap = SendAndWait(client, "hello");
+    Check(lastBody()["conversation_id"].AsString() == "c-busy" && snap->status == Status::Failed
+                    && snap->error.httpStatus == 409 && snap->error.code == "conflict"
+                    && snap->error.message == "A turn is already running in this conversation."
+                    && snap->conversationId.empty(),
+            "a 409 conflict fails the message with the server's text and drops the conversation");
+    snap = SendAndWait(client, "hello");
+    Check(lastBody()["conversation_id"].IsNull() && snap->status == Status::Idle && snap->error.Ok(),
+            "the message after a 409 works in a new conversation");
+
+    // A tool-results post that fails before the server answers: the step may still wait there.
+    snap = SendAndWait(client, "pending-fail");
+    Check(snap->status == Status::AwaitingTools && snap->conversationId == "c-pfail", "another step waits for its tools");
+    const ToolResult on{"tu_1", "{\"ok\":true,\"previous\":false}", false};
+    Check(client.SubmitToolResults("t-pfail", {on}) == SubmitError::None, "its results are posted");
+    snap = WaitFor(client, [](const Conversation& c) { return Settled(c); });
+    Check(snap->status == Status::Failed && snap->error.kind == ErrorKind::Server && snap->error.httpStatus == 503
+                    && snap->conversationId.empty() && snap->pendingToolUses.empty(),
+            "a failed tool-results post drops the conversation");
+    snap = SendAndWait(client, "hello");
+    Check(lastBody()["conversation_id"].IsNull() && snap->status == Status::Idle && snap->error.Ok(),
+            "and the next message works in a new conversation");
+
+    // Cancel while the tool-results post has no answer yet: same.
+    snap = SendAndWait(client, "pending-slow");
+    Check(client.SubmitToolResults("t-pslow", {on}) == SubmitError::None, "results posted to a slow server");
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));  // the post reaches the server, which holds it
+    Check(client.Snap()->status == Status::Sending, "the post waits for the server's answer");
+    client.Cancel();
+    snap = client.Snap();
+    Check(snap->status == Status::Idle && snap->conversationId.empty(),
+            "Cancel before the server answered the tool results drops the conversation");
+
+    // The step that was answered frees its conversation on the server (the fake models the service).
+    client.NewConversation();
+    SendAndWait(client, "pending");
+    client.SubmitToolResults("t-pend", {on});
+    snap = WaitFor(client, [](const Conversation& c) { return Settled(c); });
+    Check(snap->status == Status::Idle && snap->conversationId == "c-pend" && snap->messages.back()->text == "done",
+            "answered tool results end the step and keep the conversation");
+    snap = SendAndWait(client, "hello");
+    Check(lastBody()["conversation_id"].AsString() == "c-pend" && snap->status == Status::Idle,
+            "the same conversation goes on");
 }
 
 void Identity(TestServer& server) {
@@ -830,6 +966,7 @@ int main() {
     ErrorAnswers(server);
     MalformedStreams(server);
     CancelMidStream(server);
+    PendingSteps(server);
     Identity(server);
     server.Stop();
     std::printf("%s: %d failed\n", failed == 0 ? "PASS" : "FAIL", failed);

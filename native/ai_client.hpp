@@ -13,8 +13,9 @@
 //   never logged, never kept in a snapshot and never shown.
 // - Hosts: nickelclient.com over HTTPS only. NICKEL_AI_LOCAL_SERVER (an http://127.0.0.1:<port> origin, loopback only)
 //   points the client at a local test server, like PUBLIC's NICKEL_PUBLIC_LOCAL_SERVER.
-// - 429: Retry-After (or the problem's retry_after) blocks Send until it has elapsed; 401 and 403 end the request with
-//   their own error kinds. Caps on each event, the whole stream, each answer's text, the tool inputs and the history.
+// - 429: Retry-After (or the problem's retry_after) blocks Send, which repeats that error, until it has elapsed; 401
+//   and 403 end the request with their own error kinds. Caps on each event, the whole stream, each answer's text, the
+//   tool inputs and the history.
 // - This layer never runs a tool and never asks the player anything: it hands the tool calls to the caller
 //   (Conversation::pendingToolUses) and posts what the caller answers, once per tool call.
 // Nothing here reads or writes files and nothing runs in DllMain: Stop() (or the destructor) cancels and joins the
@@ -137,7 +138,7 @@ enum class ErrorKind : uint8_t {
     Unauthorized,   // 401: the install key was refused
     Blocked,        // 403: this install is blocked
     QuotaExceeded,  // 429 quota_exceeded, or an error event with that code
-    RateLimited,    // 429 rate_limited (or any other 429), or a Send while a Retry-After runs
+    RateLimited,    // 429 rate_limited (or any other 429), or an error event with that code
     Offline,        // DNS, connection or TLS failure
     Timeout,
     TooLarge,       // an event or the stream over its cap
@@ -257,9 +258,14 @@ inline size_t Utf8Prefix(std::string_view text, size_t bytes) {
     return end;
 }
 
-// Ids go into URL paths: [A-Za-z0-9_.-], 1 to kMaxIdChars.
+// Ids go into URL paths: [A-Za-z0-9_.-], 1 to kMaxIdChars, starting with a letter or a digit (so never a dot
+// segment such as "." or "..", which a proxy would resolve to another path).
 inline bool ValidId(std::string_view id) {
     if (id.empty() || id.size() > kMaxIdChars) {
+        return false;
+    }
+    const char first = id.front();
+    if (!((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9'))) {
         return false;
     }
     for (const char c : id) {
@@ -426,10 +432,10 @@ public:
                 return false;
             }
             if (const int wait = RemainingLocked(); wait > 0) {
+                // The error that started the wait, so a daily quota stays a daily quota with the server's text.
                 next->status = Status::Failed;
-                next->error.kind = ErrorKind::RateLimited;
+                next->error = blockError_;
                 next->error.retryAfter = wait;
-                next->error.message = "waiting for Retry-After";
                 PublishLocked(std::move(next));
                 return false;
             }
@@ -440,6 +446,7 @@ public:
             next->status = Status::Sending;
             body = TurnBody(next->conversationId, message);
             generation = ++generation_;
+            toolPostUnanswered_ = false;
             PublishLocked(std::move(next));
         }
         Post(generation, "/turns", std::move(body), "");
@@ -512,6 +519,7 @@ public:
                 next->turns.back().stopReason.clear();
             }
             generation = ++generation_;
+            toolPostUnanswered_ = true;  // until the server streams something back
             PublishLocked(std::move(next));
         }
         Post(generation, "/turns/" + turnId + "/tool-results", std::move(body), turnId);
@@ -520,6 +528,10 @@ public:
 
     // Stops the turn in flight (the request is aborted; text already received stays, marked interrupted) or drops
     // the pending tool calls. Events arriving afterwards are ignored. Nothing happens when idle.
+    // A streamed step that is aborted ends on the server too (it sees the client leave). A step whose tool calls are
+    // still unanswered there (AwaitingTools, or a tool-results post the server has not answered yet) would keep the
+    // server's conversation busy (409 conflict) until it expires, so the conversation id is dropped: the next message
+    // opens a new conversation on the server. The history shown here is kept.
     void Cancel() {
         std::lock_guard<std::mutex> lock(mutex_);
         ++generation_;
@@ -527,12 +539,17 @@ public:
             running_->Cancel();
             running_.reset();
         }
+        const bool unanswered = toolPostUnanswered_;
+        toolPostUnanswered_ = false;
         const Status status = current_->status;
         if (status == Status::Idle || status == Status::Failed) {
             return;
         }
         auto next = std::make_shared<Conversation>(*current_);
         EndStreamingLocked(*next, true);
+        if (status == Status::AwaitingTools || unanswered) {
+            next->conversationId.clear();
+        }
         next->pendingToolUses.clear();
         next->status = Status::Idle;
         next->error = ErrorInfo();
@@ -545,6 +562,7 @@ public:
     void NewConversation() {
         std::lock_guard<std::mutex> lock(mutex_);
         ++generation_;
+        toolPostUnanswered_ = false;
         if (running_) {
             running_->Cancel();
             running_.reset();
@@ -573,6 +591,7 @@ private:
         bool sawTurn = false;
         bool sawDone = false;
         bool failed = false;     // an error was published: stop reading
+        bool sawEvent = false;   // any event, known or not: the server has taken the request
         std::string turnId;      // of the turn event, when one was seen
         std::vector<ToolUse> toolUses;
     };
@@ -608,10 +627,11 @@ private:
         return static_cast<int>((left + 999) / 1000);
     }
 
-    void BlockForLocked(int seconds) {
-        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    void BlockForLocked(const ErrorInfo& error) {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(error.retryAfter);
         if (until > blockedUntil_) {
             blockedUntil_ = until;
+            blockError_ = error;
         }
     }
 
@@ -664,6 +684,10 @@ private:
     }
 
     // Publishes a failure of the request of `generation` (dropped when stale).
+    // The conversation id is dropped, so the next message starts a new conversation on the server, when that
+    // conversation is gone (expired, not found), full, or busy there: a 409 conflict, or a tool-results post that
+    // failed before the server streamed anything back (its step may still wait for these results, and nothing here
+    // posts them again).
     void Fail(uint64_t generation, ErrorInfo error) {
         Log(std::string("ai: request failed: ") + ErrorKindName(error.kind)
                 + (error.code.empty() ? std::string() : " (" + error.code + ")"));
@@ -671,17 +695,20 @@ private:
         if (generation != generation_) {
             return;
         }
+        const bool unanswered = toolPostUnanswered_;
+        toolPostUnanswered_ = false;
         auto next = std::make_shared<Conversation>(*current_);
         EndStreamingLocked(*next, true);
         next->pendingToolUses.clear();
         next->status = Status::Failed;
-        if (error.code == "conversation_expired" || error.code == "conversation_not_found"
+        if (unanswered || error.httpStatus == 409 || error.code == "conflict" || error.code == "conversation_full"
+                || error.code == "conversation_expired" || error.code == "conversation_not_found"
                 || error.code == "expired" || error.code == "turn_expired") {
-            next->conversationId.clear();  // the next message starts a new conversation on the server
+            next->conversationId.clear();
         }
         if (error.retryAfter > 0
                 && (error.kind == ErrorKind::RateLimited || error.kind == ErrorKind::QuotaExceeded)) {
-            BlockForLocked(error.retryAfter);
+            BlockForLocked(error);
         }
         next->error = std::move(error);
         PublishLocked(std::move(next));
@@ -880,6 +907,14 @@ private:
         }
         if (state->sawDone) {
             return false;  // nothing is read after done
+        }
+        if (!state->sawEvent) {
+            // The server answers: a step continued by tool results no longer waits for them there.
+            state->sawEvent = true;
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (generation == generation_) {
+                toolPostUnanswered_ = false;
+            }
         }
         if (event.data.size() > config_.maxEventBytes) {
             return StreamError(generation, state, ErrorKind::TooLarge, "an event over the cap");
@@ -1086,6 +1121,8 @@ private:
     uint64_t generation_ = 0;                 // bumped by each request, Cancel, NewConversation and Stop
     std::shared_ptr<net::CancelToken> running_;
     std::chrono::steady_clock::time_point blockedUntil_{};
+    ErrorInfo blockError_;                    // the 429 (or error event) that set blockedUntil_
+    bool toolPostUnanswered_ = false;         // the request in flight posts tool results; no event came back yet
     bool stopped_ = false;
 
     net::Worker worker_;  // last: destroyed (and joined) first
