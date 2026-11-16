@@ -976,6 +976,113 @@ void NoSidebarEntry() {
           "the menu draws the bubble, and Settings keeps the Nickel AI toggle");
 }
 
+// ---- Markdown in the assistant's answers (native/ai_markdown.hpp)
+
+std::string Joined(const std::vector<md::Span>& spans) {
+    std::string out;
+    for (const md::Span& span : spans) {
+        out += span.code ? "[c:" + span.text + "]" : span.bold ? "[b:" + span.text + "]" : span.text;
+    }
+    return out;
+}
+
+void MarkdownInline() {
+    Check(Joined(md::ParseInline("Le **Mode** : comment tu attaques")) == "Le [b:Mode] : comment tu attaques",
+          "markdown: **bold** loses its marks and is bold");
+    Check(Joined(md::ParseInline("__Silent__ ou *Teleport*")) == "[b:Silent] ou Teleport",
+          "markdown: __bold__ is bold, *italic* is plain without marks");
+    Check(Joined(md::ParseInline("use `client.notify` here")) == "use [c:client.notify] here", "markdown: `code`");
+    Check(Joined(md::ParseInline("kill_aura and auto_clicker")) == "kill_aura and auto_clicker",
+          "markdown: snake_case ids keep their underscores");
+    Check(Joined(md::ParseInline("2 * 3 * 4")) == "2 * 3 * 4", "markdown: lone stars stay");
+    Check(Joined(md::ParseInline("**not closed")) == "**not closed", "markdown: an unclosed mark stays as written");
+    Check(Joined(md::ParseInline("see [the docs](https://nickelclient.com/docs)")) == "see the docs",
+          "markdown: a link shows its text only");
+    Check(Joined(md::ParseInline("\\*literal\\*")) == "*literal*", "markdown: escaped marks");
+    Check(Joined(md::ParseInline("**Max `angle`**")) == "[b:Max ][c:angle]", "markdown: code inside bold");
+    Check(Joined(md::ParseInline("**Attacks Per Second** : vitesse")) == "[b:Attacks Per Second] : vitesse",
+          "markdown: bold with spaces around");
+}
+
+void MarkdownBlocks() {
+    const std::string answer = "Kill Aura attaque les joueurs proches.\n\n"
+                               "### R\xc3\xa9glages\n"
+                               "- **Mode** : Silent\n"
+                               "  - sous-point\n"
+                               "2) Deuxi\xc3\xa8me\n"
+                               "> une citation\n"
+                               "---\n"
+                               "```lua\n"
+                               "  local m = 1\n"
+                               "```\n\n\n";
+    const std::vector<md::Block> b = md::Parse(answer);
+    Check(b.size() == 9, "markdown: blocks counted, trailing blank lines dropped");
+    if (b.size() == 9) {
+        Check(b[0].kind == md::BlockKind::Paragraph && b[1].kind == md::BlockKind::Blank, "markdown: paragraph then blank");
+        Check(b[2].kind == md::BlockKind::Heading && Joined(b[2].spans) == "[b:R\xc3\xa9glages]", "markdown: heading is bold");
+        Check(b[3].kind == md::BlockKind::Bullet && b[3].level == 0 && Joined(b[3].spans) == "[b:Mode] : Silent",
+              "markdown: bullet with bold");
+        Check(b[4].kind == md::BlockKind::Bullet && b[4].level == 1, "markdown: nested bullet");
+        Check(b[5].kind == md::BlockKind::Numbered && b[5].marker == "2.", "markdown: numbered item 2)");
+        Check(b[6].kind == md::BlockKind::Quote && Joined(b[6].spans) == "une citation", "markdown: quote");
+        Check(b[7].kind == md::BlockKind::Rule, "markdown: rule");
+        Check(b[8].kind == md::BlockKind::CodeLine && b[8].level == 2 && Joined(b[8].spans) == "[c:local m = 1]",
+              "markdown: fenced code keeps its indent and is not parsed");
+    }
+    Check(md::Parse("").empty() && md::Parse("\n\n").empty(), "markdown: empty answers");
+    Check(md::Parse("a\n- b\n").size() == 2, "markdown: a list right after a line");
+}
+
+// A font where a character is 7 px wide (8 in bold); a space is one character.
+float FakeWidth(const std::string& text, bool bold) {
+    size_t chars = 0;
+    for (unsigned char c : text) {
+        chars += (c & 0xC0) != 0x80;
+    }
+    return static_cast<float>(chars) * (bold ? 8.f : 7.f);
+}
+
+void MarkdownLayout() {
+    md::Metrics m;
+    m.maxWidth = 70; // 10 regular characters
+    m.lineH = 10;
+    m.gap = 6;
+    m.itemGap = 2;
+    m.indentStep = 10;
+    m.markerW = 14;
+    const md::Layout one = md::LayOut(md::Parse("abc **de** fg"), m, FakeWidth);
+    Check(one.lines.size() == 1 && one.height == 10, "markdown layout: one line");
+    if (one.lines.size() == 1 && one.lines[0].runs.size() == 3) {
+        const auto& r = one.lines[0].runs;
+        Check(r[0].text == "abc" && r[0].x == 0 && r[0].w == 21, "markdown layout: first run");
+        Check(r[1].text == "de" && r[1].bold && r[1].x == 21 + 8 && r[1].w == 16, "markdown layout: bold run after a space");
+        Check(r[2].text == "fg" && r[2].x == 21 + 8 + 16 + 7, "markdown layout: plain run after a space");
+        Check(one.width == 21 + 8 + 16 + 7 + 14, "markdown layout: width of the widest line");
+    } else {
+        Check(false, "markdown layout: three runs on one line");
+    }
+    const md::Layout wrapped = md::LayOut(md::Parse("aaaa bbbb cccc dddd"), m, FakeWidth);
+    Check(wrapped.lines.size() == 2 && wrapped.lines[0].runs.size() == 1 && wrapped.lines[0].runs[0].text == "aaaa bbbb"
+                  && wrapped.lines[1].runs[0].text == "cccc dddd" && wrapped.lines[1].y == 10,
+          "markdown layout: wraps at spaces and joins same-style words");
+    const md::Layout cut = md::LayOut(md::Parse("abcdefghijklmnopqrstuvwxyz\xc3\xa9"), m, FakeWidth);
+    Check(cut.lines.size() == 3 && cut.lines[0].runs[0].text == "abcdefghij"
+                  && cut.lines[2].runs[0].text == "uvwxyz\xc3\xa9",
+          "markdown layout: a word wider than the line is cut between characters (UTF-8 kept whole)");
+    const md::Layout list = md::LayOut(md::Parse("Intro\n\n- one\n- two\n  - three"), m, FakeWidth);
+    Check(list.lines.size() == 4, "markdown layout: intro and three items");
+    if (list.lines.size() == 4) {
+        Check(list.lines[1].y == 10 + 6 && list.lines[1].first && list.lines[1].indent == 14,
+              "markdown layout: a blank line adds the gap; a bullet is indented by the marker");
+        Check(list.lines[2].y == 16 + 10 + 2, "markdown layout: items are apart by the item gap");
+        Check(list.lines[3].indent == 10 + 14 && list.lines[3].level == 1, "markdown layout: nested item indented");
+        Check(list.lines[3].y == 28 + 10 + 2 && list.height == 40 + 10, "markdown layout: height");
+    }
+    const md::Layout item = md::LayOut(md::Parse("- aaaa bbbb"), m, FakeWidth); // 56 px of room after the marker
+    Check(item.lines.size() == 2 && item.lines[0].first && !item.lines[1].first && item.lines[1].indent == 14,
+          "markdown layout: a wrapped item keeps its indent and draws its bullet once");
+}
+
 } // namespace
 
 int main() {
@@ -1001,6 +1108,9 @@ int main() {
     BubblePlacement();
     BubbleDragAndPlace();
     NoSidebarEntry();
+    MarkdownInline();
+    MarkdownBlocks();
+    MarkdownLayout();
     std::printf("%s (%d failed)\n", failed == 0 ? "all ai ui checks passed" : "ai ui checks failed", failed);
     return failed == 0 ? 0 : 1;
 }

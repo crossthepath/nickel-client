@@ -29,10 +29,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "ai_markdown.hpp"
 #include "ai_types.hpp"
 
 namespace nickel::ai {
@@ -1244,6 +1246,88 @@ float AiText(ImDrawList* d, ImFont* font, float size, ImVec2 pos, const std::str
     return AiTextHeight(font, size, text, width);
 }
 
+// An answer laid out from its Markdown (ai_markdown.hpp) for `size` (pixels, as for Label) and `width` (pixels). The
+// last layouts are kept, so a long chat is not measured again every frame; while an answer streams, each new text is
+// a new entry. The reference stays valid until the next call.
+const nickel::ai::md::Layout& AiMarkdownLayout(const std::string& text, float size, float width, float s) {
+    namespace md = nickel::ai::md;
+    struct Entry {
+        std::string text;
+        float size, width;
+        md::Layout layout;
+    };
+    static std::deque<Entry> kept;
+    for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
+        if (it->size == size && it->width == width && it->text == text) {
+            return it->layout;
+        }
+    }
+    const float px = size * FontEmFactor;
+    ImFont* fonts[2] = {Sized(regular, px), Sized(semibold, px)};
+    const md::Measure measure = [&](const std::string& t, bool bold) {
+        return fonts[bold ? 1 : 0]->CalcTextSizeA(px, FLT_MAX, 0, t.c_str(), t.c_str() + t.size()).x;
+    };
+    md::Metrics m;
+    m.maxWidth = width;
+    m.lineH = px + 1.5f * s;
+    m.gap = 8 * s;
+    m.itemGap = 2 * s;
+    m.indentStep = 14 * s;
+    m.markerW = 16 * s;
+    kept.push_back({text, size, width, md::LayOut(md::Parse(text), m, measure)});
+    if (kept.size() > 48) {
+        kept.pop_front();
+    }
+    return kept.back().layout;
+}
+
+// Draws a laid-out answer from `at` (its top-left): bold runs in semibold, `code` tinted on a light background, bullets
+// as dots, numbers, quotes with a bar on the left, code blocks on a band, rules as a thin line.
+void DrawAiMarkdown(ImDrawList* d, const nickel::ai::md::Layout& laid, ImVec2 at, float size, float width, ImU32 ink,
+                    float s, float a) {
+    namespace md = nickel::ai::md;
+    const float px = size * FontEmFactor, lineH = px + 1.5f * s;
+    ImFont* fonts[2] = {Sized(regular, px), Sized(semibold, px)};
+    const ImU32 soft = Rgba(160, 160, 172, a), codeInk = Rgba(240, 190, 140, a), codeBg = Rgba(255, 255, 255, .07f * a);
+    const float right = at.x + std::min(width, laid.width);
+    for (const md::Line& line : laid.lines) {
+        const float top = at.y + line.y, left = at.x + line.indent;
+        if (line.kind == md::BlockKind::Rule) {
+            const float mid = std::round(top + 4 * s);
+            d->AddLine(ImVec2(at.x, mid), ImVec2(right, mid), Rgba(60, 60, 72, a), 1 * s);
+            continue;
+        }
+        if (line.kind == md::BlockKind::CodeLine) {
+            d->AddRectFilled(ImVec2(at.x - 4 * s, top), ImVec2(right + 4 * s, top + lineH), codeBg);
+        }
+        if (line.kind == md::BlockKind::Quote) {
+            d->AddRectFilled(ImVec2(at.x + 1 * s, top), ImVec2(at.x + 3 * s, top + lineH), Rgba(80, 80, 96, a));
+        }
+        if (line.first && line.kind == md::BlockKind::Bullet) {
+            const ImVec2 dot(left - 9 * s, top + lineH * .5f);
+            if (line.level % 2 == 0) {
+                d->AddCircleFilled(dot, 2.2f * s, soft, 12);
+            } else {
+                d->AddCircle(dot, 2.2f * s, soft, 12, 1 * s);
+            }
+        }
+        if (line.first && line.kind == md::BlockKind::Numbered) {
+            const float w = fonts[0]->CalcTextSizeA(px, FLT_MAX, 0, line.marker.c_str()).x;
+            d->AddText(fonts[0], px, ImVec2(std::round(left - 5 * s - w), std::round(top - size * .1f)), soft,
+                       line.marker.c_str());
+        }
+        for (const md::Run& run : line.runs) {
+            const float x = left + run.x;
+            if (run.code && line.kind != md::BlockKind::CodeLine) {
+                d->AddRectFilled(ImVec2(x - 2 * s, top), ImVec2(x + run.w + 2 * s, top + lineH), codeBg, 3 * s);
+            }
+            const ImU32 color = run.code ? codeInk : line.kind == md::BlockKind::Quote ? soft : ink;
+            d->AddText(fonts[run.bold ? 1 : 0], px, ImVec2(std::round(x), std::round(top - size * .1f)), color,
+                       run.text.c_str(), run.text.c_str() + run.text.size());
+        }
+    }
+}
+
 // Keeps the input at 4000 characters while typing, and clears it after a send (an active field keeps its own copy).
 int AiInputCallback(ImGuiInputTextCallbackData* data) {
     AiMenu& m = Ai();
@@ -1721,15 +1805,24 @@ void DrawAiWindow(const nickel::ai::BubbleLayout& place, float s, float opacity,
                 const std::string& text =
                         item.kind == ai::ChatItem::Kind::Greeting ? item.text : conv.messages[item.message].text;
                 const float px = textSize * FontEmFactor;
-                const ImVec2 box = Sized(regular, px)->CalcTextSizeA(px, FLT_MAX, bubbleMax - 2 * padX, text.c_str(),
-                                                                     text.c_str() + text.size());
+                // the assistant's answers are Markdown (ai_markdown.hpp); the player's text and the greeting are plain
+                const bool markdown = !player && item.kind == ai::ChatItem::Kind::Message;
+                const ai::md::Layout* laid = markdown ? &AiMarkdownLayout(text, textSize, bubbleMax - 2 * padX, s) : nullptr;
+                const ImVec2 box = laid ? ImVec2(laid->width, laid->height)
+                                        : Sized(regular, px)->CalcTextSizeA(px, FLT_MAX, bubbleMax - 2 * padX, text.c_str(),
+                                                                            text.c_str() + text.size());
                 const float bw = std::min(bubbleMax, box.x + 2 * padX + (item.streaming ? 10 * s : 0));
                 h = std::max(box.y + 2 * padY, 2 * avatarR);
                 const float x = player ? x0 + cw - lane - bw : x0 + lane;
                 const ImU32 fill = player ? AccDeep(opacity) : Rgba(28, 28, 36, opacity);
                 d->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + h), fill, round);
                 const ImU32 ink = player ? Rgba(255, 255, 255, opacity) : Rgba(228, 228, 235, opacity);
-                AiText(d, regular, textSize, ImVec2(x + padX, y + (h - box.y) / 2), text, ink, bubbleMax - 2 * padX);
+                if (laid) {
+                    DrawAiMarkdown(d, *laid, ImVec2(x + padX, y + (h - box.y) / 2), textSize, bubbleMax - 2 * padX, ink,
+                                   s, opacity);
+                } else {
+                    AiText(d, regular, textSize, ImVec2(x + padX, y + (h - box.y) / 2), text, ink, bubbleMax - 2 * padX);
+                }
                 if (item.streaming && std::fmod(ImGui::GetTime(), 1.0) < .6) { // a blinking caret while it streams
                     const ImVec2 caret(x + bw - padX - 3 * s, y + h - padY - 13 * s);
                     d->AddRectFilled(caret, ImVec2(caret.x + 2 * s, caret.y + 13 * s), Acc(opacity));
