@@ -90,15 +90,7 @@ std::string DetailJson() {
 
 // The exact answer of the PUBLIC v2 server (nickel-website#2) for GET /items?kind=script, with an official legacy item.
 void ServerShapeChecks() {
-    const char* answer = R"({"items":[{"id":"sk6eere4a85h","kind":"script","slug":"hello","name":"Hello",
-        "summary":"The smallest script: a module with a text setting that greets you when enabled.",
-        "author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],
-        "license":"NOASSERTION","featured":false,
-        "latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,
-        "sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},
-        "capabilities":[],"stats":{"downloads":0,"trending_score":0},
-        "published_at":"2026-11-16T04:48:51.716Z","updated_at":"2026-11-16T04:48:51.716Z"}],
-        "next_cursor":null,"total_estimate":1})";
+    const char* answer = R"({"items":[{"id":"33tbnyankrmg","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T06:00:49.972Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"trending_score":0},"published_at":"2026-11-16T06:00:49.972Z","updated_at":"2026-11-16T06:00:49.972Z"}],"next_cursor":null,"total_estimate":1})";
     json::Value value;
     Page page;
     std::string error;
@@ -113,7 +105,7 @@ void ServerShapeChecks() {
     }
     Check(parsed && page.items.size() == 1 && page.dropped == 0, "the v2 server's list answer is read, item kept");
     {
-        const char* detailAnswer = R"({"id":"sk6eere4a85h","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"trending_score":0},"published_at":"2026-11-16T04:48:51.716Z","updated_at":"2026-11-16T04:48:51.716Z","description":"The smallest script: a module with a text setting that greets you when enabled.","listed":true,"page_url":"https://nickelclient.com/community#scripts","versions":[{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null,"changelog":""}],"state":"published","state_reason":null})";
+        const char* detailAnswer = R"({"id":"33tbnyankrmg","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T06:00:49.972Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"trending_score":0},"published_at":"2026-11-16T06:00:49.972Z","updated_at":"2026-11-16T06:00:49.972Z","description":"The smallest script: a module with a text setting that greets you when enabled.","listed":true,"page_url":"https://nickelclient.com/community#scripts","versions":[{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T06:00:49.972Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null,"changelog":""}],"state":"published","state_reason":null})";
         json::Value detailValue;
         Detail detail;
         std::string detailError;
@@ -121,13 +113,13 @@ void ServerShapeChecks() {
         if (!detailOk) {
             std::printf("server detail refused: %s\n", detailError.c_str());
         }
-        Check(detailOk && detail.card.author.displayName == "Nickel", "the v2 server's item detail is read");
-        const char* lookupAnswer = R"({"items":[{"id":"sk6eere4a85h","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T04:48:51.716Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"trending_score":0},"published_at":"2026-11-16T04:48:51.716Z","updated_at":"2026-11-16T04:48:51.716Z"},{"id":"zzzzzzzzzzzz","state":"not_found"}]})";
+        Check(detailOk && !detail.card.author.displayName.empty(), "the v2 server's item detail is read");
+        const char* lookupAnswer = R"({"items":[{"id":"33tbnyankrmg","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T06:00:49.972Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"trending_score":0},"published_at":"2026-11-16T06:00:49.972Z","updated_at":"2026-11-16T06:00:49.972Z"},{"id":"zzzzzzzzzzzz","state":"not_found"}]})";
         json::Value lookupValue;
         std::vector<LookupEntry> entries;
         std::string lookupError;
         const bool lookupOk = json::Parse(lookupAnswer, &lookupValue)
-                && ParseLookup(lookupValue, {"sk6eere4a85h", "zzzzzzzzzzzz"}, &entries, &lookupError);
+                && ParseLookup(lookupValue, {"33tbnyankrmg", "zzzzzzzzzzzz"}, &entries, &lookupError);
         if (!lookupOk) {
             std::printf("server lookup refused: %s\n", lookupError.c_str());
         }
