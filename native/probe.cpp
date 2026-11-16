@@ -133,10 +133,13 @@ struct Check {
   while(GetTickCount64()<deadline){if(!Frame())return false;if(State(s)){framesAfter=s.submittedFrames;if(s.menuOpen&&s.submittedFrames>framesBefore){framesAdvanced=menuReopened=true;return true;}}Sleep(10);}
   return Fail("frames_advanced","submittedFrames did not advance past the pre-resize count with the menu open");
  }
+ // review: NICKEL_REVIEW_HOLD=ms keeps the menu up longer (1500 by default, at most 60000), e.g. for a Nickel AI answer
+ // to arrive; the frame is saved 300 ms before the end (600 ms after the start by default)
  bool HoldVisible(){
   if(!visible)return true;
-  auto start=GetTickCount64();auto deadline=start+(review?1500:10000);bool saved=false;
-  while(GetTickCount64()<deadline){if(!Frame())return false;if(review&&!saved&&GetTickCount64()-start>600)saved=SaveOwnFrame(g);Sleep(10);}
+  DWORD hold=review?1500:10000,saveAt=600;{wchar_t text[16]{};if(review&&GetEnvironmentVariableW(L"NICKEL_REVIEW_HOLD",text,16)){const DWORD ms=(DWORD)_wtoi(text);if(ms>=1000){hold=ms>60000?60000:ms;saveAt=hold-300;}}}
+  auto start=GetTickCount64();auto deadline=start+hold;bool saved=false;
+  while(GetTickCount64()<deadline){if(!Frame())return false;if(review&&!saved&&GetTickCount64()-start>saveAt)saved=SaveOwnFrame(g);Sleep(10);}
   return true;
  }
  bool DoResize(){

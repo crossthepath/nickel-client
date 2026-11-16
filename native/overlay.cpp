@@ -333,7 +333,10 @@ void Draw(IDXGISwapChain* swap,UINT flags){
  {std::vector<InputMessage> pending;{std::lock_guard<std::mutex> queueLock(inputQueueMutex);pending.swap(inputQueue);}for(auto& input:pending){if((input.message==WM_KEYDOWN||input.message==WM_SYSKEYDOWN)&&!(input.lparam&(1LL<<30)))overlay::HandleKey((unsigned)input.wparam,input.lparam);ImGui_ImplWin32_WndProcHandler(input.hwnd,input.message,input.wparam,input.lparam);}}
  // new font sizes baked between two frames: drop the font texture, the backend recreates it in NewFrame
  if(overlay::FontsRebuild()){if(backend==Backend::DX11)ImGui_ImplDX11_InvalidateDeviceObjects();else{Flush12();ImGui_ImplDX12_InvalidateDeviceObjects();}}
- if(backend==Backend::DX11)ImGui_ImplDX11_NewFrame();else ImGui_ImplDX12_NewFrame();ImGui_ImplWin32_NewFrame();ImGui::GetIO().MouseDrawCursor=overlay::MenuIsOpen();ImGui::NewFrame();
+ if(backend==Backend::DX11)ImGui_ImplDX11_NewFrame();else ImGui_ImplDX12_NewFrame();ImGui_ImplWin32_NewFrame();ImGui::GetIO().MouseDrawCursor=overlay::MenuIsOpen();
+ // offline review (probe only): NICKEL_REVIEW_NO_MOUSE keeps the mouse out of the render (no cursor, no hover), whatever the real pointer does
+ {static const bool noMouse=OwnProbeProcess()&&GetEnvironmentVariableW(L"NICKEL_REVIEW_NO_MOUSE",nullptr,0);if(noMouse){ImGui::GetIO().MouseDrawCursor=false;ImGui::GetIO().AddMousePosEvent(-FLT_MAX,-FLT_MAX);}}
+ ImGui::NewFrame();
  if(OwnProbeProcess()&&GetEnvironmentVariableW(L"NICKEL_REVIEW_MOTION",nullptr,0)){float reprojection[16]={1,0,0,0,0,1,0,0,0,0,1,0,.04f,0,0,1};auto* draw=ImGui::GetBackgroundDrawList();if(auto image=RequestMotionBlur(draw,reprojection,.5f,12,40))draw->AddImage(image,ImVec2(0,0),ImGui::GetIO().DisplaySize);}
  float fade=overlay::MenuProgress(ImGui::GetIO().DeltaTime);overlay::DrawMenu(fade,logo);ImGui::Render();if(!ImGui::GetDrawData()->TotalVtxCount)return;
  if(backend==Backend::DX11){

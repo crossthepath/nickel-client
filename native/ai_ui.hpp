@@ -1167,6 +1167,7 @@ struct AiMenu {
     nickel::ai::DragGesture bubbleDrag;        // a press on the bubble: a click toggles the window, a drag moves it
     nickel::ai::DragGesture headerDrag;        // a press on the window's header: a drag moves both
     nickel::ai::BubbleLayout dragFrom;         // the layout when that press began
+    std::string reviewSend;                    // offline review (probe only): a message sent once the chat can send
 };
 
 // Never destroyed, like PUBLIC's client: the overlay has no unload path, and a destructor at process exit would join the
@@ -1224,6 +1225,11 @@ void AiTick() {
         if (OwnProbe() && GetEnvironmentVariableA("NICKEL_REVIEW_AI", value, sizeof(value))) {
             AiOption().value = true;
             m.bubble.Open();
+            // NICKEL_REVIEW_AI_SEND: a player message sent once, as if typed (NICKEL_AI_LOCAL_SERVER: a test server)
+            char message[512] = {};
+            if (GetEnvironmentVariableA("NICKEL_REVIEW_AI_SEND", message, sizeof(message))) {
+                m.reviewSend = message;
+            }
         }
     }
     if (!AiOption().value && m.created) {
@@ -1703,6 +1709,9 @@ void DrawAiInput(AiMenu& m, ImVec2 origin, float W, float H, float s, float a) {
         m.input[0] = 0;
         m.clearInput = true;
         m.focusInput = true;
+    }
+    if (!m.reviewSend.empty() && page.CanSend(m.reviewSend) && page.Send(m.reviewSend)) {
+        m.reviewSend.clear();
     }
 }
 
