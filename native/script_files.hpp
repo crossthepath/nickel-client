@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "json_value.hpp"
 #include "script_library.hpp"
 
 #pragma comment(lib, "bcrypt.lib")
@@ -148,34 +149,100 @@ inline bool SaveHeldList(const std::wstring& folder, const std::vector<std::stri
     return WriteScriptFileInOneStep(HeldListPath(folder), L"held", FormatHeldList(names));
 }
 
-// The held names of one scripts folder: read from .nickel\held.txt when made, written back at each change. Not locked:
-// the engine guards it with scriptGuard (a test with its own mutex).
-class ScriptHeldNames {
-public:
-    explicit ScriptHeldNames(std::wstring folder) : folder_(std::move(folder)) {
-        std::string text;
-        if (!folder_.empty() && ReadScriptBytes(HeldListPath(folder_), text)) {
-            names_ = ParseHeldList(text);
+// What reading a file of the scripts folder gave.
+enum class ScriptListRead : uint8_t { Missing, Read, Unreadable };
+
+// The held list of `folder` into `names`: Missing (no held.txt: nothing is held), Read, or Unreadable (it exists but
+// cannot be opened or read, or is not text: ReadableHeldList), with `names` left empty.
+inline ScriptListRead ReadHeldListFile(const std::wstring& folder, std::vector<std::string>& names) {
+    names.clear();
+    const std::wstring path = HeldListPath(folder);
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        const DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? ScriptListRead::Missing
+                                                                              : ScriptListRead::Unreadable;
+    }
+    std::string text;
+    if (!ReadScriptBytes(path, text) || !ReadableHeldList(text)) {
+        return ScriptListRead::Unreadable;
+    }
+    names = ParseHeldList(text);
+    return ScriptListRead::Read;
+}
+
+// The scripts that PUBLIC installed in `folder`, from scripts\.public\installed.json (public_installer.hpp: items[]
+// with "file" "<name>.luau"): Missing (no PUBLIC script), Read, or Unreadable (it exists but cannot be read or parsed).
+// Every entry with a .luau file counts, without the installer's other checks, so a damaged entry still names its
+// script.
+inline ScriptListRead ReadPublicScriptNames(const std::wstring& folder, std::vector<std::string>& names) {
+    names.clear();
+    const std::wstring path = folder + L"\\.public\\installed.json";
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        const DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? ScriptListRead::Missing
+                                                                              : ScriptListRead::Unreadable;
+    }
+    std::string text;
+    nickel::json::Value root;
+    if (!ReadScriptBytes(path, text) || !nickel::json::Parse(text, &root) || !root.IsObject()
+        || !root["items"].IsArray()) {
+        return ScriptListRead::Unreadable;
+    }
+    const nickel::json::Value& items = root["items"];
+    for (size_t i = 0; i < items.size(); ++i) {
+        const nickel::json::Value& file = items.At(i)["file"];
+        if (!file.IsString()) {
+            continue;
+        }
+        const std::string& value = file.AsString();
+        if (value.size() > 5 && _stricmp(value.c_str() + value.size() - 5, ".luau") == 0) {
+            names.push_back(value.substr(0, value.size() - 5));
         }
     }
+    return ScriptListRead::Read;
+}
+
+// The held names of one scripts folder: read from .nickel\held.txt when made, written back at each change. Not locked:
+// the engine guards it with scriptGuard (a test with its own mutex).
+// Fails closed: when held.txt exists but cannot be read (ReadHeldListFile: Unreadable), the list is DEGRADED. Every
+// script that PUBLIC installed (ReadPublicScriptNames; every script when installed.json cannot be read either) is then
+// held, so a community script waiting for Start never loads; held.txt is never written from that state (Add and Remove
+// change this session only); Refresh, at each folder scan, reads it again and, once it can, merges this session's
+// changes into it and writes it.
+class ScriptHeldNames {
+public:
+    explicit ScriptHeldNames(std::wstring folder) : folder_(std::move(folder)) { Load(); }
 
     bool Contains(const std::string& name) const {
-        for (const std::string& held : names_) {
-            if (SameScriptName(held, name)) {
-                return true;
-            }
+        if (Listed(names_, name)) {
+            return true;
         }
-        return false;
+        if (!degraded_ || Listed(released_, name)) {
+            return false;
+        }
+        return allPublic_ || Listed(public_, name);
     }
 
     // Adds `name` and writes the list. False when the list cannot be written, or when `name` could not be read back
     // from it (not a HeldListName); nothing changes then. `added` (optional) tells whether the name was missing.
+    // Degraded: held for this session only (nothing is written), true.
     bool Add(const std::string& name, bool* added = nullptr) {
         if (added) {
             *added = false;
         }
         if (!HeldListName(name)) {
             return false;
+        }
+        if (degraded_) {
+            const bool wasHeld = Contains(name);
+            Erase(released_, name);
+            if (!Listed(names_, name)) {
+                names_.push_back(name);
+            }
+            if (added) {
+                *added = !wasHeld;
+            }
+            return true;
         }
         if (Contains(name)) {
             return true;
@@ -192,25 +259,109 @@ public:
     }
 
     // Removes `name`, then writes the list; false when it could not be written (the name is removed in memory anyway,
-    // so a script that is started runs; it may be held again after a restart).
+    // so a script that is started runs; it may be held again after a restart). Degraded: released for this session
+    // only (nothing is written), false.
     bool Remove(const std::string& name) {
-        bool removed = false;
-        for (size_t i = 0; i < names_.size();) {
-            if (SameScriptName(names_[i], name)) {
-                names_.erase(names_.begin() + i);
-                removed = true;
-            } else {
-                ++i;
+        if (degraded_) {
+            Erase(names_, name);
+            if (HeldListName(name) && !Listed(released_, name)) {
+                released_.push_back(name);
             }
+            return false;
         }
+        const bool removed = Erase(names_, name);
         return !removed || SaveHeldList(folder_, names_);
+    }
+
+    // At each folder scan: reads a degraded list again (and installed.json while it stays degraded). Nothing to do
+    // otherwise.
+    void Refresh() {
+        if (degraded_) {
+            Load();
+        }
+    }
+
+    // True while held.txt cannot be read (see the class comment).
+    bool Degraded() const { return degraded_; }
+
+    // A line for the log when the list became degraded or readable again since the last call, else empty: logged once
+    // per change, not at each scan.
+    std::string TakeNotice() {
+        std::string notice;
+        notice.swap(notice_);
+        return notice;
     }
 
     const std::vector<std::string>& Names() const { return names_; }
 
 private:
+    static bool Listed(const std::vector<std::string>& list, const std::string& name) {
+        for (const std::string& held : list) {
+            if (SameScriptName(held, name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool Erase(std::vector<std::string>& list, const std::string& name) {
+        bool erased = false;
+        for (size_t i = 0; i < list.size();) {
+            if (SameScriptName(list[i], name)) {
+                list.erase(list.begin() + i);
+                erased = true;
+            } else {
+                ++i;
+            }
+        }
+        return erased;
+    }
+
+    void Load() {
+        if (folder_.empty()) {
+            return;
+        }
+        std::vector<std::string> names;
+        if (ReadHeldListFile(folder_, names) == ScriptListRead::Unreadable) {
+            if (!degraded_) {
+                notice_ = "Scripts: .nickel\\held.txt cannot be read; every PUBLIC script stays held until it can.";
+            }
+            degraded_ = true;
+            allPublic_ = ReadPublicScriptNames(folder_, public_) == ScriptListRead::Unreadable;
+            return;
+        }
+        if (!degraded_) {
+            names_ = std::move(names);
+            return;
+        }
+        // Readable again: the file's list with this session's holds and starts.
+        const std::vector<std::string> fromFile = names;
+        for (const std::string& name : names_) {
+            if (!Listed(names, name)) {
+                names.push_back(name);
+            }
+        }
+        for (const std::string& name : released_) {
+            Erase(names, name);
+        }
+        degraded_ = false;
+        allPublic_ = false;
+        public_.clear();
+        released_.clear();
+        names_ = std::move(names);
+        if (names_ != fromFile) {
+            SaveHeldList(folder_, names_);
+        }
+        notice_ = "Scripts: .nickel\\held.txt is readable again.";
+    }
+
     std::wstring folder_;
-    std::vector<std::string> names_;
+    std::vector<std::string> names_;     // the list; degraded, the names held in this session
+    bool degraded_ = false;
+    bool allPublic_ = false;             // degraded and installed.json unreadable too: every script is held
+    std::vector<std::string> public_;    // degraded: the scripts PUBLIC installed
+    std::vector<std::string> released_;  // degraded: the names started or removed in this session
+    std::string notice_;
 };
 
 // The library's writes to one scripts folder (see the locks at the top).

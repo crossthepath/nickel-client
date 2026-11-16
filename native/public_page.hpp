@@ -863,7 +863,8 @@ public:
                 reportPending_.clear();
                 if (report->outcome.Ok()) {
                     Notice("Thanks. The report was sent to the Nickel team.");
-                } else if (report->outcome.status == Status::Conflict) {
+                } else if (report->outcome.status == Status::Conflict
+                           && report->outcome.problem.code == "already_reported") {
                     Notice("You already reported this.", true);
                 } else if (report->outcome.status == Status::RateLimited) {
                     Notice("Too many reports. Try again later.", true);
@@ -1227,7 +1228,7 @@ public:
     // ---- reports (anonymous: the moderators read them on the website)
 
     bool Report(const Card& card, const std::string& category, const std::string& details) {
-        if (requests_ == nullptr || !ValidId(card.id) || !KnownReasonCategory(category) || !reportPending_.empty()) {
+        if (requests_ == nullptr || !ValidId(card.id) || !KnownReportReason(category) || !reportPending_.empty()) {
             return false;
         }
         reportPending_ = card.id;

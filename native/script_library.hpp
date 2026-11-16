@@ -359,6 +359,12 @@ inline std::vector<std::string> ParseHeldList(const std::string& text) {
     return names;
 }
 
+// True when `text` can be read as a held list: no NUL byte and well-formed UTF-8. A damaged or binary held.txt is not
+// read as a shorter list (ScriptHeldNames then fails closed, script_files.hpp).
+inline bool ReadableHeldList(const std::string& text) {
+    return text.find('\0') == std::string::npos && WellFormedUtf8(text);
+}
+
 // The text of the held list: each name followed by '\n'.
 inline std::string FormatHeldList(const std::vector<std::string>& names) {
     std::string text;
