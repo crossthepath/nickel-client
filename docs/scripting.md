@@ -1,5 +1,9 @@
 # Scripting: player actions
 
+The complete scripting API is in [scripting/reference.md](scripting/reference.md), with its Luau type definitions in
+[scripting/nickel.d.luau](scripting/nickel.d.luau) and checked examples in [scripting/examples](scripting/examples).
+This page details the calls that change the local player.
+
 Scripts are Luau files in `%APPDATA%\Nickel\scripts`. Calls that change the local player are requests: they are
 checked when called and applied on the next game tick, on the game's thread. A request made while no world is loaded,
 or still pending when the world is left, is dropped.
