@@ -8,6 +8,7 @@
 // quota after a refunded failure, and that the sidebar has no Nickel AI entry any more.
 #include "ai_ui.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -127,6 +128,10 @@ public:
     bool Describe(const ToolUse& use, ConfirmCard* card, ToolResult* refusal) override {
         ++describes;
         const std::string module = use.input["module_id"].AsString();
+        if (refuseSettingAfterRun && use.name == "set_setting" && !ran.empty()) {
+            *refusal = MakeToolError(use.id, "nothing_to_do", "Kill Aura is off now.");
+            return false;
+        }
         if ((use.name == "set_setting" || use.name == "set_module_enabled") && module != "kill_aura") {
             if (emptyRefusal) {
                 refusal->content.clear(); // a runner that only says no
@@ -153,6 +158,9 @@ public:
             card->newSource = use.input["source"].AsString();
         } else {
             card->title = "Other change";
+        }
+        if (titleCountsRuns) {
+            card->title += " (" + std::to_string(ran.size()) + " ran)";
         }
         return true;
     }
@@ -183,6 +191,8 @@ public:
     bool failRun = false;
     bool emptyRefusal = false;
     bool hugeRefusal = false;
+    bool titleCountsRuns = false;      // the card says how many actions ran before it was described
+    bool refuseSettingAfterRun = false; // set_setting is refused once another action ran
     std::vector<std::string> ran;
 };
 
@@ -530,6 +540,47 @@ void CardArming() {
     page.PlaceCard("d2", 0, 100);
     Check(page.Allow("d2") && tools.ran.size() == 2 && client.posts.size() == 1,
           "it answers once it has stayed in place for the delay");
+}
+
+// After Allow, the other open cards of the step are described again from the new state and armed again; one the tools
+// now refuse is answered with that refusal.
+void CardsDescribedAgain() {
+    FakeClient client;
+    FakeTools tools;
+    tools.titleCountsRuns = true;
+    ChatPage page(&client, &tools);
+    page.Tick(0, kNoon, true);
+    page.Send("x");
+    client.Tools({Use("e1", "set_module_enabled", "{\"module_id\":\"kill_aura\",\"enabled\":true}"),
+                  Use("e2", "set_setting", "{\"module_id\":\"kill_aura\",\"setting\":\"range\",\"value\":4.5}")});
+    page.Tick(1, kNoon, true);
+    Check(page.OpenCards().size() == 2 && page.OpenCards()[1]->card.title == "Change a setting of Kill Aura (0 ran)",
+          "redescribe: both cards described before anything ran");
+    page.Tick(1 + kCardArmSeconds, kNoon, true);
+    Check(page.Allow("e1") && tools.ran.size() == 1, "redescribe: the first change runs");
+    const auto open = page.OpenCards();
+    Check(open.size() == 1 && open[0]->card.title == "Change a setting of Kill Aura (1 ran)",
+          "redescribe: the other card now describes the state after that change");
+    Check(!page.Armed(*open[0]) && !page.Allow("e2") && tools.ran.size() == 1,
+          "redescribe: and it arms again before a click counts");
+    page.Tick(1 + 2 * kCardArmSeconds, kNoon, true);
+    Check(page.Allow("e2") && tools.ran.size() == 2 && client.posts.size() == 1, "redescribe: then it can be allowed");
+
+    FakeClient client2;
+    FakeTools tools2;
+    tools2.refuseSettingAfterRun = true;
+    ChatPage page2(&client2, &tools2);
+    page2.Tick(0, kNoon, true);
+    page2.Send("x");
+    client2.Tools({Use("f1", "set_module_enabled", "{\"module_id\":\"kill_aura\",\"enabled\":true}"),
+                   Use("f2", "set_setting", "{\"module_id\":\"kill_aura\",\"setting\":\"range\",\"value\":4.5}")});
+    page2.Tick(1, kNoon, true);
+    page2.Tick(1 + kCardArmSeconds, kNoon, true);
+    Check(page2.Allow("f1") && page2.OpenCards().empty() && client2.posts.size() == 1,
+          "redescribe: a card the tools now refuse closes and every result goes back");
+    Check(client2.posts.size() == 1 && client2.posts[0].size() == 2 && ErrorCode(client2.posts[0][1]) == "nothing_to_do"
+              && tools2.ran.size() == 1,
+          "redescribe: the refused call carries the tools' refusal and never ran");
 }
 
 // The service measures a result as a JSON string: quotes and escapes count twice or more.
@@ -1042,6 +1093,37 @@ float FakeWidth(const std::string& text, bool bold) {
     return static_cast<float>(chars) * (bold ? 8.f : 7.f);
 }
 
+// Hostile Markdown stays linear: marks without their closing mark are searched for once, a huge word is measured
+// once per character.
+void MarkdownCost() {
+    std::string stars, brackets;
+    for (int i = 0; i < 20000; ++i) {
+        stars += "*a ";
+        brackets += "[a ";
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto a = md::Parse(stars);
+    const auto b = md::Parse(brackets);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    Check(a.size() == 1 && a[0].spans.size() == 1 && a[0].spans[0].text == stars.substr(0, stars.size() - 1)
+              && b.size() == 1 && b[0].spans[0].text == brackets.substr(0, brackets.size() - 1),
+          "markdown cost: unclosed marks stay as written");
+    Check(ms < 200, "markdown cost: 120 KB of unclosed marks parse in well under a frame budget per KB");
+
+    md::Metrics m;
+    m.maxWidth = 70;
+    m.lineH = 10;
+    int calls = 0;
+    const std::string word(20000, 'x');
+    const md::Layout cut = md::LayOut(md::Parse(word), m, [&](const std::string& t, bool bold) {
+        ++calls;
+        return FakeWidth(t, bold);
+    });
+    Check(cut.lines.size() == 2000 && cut.lines.back().runs[0].text == "xxxxxxxxxx",
+          "markdown cost: a 20 000-character word is cut into lines of 10");
+    Check(calls < 3 * 20000, "markdown cost: measured about once per character, not once per prefix");
+}
+
 void MarkdownLayout() {
     md::Metrics m;
     m.maxWidth = 70; // 10 regular characters
@@ -1111,6 +1193,8 @@ int main() {
     MarkdownInline();
     MarkdownBlocks();
     MarkdownLayout();
+    MarkdownCost();
+    CardsDescribedAgain();
     std::printf("%s (%d failed)\n", failed == 0 ? "all ai ui checks passed" : "ai ui checks failed", failed);
     return failed == 0 ? 0 : 1;
 }

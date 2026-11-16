@@ -9,6 +9,7 @@
 //   registry or start and stop scripts run there.
 //
 // No ImGui and no game here: tests/ai_e2e_checks.cpp drives the same classes against a local server.
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -95,21 +96,22 @@ inline ConversationSnapshot ToPanelSnapshot(const Conversation& conversation, ui
         }
         ChatMessage line;
         line.role = message->role == Role::User ? ChatMessage::Role::Player : ChatMessage::Role::Assistant;
-        line.text = message->text;
-        if (line.role == ChatMessage::Role::Assistant && line.text.empty()) {
+        if (line.role == ChatMessage::Role::Assistant && message->text.empty()) {
             continue; // a step that only called tools: nothing to show
         }
-        if (message->truncated) {
-            line.text += "\n[The answer was too long and was cut.]";
-        }
+        // shared with the client's immutable message (aliasing pointer): no copy of the text per snapshot
+        line.text = message->truncated ? SharedText(message->text + "\n[The answer was too long and was cut.]")
+                                       : SharedText(std::shared_ptr<const std::string>(message, &message->text));
         snap.messages.push_back(std::move(line));
     }
     snap.state = PanelState(conversation.status);
     snap.lastStop = ParseStopReason(conversation.stopReason);
     if (conversation.quota.used >= 0 && conversation.quota.limit >= 0) {
         snap.quota.known = true;
-        snap.quota.used = static_cast<int>(conversation.quota.used);
-        snap.quota.limit = static_cast<int>(conversation.quota.limit);
+        // clamped: the panel computes limit - used in int
+        constexpr int64_t kMaxQuota = 1000000;
+        snap.quota.used = static_cast<int>((std::min)(static_cast<int64_t>(conversation.quota.used), kMaxQuota));
+        snap.quota.limit = static_cast<int>((std::min)(static_cast<int64_t>(conversation.quota.limit), kMaxQuota));
         snap.quota.resetAt = conversation.quota.resetAt;
     }
     if (conversation.status == Status::Failed) {

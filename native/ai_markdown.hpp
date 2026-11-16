@@ -75,8 +75,29 @@ inline size_t Closing(std::string_view s, size_t from, std::string_view mark) {
     return std::string_view::npos;
 }
 
+// Where a search for a closing mark already failed: Closing(s, from, mark) == npos stays npos for any later `from`
+// (whether a position closes depends only on its neighbours), so each mark is searched for to the end of the text at
+// most once per call. Without this, "*a *a *a..." (64 KB) took about a second, rescanning the rest for every mark.
+struct NoClose {
+    size_t bold[2] = {std::string_view::npos, std::string_view::npos};   // ** and __
+    size_t italic[2] = {std::string_view::npos, std::string_view::npos}; // * and _
+    size_t link = std::string_view::npos;                                // [text](url)
+
+    static size_t Find(size_t& failedFrom, std::string_view s, size_t from, std::string_view mark) {
+        if (from >= failedFrom) {
+            return std::string_view::npos;
+        }
+        const size_t at = Closing(s, from, mark);
+        if (at == std::string_view::npos) {
+            failedFrom = from;
+        }
+        return at;
+    }
+};
+
 inline void Inline(std::string_view s, bool bold, std::vector<Span>& out) {
     std::string plain;
+    NoClose none;
     auto flush = [&] {
         Append(out, plain, bold, false);
         plain.clear();
@@ -98,7 +119,7 @@ inline void Inline(std::string_view s, bool bold, std::vector<Span>& out) {
             }
         }
         if ((c == '*' || c == '_') && i + 2 < s.size() && s[i + 1] == c && s[i + 2] != ' ') {
-            const size_t end = Closing(s, i + 2, s.substr(i, 2));
+            const size_t end = NoClose::Find(none.bold[c == '_'], s, i + 2, s.substr(i, 2));
             if (end != std::string_view::npos) {
                 flush();
                 Inline(s.substr(i + 2, end - i - 2), true, out);
@@ -108,7 +129,7 @@ inline void Inline(std::string_view s, bool bold, std::vector<Span>& out) {
         }
         if ((c == '*' || c == '_') && i + 1 < s.size() && s[i + 1] != ' ' && s[i + 1] != c
             && (c == '*' || i == 0 || !Word(s[i - 1]))) {
-            const size_t end = Closing(s, i + 1, s.substr(i, 1));
+            const size_t end = NoClose::Find(none.italic[c == '_'], s, i + 1, s.substr(i, 1));
             if (end != std::string_view::npos) {
                 flush();
                 Inline(s.substr(i + 1, end - i - 1), bold, out); // italic: plain text without its marks
@@ -116,9 +137,12 @@ inline void Inline(std::string_view s, bool bold, std::vector<Span>& out) {
                 continue;
             }
         }
-        if (c == '[') {
+        if (c == '[' && i < none.link) {
             const size_t close = s.find("](", i + 1);
             const size_t end = close == std::string_view::npos ? close : s.find(')', close + 2);
+            if (end == std::string_view::npos) {
+                none.link = i; // no "](" with a ")" after it from here: no later "[" can open a link either
+            }
             if (end != std::string_view::npos && close > i + 1) {
                 flush();
                 Inline(s.substr(i + 1, close - i - 1), bold, out);
@@ -382,28 +406,31 @@ inline Layout LayOut(const std::vector<Block>& blocks, const Metrics& m, const M
                 if (!line.runs.empty() && x + gap + w > room) {
                     newLine();
                 }
-                while (x + w > room && word.size() > 1) { // too wide for the line: cut between characters
-                    size_t cut = 0;
-                    float cutW = 0;
-                    for (size_t at = 0; at < word.size();) {
-                        const size_t next = std::min(word.size(), at + detail::CharBytes(static_cast<unsigned char>(word[at])));
-                        const float width = measure(word.substr(0, next), span.bold);
-                        if (x + width > room && cut > 0) {
-                            break;
+                if (x + w > room && word.size() > 1) {
+                    // Too wide for the line: cut between characters. Widths add up character by character (the menu's
+                    // fonts have no kerning), so a long word is measured once per character, not once per prefix.
+                    size_t from = 0;
+                    while (from < word.size()) {
+                        size_t at = from;
+                        float lineW = 0;
+                        while (at < word.size()) {
+                            const size_t next = std::min(word.size(), at + detail::CharBytes(static_cast<unsigned char>(word[at])));
+                            const float cw = measure(word.substr(at, next - at), span.bold);
+                            if (x + lineW + cw > room && at > from) {
+                                break;
+                            }
+                            lineW += cw;
+                            at = next;
                         }
-                        cut = next;
-                        cutW = width;
-                        at = next;
+                        put(word.substr(from, at - from), span.bold, span.code, lineW);
+                        from = at;
+                        if (from < word.size()) {
+                            newLine();
+                        }
                     }
-                    if (cut >= word.size()) {
-                        break;
-                    }
-                    put(word.substr(0, cut), span.bold, span.code, cutW);
-                    newLine();
-                    word = word.substr(cut);
-                    w = measure(word, span.bold);
+                } else {
+                    put(word, span.bold, span.code, w);
                 }
-                put(word, span.bold, span.code, w);
             }
         }
         newLine();

@@ -646,6 +646,9 @@ void ToolFlow(TestServer& server) {
     Check(snap->messages.size() == 2 && snap->messages[1]->text == "Let me look."
                     && snap->messages[1]->toolUses.size() == 2,
             "the answer shows its text and tool calls");
+    Check(snap->messages[1]->toolUses[0].id == "tu_1" && snap->messages[1]->toolUses[0].name == "search_modules"
+                    && snap->messages[1]->toolUses[0].inputJson.empty() && !snap->messages[1]->toolUses[0].input.IsObject(),
+            "the history keeps the id and name of a call, not its input (copied with every text delta)");
     Check(!client.Send("another question"), "Send is refused while tools are awaited");
 
     const size_t before = server.RequestCount();

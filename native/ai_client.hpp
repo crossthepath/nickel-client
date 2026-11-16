@@ -80,6 +80,7 @@ struct ClientConfig {
     int timeoutMs = 60000;                  // connect, send, and the longest silence of a stream
     int defaultRetryAfterSeconds = 30;      // a 429 without Retry-After
     size_t maxEventBytes = 256 * 1024;      // one SSE event (a tool_use carrying a whole script fits)
+    size_t maxEventValues = 4096;           // JSON values in one event (a script source is one value)
     size_t maxStreamBytes = 4 * 1024 * 1024;// one response
     size_t maxAnswerBytes = 64 * 1024;      // the streamed text of one answer; the rest is dropped (truncated)
     size_t maxToolUsesPerStep = 16;
@@ -178,7 +179,7 @@ struct Message {
     Role role = Role::User;
     std::string text;
     std::string turnId;             // "" for a user message whose turn never started
-    std::vector<ToolUse> toolUses;  // the tool calls of this answer step
+    std::vector<ToolUse> toolUses;  // the tool calls of this answer step: id and name only (inputs are in pendingToolUses)
     bool streaming = false;         // text is still arriving
     bool truncated = false;         // text went over ClientConfig::maxAnswerBytes; the rest was dropped
     bool interrupted = false;       // cancelled or failed before the step ended
@@ -967,6 +968,9 @@ private:
         json::Limits limits;
         limits.maxBytes = config_.maxEventBytes;
         limits.maxDepth = 64;
+        // A tool input is a few settings or one script source; the cap keeps a hostile event (a 256 KB array of
+        // numbers is some 13 MB of parsed values) from costing memory each time a snapshot copies the step's calls.
+        limits.maxValues = config_.maxEventValues;
         if (!json::Parse(event.data, &data, nullptr, limits) || !data.IsObject()) {
             return StreamError(generation, state, ErrorKind::Malformed, "event data is not a JSON object: " + type);
         }
@@ -1112,7 +1116,12 @@ private:
             }
             auto next = std::make_shared<Conversation>(*current_);
             next->status = Status::Streaming;
-            StreamingMessageLocked(*next).toolUses.push_back(std::move(use));
+            // the history keeps the id and name only: each text delta copies this message, and the inputs are
+            // already in state->toolUses (then pendingToolUses)
+            ToolUse brief;
+            brief.id = std::move(use.id);
+            brief.name = std::move(use.name);
+            StreamingMessageLocked(*next).toolUses.push_back(std::move(brief));
             if (!next->turns.empty()) {
                 next->turns.back().toolUses += 1;
             }
@@ -1142,7 +1151,7 @@ private:
             next->turns.back().stopReason = reason;
         }
         if (reason == "tool_use") {
-            next->pendingToolUses = state->toolUses;
+            next->pendingToolUses = std::move(state->toolUses);  // the stream ends here: no copy
             next->status = Status::AwaitingTools;
         } else {
             next->status = Status::Idle;

@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <ctime>
 #include <deque>
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -548,9 +549,42 @@ public:
         } else {
             const char* what = call->card.isScriptWrite ? "Saved (held): " : "Applied: ";
             Note(ChatNote::Kind::Applied, what + call->card.title);
+            RedescribeOpenCards();
         }
         FlushIfDone();
         return true;
+    }
+
+    // After a change, the other open cards of the step may describe a state that is gone (a revert card built before
+    // a module was turned off, a script card listing the modules of the source just replaced). Run works the change out
+    // again when Allow is pressed, so each card is described again from the current state and armed again, and the
+    // player always confirms what will happen. A card the tools now refuse is answered with that refusal.
+    void RedescribeOpenCards() {
+        for (auto& other : calls_) {
+            if (!other.carded || other.decided) {
+                continue;
+            }
+            ConfirmCard card;
+            ToolResult refusal;
+            if (tools_->Describe(other.use, &card, &refusal)) {
+                card.toolUseId = other.use.id;
+                card.tool = other.use.name;
+                if (card.title.empty()) {
+                    card.title = ToolActivity(other.use.name);
+                }
+                other.diff = card.isScriptWrite ? LineDiff(card.currentSource, card.newSource) : std::vector<DiffLine>{};
+                other.card = std::move(card);
+                other.armedAt = now_ + kCardArmSeconds;
+            } else {
+                if (refusal.content.empty()) {
+                    refusal = MakeToolError(other.use.id, "refused", "Nickel refused this call.");
+                }
+                refusal.isError = true;
+                other.result = Checked(other.use.id, std::move(refusal));
+                other.decided = true;
+                Note(ChatNote::Kind::Declined, "No longer possible: " + other.card.title);
+            }
+        }
     }
 
     bool Decline(const std::string& toolUseId) {
@@ -1252,20 +1286,34 @@ float AiText(ImDrawList* d, ImFont* font, float size, ImVec2 pos, const std::str
     return AiTextHeight(font, size, text, width);
 }
 
-// An answer laid out from its Markdown (ai_markdown.hpp) for `size` (pixels, as for Label) and `width` (pixels). The
-// last layouts are kept, so a long chat is not measured again every frame; while an answer streams, each new text is
-// a new entry. The reference stays valid until the next call.
-const nickel::ai::md::Layout& AiMarkdownLayout(const std::string& text, float size, float width, float s) {
+// An answer laid out from its Markdown (ai_markdown.hpp) for `size` (pixels, as for Label) and `width` (pixels). Layouts
+// are kept, least recently used dropped first, with room for the whole history (ai_client.hpp keeps 200 messages), so
+// a long chat is never measured again every frame. The answer that is still streaming has its own entry, laid out
+// again at most every 100 ms (its last pieces of text show a few frames later), so it neither fills the cache with
+// every partial text nor costs a layout per frame. The reference stays valid until the next call.
+const nickel::ai::md::Layout& AiMarkdownLayout(const std::string& text, float size, float width, float s,
+                                               bool streaming = false) {
     namespace md = nickel::ai::md;
     struct Entry {
         std::string text;
         float size, width;
         md::Layout layout;
     };
-    static std::deque<Entry> kept;
-    for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
-        if (it->size == size && it->width == width && it->text == text) {
-            return it->layout;
+    constexpr size_t kKept = 256;
+    static std::list<Entry> kept; // most recently used first
+    static Entry live;            // the streaming answer
+    static double liveAt = -1;
+    const double now = ImGui::GetTime();
+    if (streaming && live.size == size && live.width == width && live.text.size() <= text.size()
+        && now - liveAt < 0.1 && text.compare(0, live.text.size(), live.text) == 0) {
+        return live.layout;
+    }
+    if (!streaming) {
+        for (auto it = kept.begin(); it != kept.end(); ++it) {
+            if (it->size == size && it->width == width && it->text == text) {
+                kept.splice(kept.begin(), kept, it);
+                return kept.front().layout;
+            }
         }
     }
     const float px = size * FontEmFactor;
@@ -1280,11 +1328,16 @@ const nickel::ai::md::Layout& AiMarkdownLayout(const std::string& text, float si
     m.itemGap = 2 * s;
     m.indentStep = 14 * s;
     m.markerW = 16 * s;
-    kept.push_back({text, size, width, md::LayOut(md::Parse(text), m, measure)});
-    if (kept.size() > 48) {
-        kept.pop_front();
+    if (streaming) {
+        live = {text, size, width, md::LayOut(md::Parse(text), m, measure)};
+        liveAt = now;
+        return live.layout;
     }
-    return kept.back().layout;
+    kept.push_front({text, size, width, md::LayOut(md::Parse(text), m, measure)});
+    if (kept.size() > kKept) {
+        kept.pop_back();
+    }
+    return kept.front().layout;
 }
 
 // Draws a laid-out answer from `at` (its top-left): bold runs in semibold, `code` tinted on a light background, bullets
@@ -1812,11 +1865,11 @@ void DrawAiWindow(const nickel::ai::BubbleLayout& place, float s, float opacity,
             case ai::ChatItem::Kind::Greeting:
             case ai::ChatItem::Kind::Message: {
                 const std::string& text =
-                        item.kind == ai::ChatItem::Kind::Greeting ? item.text : conv.messages[item.message].text;
+                        item.kind == ai::ChatItem::Kind::Greeting ? item.text : conv.messages[item.message].text.str();
                 const float px = textSize * FontEmFactor;
                 // the assistant's answers are Markdown (ai_markdown.hpp); the player's text and the greeting are plain
                 const bool markdown = !player && item.kind == ai::ChatItem::Kind::Message;
-                const ai::md::Layout* laid = markdown ? &AiMarkdownLayout(text, textSize, bubbleMax - 2 * padX, s) : nullptr;
+                const ai::md::Layout* laid = markdown ? &AiMarkdownLayout(text, textSize, bubbleMax - 2 * padX, s, item.streaming) : nullptr;
                 const ImVec2 box = laid ? ImVec2(laid->width, laid->height)
                                         : Sized(regular, px)->CalcTextSizeA(px, FLT_MAX, bubbleMax - 2 * padX, text.c_str(),
                                                                             text.c_str() + text.size());

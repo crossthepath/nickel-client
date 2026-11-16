@@ -16,6 +16,7 @@
 // classes adapt to them; nothing here does I/O. No ImGui, no game access: tests/ai_ui_checks.cpp uses fakes.
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -148,10 +149,40 @@ struct QuotaView {
     std::string resetAt; // ISO 8601, UTC
 };
 
+// The text of a chat message, shared with the client's immutable message instead of copied: the panel takes a new
+// snapshot for every streamed delta, and copying every message of a long chat each time would cost a frame. Reads
+// like a const std::string; a change (only the tests append) copies it first.
+class SharedText {
+public:
+    SharedText() = default;
+    SharedText(std::string text) : text_(std::make_shared<const std::string>(std::move(text))) {}
+    SharedText(const char* text) : SharedText(std::string(text)) {}
+    explicit SharedText(std::shared_ptr<const std::string> text) : text_(std::move(text)) {}
+
+    const std::string& str() const { return text_ ? *text_ : Empty(); }
+    operator const std::string&() const { return str(); }
+    bool empty() const { return str().empty(); }
+    size_t size() const { return str().size(); }
+    const char* c_str() const { return str().c_str(); }
+    SharedText& operator+=(const std::string& more) {
+        text_ = std::make_shared<const std::string>(str() + more);
+        return *this;
+    }
+    friend bool operator==(const SharedText& a, const std::string& b) { return a.str() == b; }
+    friend bool operator==(const SharedText& a, const char* b) { return a.str() == b; }
+
+private:
+    static const std::string& Empty() {
+        static const std::string empty;
+        return empty;
+    }
+    std::shared_ptr<const std::string> text_;
+};
+
 struct ChatMessage {
     enum class Role { Player, Assistant };
     Role role = Role::Player;
-    std::string text; // an assistant message grows with each "text" delta
+    SharedText text; // an assistant message grows with each "text" delta (each snapshot shares the client's text)
 };
 
 struct ConversationSnapshot {
