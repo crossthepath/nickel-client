@@ -218,10 +218,12 @@ int wmain(int argc,wchar_t** argv){
  c.g.dx12=c.dx12;c.readyName=L"Local\\NickelOverlay.Rendered."+std::to_wstring(GetCurrentProcessId());
  auto own=GetModuleHandleW(nullptr);
  WNDCLASSEXW wc{sizeof(wc)};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=own;wc.lpszClassName=L"NickelOwnProbe";RegisterClassExW(&wc);
- c.hwnd=CreateWindowExW(0,wc.lpszClassName,L"Nickel overlay renderer check",WS_OVERLAPPEDWINDOW,100,100,c.review?1480:1120,680,nullptr,nullptr,own,nullptr);
+ // review: NICKEL_REVIEW_SIZE=WxH sets the client area (the game window size to check), e.g. 1280x720
+ RECT frame{0,0,c.review?1480:1120,680};bool exact=false;{wchar_t size[32]{};int w=0,h=0;if(c.review&&GetEnvironmentVariableW(L"NICKEL_REVIEW_SIZE",size,32)&&swscanf_s(size,L"%dx%d",&w,&h)==2&&w>=320&&h>=240){frame={0,0,w,h};AdjustWindowRect(&frame,WS_OVERLAPPEDWINDOW,FALSE);exact=true;}}
+ c.hwnd=CreateWindowExW(0,wc.lpszClassName,L"Nickel overlay renderer check",WS_OVERLAPPEDWINDOW,exact?0:100,exact?0:100,frame.right-frame.left,frame.bottom-frame.top,nullptr,nullptr,own,nullptr);
  int rc=2;
  if(c.hwnd){
-  if(c.visible)ShowWindow(c.hwnd,SW_SHOW);
+  if(c.visible)ShowWindow(c.hwnd,SW_SHOWNOACTIVATE);   // shown without taking the keyboard from the player's window
   if(c.motion&&c.dx12){ComPtr<ID3D12Debug> debug;if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))debug->EnableDebugLayer();}
   bool gfx=c.dx12?InitDx12(c.g,c.hwnd):InitDx11(c.g,c.hwnd);
   c.dll=LoadLibraryW(L"Nickel.Overlay.dll");

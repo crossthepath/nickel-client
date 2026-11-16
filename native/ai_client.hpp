@@ -16,6 +16,9 @@
 // - 429: Retry-After (or the problem's retry_after) blocks Send, which repeats that error, until it has elapsed; 401
 //   and 403 end the request with their own error kinds. Caps on each event, the whole stream, each answer's text, the
 //   tool inputs and the history.
+// - The quota comes from the turn event. A turn that then fails takes the error event's quota (the service gives back
+//   a turn that failed before any output reached the player); without one (an older service) GET /status is asked
+//   once after the failure.
 // - This layer never runs a tool and never asks the player anything: it hands the tool calls to the caller
 //   (Conversation::pendingToolUses) and posts what the caller answers, once per tool call.
 // Nothing here reads or writes files and nothing runs in DllMain: Stop() (or the destructor) cancels and joins the
@@ -578,6 +581,8 @@ private:
         bool sawDone = false;
         bool failed = false;     // an error was published: stop reading
         bool sawEvent = false;   // any event, known or not: the server has taken the request
+        bool turnQuota = false;  // the turn event carried the quota (the message was counted)
+        bool errorQuota = false; // the error event carried the quota after the failure
         std::string turnId;      // of the turn event, when one was seen
         std::vector<ToolUse> toolUses;
     };
@@ -673,8 +678,9 @@ private:
     // The conversation id is dropped, so the next message starts a new conversation on the server, when that
     // conversation is gone (expired, not found), full, or busy there: a 409 conflict, or a tool-results post that
     // failed before the server streamed anything back (its step may still wait for these results, and nothing here
-    // posts them again).
-    void Fail(uint64_t generation, ErrorInfo error) {
+    // posts them again). `quota`, when the failure carried one, is the count after it (a refunded turn no longer
+    // counts).
+    void Fail(uint64_t generation, ErrorInfo error, const Quota* quota = nullptr) {
         Log(std::string("ai: request failed: ") + ErrorKindName(error.kind)
                 + (error.code.empty() ? std::string() : " (" + error.code + ")"));
         std::lock_guard<std::mutex> lock(mutex_);
@@ -687,6 +693,9 @@ private:
         EndStreamingLocked(*next, true);
         next->pendingToolUses.clear();
         next->status = Status::Failed;
+        if (quota != nullptr) {
+            next->quota = *quota;
+        }
         if (unanswered || error.httpStatus == 409 || error.code == "conflict" || error.code == "conversation_full"
                 || error.code == "conversation_expired" || error.code == "conversation_not_found"
                 || error.code == "expired" || error.code == "turn_expired") {
@@ -836,42 +845,85 @@ private:
         Log("ai: POST " + (continuedTurn.empty() ? std::string("/turns") : std::string("/turns/{id}/tool-results"))
                 + " -> " + std::to_string(response.status)
                 + (response.error == net::Error::None ? std::string() : std::string(" ") + net::ErrorName(response.error)));
-        if (state.failed || state.sawDone) {
+        if (state.sawDone) {
             return;
         }
-        if (response.error != net::Error::None) {
-            if (response.error == net::Error::Cancelled && cancel.Cancelled()) {
-                return;  // Cancel() or Stop() already published what the player sees
-            }
-            ErrorInfo error;
-            error.kind = FromNet(response.error);
-            error.httpStatus = response.status;
-            error.message = net::ErrorName(response.error);
-            Fail(generation, std::move(error));
-            return;
-        }
-        if (response.status < 200 || response.status >= 300) {
-            Quota quota;
-            bool hasQuota = false;
-            ErrorInfo error = FromProblem(response, &quota, &hasQuota);
-            if (hasQuota) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (generation == generation_) {
-                    auto next = std::make_shared<Conversation>(*current_);
-                    next->quota = quota;
-                    PublishLocked(std::move(next));
+        if (!state.failed) {
+            if (response.error != net::Error::None) {
+                if (response.error == net::Error::Cancelled && cancel.Cancelled()) {
+                    return;  // Cancel() or Stop() already published what the player sees
                 }
+                ErrorInfo error;
+                error.kind = FromNet(response.error);
+                error.httpStatus = response.status;
+                error.message = net::ErrorName(response.error);
+                Fail(generation, std::move(error));
+            } else if (response.status < 200 || response.status >= 300) {
+                Quota quota;
+                bool hasQuota = false;
+                ErrorInfo error = FromProblem(response, &quota, &hasQuota);
+                Fail(generation, std::move(error), hasQuota ? &quota : nullptr);
+                return;  // answered before any event: the turn event never counted the message here
+            } else {
+                ErrorInfo error;
+                error.kind = ErrorKind::Interrupted;
+                error.httpStatus = response.status;
+                error.message = "the stream ended before done";
+                Fail(generation, std::move(error));
             }
-            Fail(generation, std::move(error));
+        }
+        // The turn event showed the message counted, then the turn failed. The service gives back a turn that failed
+        // before any of its output reached the player; a newer service says the count after that in the error event
+        // (applied by Fail), an older one only through GET /status, asked here so the quota line is right either way.
+        if (continuedTurn.empty() && state.turnQuota && !state.errorQuota) {
+            RefreshQuota(cancel, generation);
+        }
+    }
+
+    // GET /status after a failed turn: its quota replaces the one of the turn event, unless something else was sent
+    // meanwhile (that request's own turn event is newer). A failure here changes nothing the player sees.
+    void RefreshQuota(net::CancelToken& cancel, uint64_t generation) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (generation != generation_ || stopped_) {
+                return;
+            }
+        }
+        std::string authorization;
+        if (identity_ == nullptr || !identity_->Authorization(&authorization)) {
             return;
         }
-        if (!state.sawDone) {
-            ErrorInfo error;
-            error.kind = ErrorKind::Interrupted;
-            error.httpStatus = response.status;
-            error.message = "the stream ended before done";
-            Fail(generation, std::move(error));
+        net::Request request;
+        request.method = "GET";
+        request.url = config_.baseUrl + "/status";
+        request.maxBytes = 64 * 1024;
+        request.timeoutMs = (std::min)(config_.timeoutMs, 10000);  // a send waiting behind it is not held for long
+        request.headers.push_back({"Accept", "application/json"});
+        request.headers.push_back({"Authorization", std::move(authorization)});
+        net::Response response = http_.Send(request, &cancel);
+        SecureZeroMemory(request.headers.back().value.data(), request.headers.back().value.size());
+        Log("ai: GET /status -> " + std::to_string(response.status)
+                + (response.error == net::Error::None ? std::string()
+                                                      : std::string(" ") + net::ErrorName(response.error)));
+        if (response.error != net::Error::None || response.status != 200) {
+            return;
         }
+        json::Value status;
+        json::Limits limits;
+        limits.maxBytes = 64 * 1024;
+        Quota quota;
+        const json::Value* quotaValue = nullptr;
+        if (!json::Parse(response.body, &status, nullptr, limits) || !status.IsObject()
+                || (quotaValue = status.Find("quota")) == nullptr || !detail::ReadQuota(*quotaValue, &quota)) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (generation != generation_ || stopped_) {
+            return;
+        }
+        auto next = std::make_shared<Conversation>(*current_);
+        next->quota = quota;
+        PublishLocked(std::move(next));
     }
 
     // Stops the stream with a Malformed (or other) error.
@@ -931,8 +983,12 @@ private:
             error.kind = error.code == "quota_exceeded" ? ErrorKind::QuotaExceeded
                     : error.code == "rate_limited"      ? ErrorKind::RateLimited
                                                         : ErrorKind::Server;
+            // the count after the failure: a turn refunded by the service is back to its count before the message
+            Quota quota;
+            const json::Value* quotaValue = data.Find("quota");
+            state->errorQuota = quotaValue != nullptr && detail::ReadQuota(*quotaValue, &quota);
             state->failed = true;
-            Fail(generation, std::move(error));
+            Fail(generation, std::move(error), state->errorQuota ? &quota : nullptr);
             return false;
         }
         if (type == "turn") {
@@ -960,6 +1016,7 @@ private:
             next->status = Status::Streaming;
             if (hasQuota) {
                 next->quota = quota;
+                state->turnQuota = true;
             }
             if (continuedTurn.empty() && !state->sawTurn) {
                 Turn turn;

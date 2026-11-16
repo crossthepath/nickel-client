@@ -4,6 +4,7 @@
 // - tool_use -> AwaitingTools -> SubmitToolResults (and its refusals) -> the same turn continued;
 // - 429 quota_exceeded / rate_limited with Retry-After (Send blocked meanwhile), 401, 403, 400;
 // - malformed and oversized events, unknown events ignored, a stream without done, an error event, caps on text;
+// - the quota after a failed turn: the error event's (a refunded turn), else GET /status once;
 // - Cancel in the middle of a stream; Stop; the host policy and NICKEL_AI_LOCAL_SERVER rule;
 // - a step left pending on the server (Cancel while tools wait, a failed tool-results post) and its 409 conflict;
 // - the install key reaches the server's Authorization header and nowhere else (log lines, snapshots).
@@ -230,6 +231,13 @@ private:
 
     void Route(SOCKET client, const Seen& request) {
         const std::string prefix = "/api/ai/v1";
+        if (request.method == "GET" && request.path == prefix + "/status") {
+            // the service's count, as GET /status reports it (a failed turn already given back)
+            Send(client, Reply("200 OK", "Content-Type: application/json\r\n",
+                                 "{\"enabled\":true,\"quota\":{\"used\":6,\"limit\":25,\"reset_at\":"
+                                 "\"2026-11-17T00:00:00Z\"},\"prompt_version\":\"v1\"}"));
+            return;
+        }
         if (request.method != "POST" || request.path.rfind(prefix, 0) != 0) {
             Send(client, Reply("404 Not Found", "", ""));
             return;
@@ -348,6 +356,17 @@ private:
                                            "{\"code\":\"model_unavailable\",\"message\":\"Nickel AI cannot answer "
                                            "right now.\"}"),
                                    Done("end_turn")});
+        } else if (message == "error-refund") {
+            // the service of today: the turn counted the message (used 5), failed before any output and gave it back
+            Stream(client, {TurnEvent("t-r", "c-1", 5),
+                                   Event("error",
+                                           "{\"code\":\"model_unavailable\",\"message\":\"Busy.\",\"retry_after\":1,"
+                                           "\"quota\":{\"used\":4,\"limit\":25,"
+                                           "\"reset_at\":\"2026-11-17T00:00:00Z\"}}")});
+        } else if (message == "error-old") {
+            // an older service: no quota in the error event; GET /status says 6
+            Stream(client, {TurnEvent("t-o", "c-1", 7),
+                                   Event("error", "{\"code\":\"model_unavailable\",\"message\":\"Busy.\"}")});
         } else if (message == "big-event") {
             Stream(client, {TurnEvent("t-x", "c-1", 1),
                                    Event("text", "{\"delta\":\"" + std::string(6000, 'z') + "\"}"), Done("end_turn")});
@@ -801,6 +820,52 @@ void MalformedStreams(TestServer& server) {
             "max_tokens ends the turn with its reason");
 }
 
+size_t StatusRequests(TestServer& server) {
+    size_t count = 0;
+    for (const Seen& seen : server.Requests()) {
+        count += seen.method == "GET" && seen.path == "/api/ai/v1/status";
+    }
+    return count;
+}
+
+// A turn that fails before any output is given back by the service: the quota line must go back too ("24 left today"
+// stayed after "Nickel AI is busy right now").
+void QuotaAfterFailure(TestServer& server) {
+    Fixture f(server);
+    AssistantClient client(f.config, &f.identity);
+    size_t before = StatusRequests(server);
+    Snapshot snap = SendAndWait(client, "error-refund");
+    Check(snap->status == Status::Failed && snap->error.code == "model_unavailable" && snap->quota.used == 4
+                    && snap->quota.limit == 25 && snap->quota.resetAt == "2026-11-17T00:00:00Z",
+            "an error event's quota replaces the turn event's (the refunded count)");
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    Check(StatusRequests(server) == before && client.Snap()->quota.used == 4,
+            "with the quota in the error event, GET /status is not asked");
+
+    before = StatusRequests(server);
+    snap = SendAndWait(client, "error-old");
+    Check(snap->status == Status::Failed && snap->error.code == "model_unavailable", "an error event without quota");
+    snap = WaitFor(client, [](const Conversation& c) { return c.quota.used == 6; });
+    Check(snap->quota.used == 6 && snap->quota.limit == 25 && snap->status == Status::Failed
+                    && snap->error.code == "model_unavailable" && StatusRequests(server) == before + 1,
+            "without it, GET /status is asked once after the failure and its quota is shown");
+    bool keyed = false;
+    for (const Seen& seen : server.Requests()) {
+        if (seen.method == "GET" && seen.path == "/api/ai/v1/status") {
+            keyed = HeaderValue(seen.headers, "Authorization") == kKey;
+        }
+    }
+    Check(keyed, "GET /status carries the install key like the turns");
+
+    before = StatusRequests(server);
+    snap = SendAndWait(client, "hello");
+    Check(snap->status == Status::Idle && snap->quota.used == 1, "the next turn's quota is shown again");
+    snap = SendAndWait(client, "invalid");
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    Check(snap->status == Status::Failed && StatusRequests(server) == before && client.Snap()->quota.used == 1,
+            "a refusal before the stream (no turn event) does not ask GET /status");
+}
+
 void CancelMidStream(TestServer& server) {
     Fixture f(server);
     AssistantClient client(f.config, &f.identity);
@@ -838,9 +903,15 @@ void CancelMidStream(TestServer& server) {
 void PendingSteps(TestServer& server) {
     Fixture f(server);
     AssistantClient client(f.config, &f.identity);
-    const auto lastBody = [&server]() {
+    const auto lastBody = [&server]() {  // of the last POST (a failed turn may be followed by GET /status)
         json::Value body;
-        json::Parse(server.Requests().back().body, &body);
+        const std::vector<Seen> seen = server.Requests();
+        for (auto it = seen.rbegin(); it != seen.rend(); ++it) {
+            if (it->method == "POST") {
+                json::Parse(it->body, &body);
+                break;
+            }
+        }
         return body;
     };
 
@@ -965,6 +1036,7 @@ int main() {
     ToolFlow(server);
     ErrorAnswers(server);
     MalformedStreams(server);
+    QuotaAfterFailure(server);
     CancelMidStream(server);
     PendingSteps(server);
     Identity(server);

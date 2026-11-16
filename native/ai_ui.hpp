@@ -859,18 +859,26 @@ struct UiRect {
     bool Overlaps(const UiRect& o) const { return x < o.Right() && o.x < Right() && y < o.Bottom() && o.y < Bottom(); }
 };
 
+// The sides of the bubble its window takes.
+struct ChatSides {
+    bool above = true;    // above the bubble (else below)
+    bool leftward = true; // its right edge on the bubble's: it extends to the left (else from the bubble's left edge)
+};
+
 struct BubbleLayout {
     UiRect bubble;
     UiRect window;
-    bool bubbleInSidebar = false; // no room left of the menu: the bubble sits in the sidebar's bottom-left corner
-    bool windowOverMenu = false;  // no room left of the menu for the window: it covers the menu's left part
+    ChatSides sides;
+    bool moved = false;           // the player's place (PlaceBubbleAt), not the default one beside the menu
+    bool bubbleInSidebar = false; // default place, no room left of the menu: the bubble sits in the sidebar's corner
+    bool windowOverMenu = false;  // the window covers part of the menu
 };
 
-// `menu` is the menu window on screen (pixels), `scale` the menu's scale. The bubble sits just outside the menu's left
-// edge near its bottom, or inside the sidebar's bottom-left corner when the screen has no room for it. The window opens
-// above the bubble, on the left: its right edge on the bubble's (left of the menu) when it fits, otherwise from the
-// screen's left margin (over the menu's left part); in the sidebar case its left edge is the bubble's. It never covers
-// the bubble unless the screen is shorter than its minimum height.
+// `menu` is the menu window on screen (pixels), `scale` the menu's scale. The default place, while the player never
+// moved the bubble: just outside the menu's left edge near its bottom, or inside the sidebar's bottom-left corner when
+// the screen has no room for it. The window opens above the bubble, on the left: its right edge on the bubble's (left
+// of the menu) when it fits, otherwise from the screen's left margin (over the menu's left part); in the sidebar case
+// its left edge is the bubble's. It never covers the bubble unless the screen is shorter than its minimum height.
 inline BubbleLayout PlaceBubble(const UiRect& menu, float scale, float screenW, float screenH) {
     BubbleLayout out;
     const float size = kBubbleSize * scale, gap = kBubbleGap * scale, margin = kScreenMargin;
@@ -895,9 +903,161 @@ inline BubbleLayout PlaceBubble(const UiRect& menu, float scale, float screenW, 
     float x = out.bubbleInSidebar ? out.bubble.x : out.bubble.Right() - w;
     x = std::max(margin, std::min(x, screenW - margin - w));
     out.window = {x, y, w, h};
+    out.sides = {true, !out.bubbleInSidebar};
     out.windowOverMenu = out.window.Overlaps(menu);
     return out;
 }
+
+// ---- the player's place: the bubble dragged anywhere, the window following it
+
+// A press that travels further than this (screen pixels) moves the bubble or the window; a shorter one is a click.
+constexpr float kDragThreshold = 4;
+
+// The window beside a bubble placed by the player: above or below it, extending left or right of it, on the sides
+// `prefer` (last frame's) while they have room, else on the sides with room (the larger room when neither has all of
+// it), always inside the screen's margin. Its height shrinks to the room down to its minimum; below that it covers the
+// bubble rather than leave the screen (its close button still closes it).
+inline UiRect PlaceChatWindow(const UiRect& bubble, float scale, float screenW, float screenH, ChatSides prefer,
+                              ChatSides* chosen) {
+    const float gap = kBubbleGap * scale, margin = kScreenMargin;
+    const float w = std::min(kChatWidth * scale, std::max(0.f, screenW - 2 * margin));
+    const float full = std::min(kChatHeight * scale, std::max(0.f, screenH - 2 * margin));
+    const float shortest = std::min(full, kChatMinHeight * scale);
+    const float roomAbove = bubble.y - gap - margin, roomBelow = screenH - margin - bubble.Bottom() - gap;
+    const float roomLeft = bubble.Right() - margin, roomRight = screenW - margin - bubble.x;
+    ChatSides sides;
+    const float preferredV = prefer.above ? roomAbove : roomBelow, otherV = prefer.above ? roomBelow : roomAbove;
+    sides.above = preferredV >= full || (otherV < full && preferredV >= otherV) ? prefer.above : !prefer.above;
+    const float preferredH = prefer.leftward ? roomLeft : roomRight, otherH = prefer.leftward ? roomRight : roomLeft;
+    sides.leftward = preferredH >= w || (otherH < w && preferredH >= otherH) ? prefer.leftward : !prefer.leftward;
+    const float room = sides.above ? roomAbove : roomBelow;
+    float h = full, y = margin;
+    if (room >= shortest) {
+        h = std::min(full, room);
+        y = sides.above ? bubble.y - gap - h : bubble.Bottom() + gap;
+    }
+    float x = sides.leftward ? bubble.Right() - w : bubble.x;
+    x = std::max(margin, std::min(x, screenW - margin - w));
+    y = std::max(margin, std::min(y, screenH - margin - h));
+    if (chosen != nullptr) {
+        *chosen = sides;
+    }
+    return {x, y, w, h};
+}
+
+// The bubble whose centre is at (fx, fy), fractions of the screen's width and height (how its place is kept, so that it
+// survives other window sizes), kept inside the screen's margin, and its window.
+inline BubbleLayout PlaceBubbleAt(float fx, float fy, float scale, float screenW, float screenH,
+                                  ChatSides prefer = {}) {
+    BubbleLayout out;
+    out.moved = true;
+    const float size = kBubbleSize * scale, margin = kScreenMargin;
+    const float x = std::clamp(fx, 0.f, 1.f) * screenW - size / 2, y = std::clamp(fy, 0.f, 1.f) * screenH - size / 2;
+    out.bubble = {std::max(margin, std::min(x, screenW - margin - size)),
+                  std::max(margin, std::min(y, screenH - margin - size)), size, size};
+    out.window = PlaceChatWindow(out.bubble, scale, screenW, screenH, prefer, &out.sides);
+    return out;
+}
+
+// The fractions PlaceBubbleAt takes for a bubble at `bubble` on this screen.
+inline void BubbleFraction(const UiRect& bubble, float screenW, float screenH, float* fx, float* fy) {
+    *fx = screenW > 0 ? std::clamp((bubble.x + bubble.w / 2) / screenW, 0.f, 1.f) : .5f;
+    *fy = screenH > 0 ? std::clamp((bubble.y + bubble.h / 2) / screenH, 0.f, 1.f) : .5f;
+}
+
+// The bubble dragged by (dx, dy) from where the press began; its window follows (and may change sides).
+inline BubbleLayout DragBubble(const BubbleLayout& from, float dx, float dy, float scale, float screenW,
+                               float screenH) {
+    UiRect moved = from.bubble;
+    moved.x += dx;
+    moved.y += dy;
+    float fx = 0, fy = 0;
+    BubbleFraction(moved, screenW, screenH, &fx, &fy);
+    return PlaceBubbleAt(fx, fy, scale, screenW, screenH, from.sides);
+}
+
+// The window dragged by its header by (dx, dy): the bubble and the window move together, as one, and stop at the
+// screen's margin (the window does not change sides under the mouse).
+inline BubbleLayout DragTogether(const BubbleLayout& from, float dx, float dy, float screenW, float screenH) {
+    const float margin = kScreenMargin;
+    const float left = std::min(from.bubble.x, from.window.x), top = std::min(from.bubble.y, from.window.y);
+    const float right = std::max(from.bubble.Right(), from.window.Right());
+    const float bottom = std::max(from.bubble.Bottom(), from.window.Bottom());
+    dx = std::max(margin - left, std::min(dx, screenW - margin - right));
+    dy = std::max(margin - top, std::min(dy, screenH - margin - bottom));
+    BubbleLayout out = from;
+    out.moved = true;
+    out.bubbleInSidebar = false;
+    out.bubble.x += dx;
+    out.bubble.y += dy;
+    out.window.x += dx;
+    out.window.y += dy;
+    return out;
+}
+
+// The place as kept in <Nickel data>\ai\settings.ini ([ai] bubble=0.123400,0.567800); false for anything else, which
+// leaves the default place.
+inline bool ReadBubblePlace(const std::string& text, float* fx, float* fy) {
+    float x = -1, y = -1;
+    char tail = 0;
+    if (std::sscanf(text.c_str(), "%f,%f%c", &x, &y, &tail) != 2 || !(x >= 0 && x <= 1) || !(y >= 0 && y <= 1)) {
+        return false;
+    }
+    *fx = x;
+    *fy = y;
+    return true;
+}
+
+inline std::string WriteBubblePlace(float fx, float fy) {
+    char text[64];
+    std::snprintf(text, sizeof(text), "%.6f,%.6f", std::clamp(fx, 0.f, 1.f), std::clamp(fy, 0.f, 1.f));
+    return text;
+}
+
+// A press on the bubble or on the window's header: a click when it ends before travelling kDragThreshold, otherwise a
+// drag from then on (even if the mouse comes back).
+class DragGesture {
+public:
+    void Press(float x, float y) {
+        pressed_ = true;
+        dragging_ = false;
+        startX_ = x;
+        startY_ = y;
+        dx_ = dy_ = 0;
+    }
+
+    // The mouse while the button is held; true once the press is a drag.
+    bool Move(float x, float y) {
+        if (!pressed_) {
+            return false;
+        }
+        dx_ = x - startX_;
+        dy_ = y - startY_;
+        if (!dragging_ && dx_ * dx_ + dy_ * dy_ > kDragThreshold * kDragThreshold) {
+            dragging_ = true;
+        }
+        return dragging_;
+    }
+
+    // The button is up: true when the press was a click.
+    bool Release() {
+        const bool click = pressed_ && !dragging_;
+        pressed_ = dragging_ = false;
+        return click;
+    }
+
+    void Cancel() { pressed_ = dragging_ = false; }
+
+    bool Pressed() const { return pressed_; }
+    bool Dragging() const { return dragging_; }
+    float DX() const { return dx_; }
+    float DY() const { return dy_; }
+
+private:
+    bool pressed_ = false;
+    bool dragging_ = false;
+    float startX_ = 0, startY_ = 0, dx_ = 0, dy_ = 0;
+};
 
 // Whether the bubble and its window show. The page (and with it the client and the install key) is created the first
 // time the window opens, never before.
@@ -998,6 +1158,13 @@ struct AiMenu {
     bool clearInput = false;
     bool focusInput = false;
     size_t seenItems = 0;
+    // Where the player put the bubble ([ai] bubble= in settings.ini, fractions of the screen); default place otherwise.
+    bool placed = false;
+    float placeX = 0, placeY = 0;
+    nickel::ai::ChatSides sides;               // the window's sides last frame, kept while they have room
+    nickel::ai::DragGesture bubbleDrag;        // a press on the bubble: a click toggles the window, a drag moves it
+    nickel::ai::DragGesture headerDrag;        // a press on the window's header: a drag moves both
+    nickel::ai::BubbleLayout dragFrom;         // the layout when that press began
 };
 
 // Never destroyed, like PUBLIC's client: the overlay has no unload path, and a destructor at process exit would join the
@@ -1020,6 +1187,8 @@ void AiShutdown() {
     m.bubble.Reset();
     m.input[0] = 0;
     m.seenItems = 0;
+    m.bubbleDrag.Cancel(); // the place itself is kept
+    m.headerDrag.Cancel();
 }
 
 // The Settings toggle and Reset all are the only callers. Turning it off never creates the file.
@@ -1045,6 +1214,15 @@ void AiTick() {
     if (!m.settingRead) {
         m.settingRead = true;
         AiOption().value = GetPrivateProfileIntW(L"ai", L"enabled", 0, AiSettingPath().c_str()) == 1;
+        wchar_t place[64] = {};
+        GetPrivateProfileStringW(L"ai", L"bubble", L"", place, 64, AiSettingPath().c_str());
+        m.placed = nickel::ai::ReadBubblePlace(Utf8(place), &m.placeX, &m.placeY);
+        // offline review (probe only): Nickel AI on in memory, its window open
+        char value[8] = {};
+        if (OwnProbe() && GetEnvironmentVariableA("NICKEL_REVIEW_AI", value, sizeof(value))) {
+            AiOption().value = true;
+            m.bubble.Open();
+        }
     }
     if (!AiOption().value && m.created) {
         AiShutdown();
@@ -1235,11 +1413,74 @@ float DrawAiCard(ImDrawList* d, nickel::ai::ChatPage& page, const nickel::ai::Pe
 
 // ---- the bubble and the chat window
 
-// The bubble and window of this frame from the menu's place on screen; DrawMenu asks before it draws anything, so the
-// sidebar can keep room for a bubble placed inside it and the menu ignores the mouse over the bubble or the window.
+// Keeps where the player put the bubble ([ai] bubble= in settings.ini, fractions of the screen), or forgets it
+// (`placed` false: the default place beside the menu again).
+void AiKeepPlace(bool placed, float fx, float fy) {
+    AiMenu& m = Ai();
+    m.placed = placed;
+    m.placeX = fx;
+    m.placeY = fy;
+    const std::wstring path = AiSettingPath();
+    CreateDirectoryW(path.substr(0, path.find_last_of(L"\\/")).c_str(), nullptr);
+    WritePrivateProfileStringW(L"ai", L"bubble", placed ? Wide(nickel::ai::WriteBubblePlace(fx, fy)).c_str() : nullptr,
+                               path.c_str());
+}
+
+// The bubble and window of this frame: dragged, at the player's place, or beside the menu (from the menu's place on
+// screen) while never moved; always inside the screen, whatever its size this frame. DrawMenu asks before it draws
+// anything, so the sidebar can keep room for a bubble placed inside it and the menu ignores the mouse over the bubble
+// or the window.
 nickel::ai::BubbleLayout AiLayout(ImVec2 origin, float s) {
+    namespace ai = nickel::ai;
+    AiMenu& m = Ai();
     const ImVec2 screen = ImGui::GetIO().DisplaySize;
-    return nickel::ai::PlaceBubble({origin.x, origin.y, menuW * s, menuH * s}, s, screen.x, screen.y);
+    const ai::UiRect menu{origin.x, origin.y, menuW * s, menuH * s};
+    ai::BubbleLayout place;
+    if (m.headerDrag.Dragging()) {
+        place = ai::DragTogether(m.dragFrom, m.headerDrag.DX(), m.headerDrag.DY(), screen.x, screen.y);
+    } else if (m.bubbleDrag.Dragging()) {
+        place = ai::DragBubble(m.dragFrom, m.bubbleDrag.DX(), m.bubbleDrag.DY(), s, screen.x, screen.y);
+    } else if (m.placed) {
+        place = ai::PlaceBubbleAt(m.placeX, m.placeY, s, screen.x, screen.y, m.sides);
+    } else {
+        place = ai::PlaceBubble(menu, s, screen.x, screen.y);
+    }
+    place.windowOverMenu = place.window.Overlaps(menu);
+    m.sides = place.sides;
+    return place;
+}
+
+// The end of a press on the bubble or the header (the mouse button is up): a drag keeps the new place, a click on the
+// bubble toggles the window. While the button is held, the drag follows the mouse.
+void AiDragTick(const nickel::ai::BubbleLayout& place, float s) {
+    namespace ai = nickel::ai;
+    AiMenu& m = Ai();
+    const ImGuiIO& io = ImGui::GetIO();
+    for (ai::DragGesture* gesture : {&m.bubbleDrag, &m.headerDrag}) {
+        if (!gesture->Pressed()) {
+            continue;
+        }
+        if (io.MouseDown[0]) {
+            if (ImGui::IsMousePosValid()) {
+                gesture->Move(io.MousePos.x, io.MousePos.y);
+            }
+            continue;
+        }
+        if (gesture->Dragging()) {
+            const float w = io.DisplaySize.x, h = io.DisplaySize.y;
+            const ai::BubbleLayout last = gesture == &m.headerDrag
+                                                  ? ai::DragTogether(m.dragFrom, gesture->DX(), gesture->DY(), w, h)
+                                                  : ai::DragBubble(m.dragFrom, gesture->DX(), gesture->DY(), s, w, h);
+            float fx = 0, fy = 0;
+            ai::BubbleFraction(last.bubble, io.DisplaySize.x, io.DisplaySize.y, &fx, &fy);
+            AiKeepPlace(true, fx, fy);
+            m.sides = last.sides;
+        }
+        const bool click = gesture->Release();
+        if (click && gesture == &m.bubbleDrag && place.bubble.Contains(io.MousePos.x, io.MousePos.y)) {
+            m.bubble.Click();
+        }
+    }
 }
 
 // True while the mouse is over the bubble or the open chat window: the menu under them must not start a drag or resize.
@@ -1381,11 +1622,13 @@ void DrawAiInput(AiMenu& m, ImVec2 origin, float W, float H, float s, float a) {
     }
 }
 
-// The chat window: header (mark, "Nickel AI", quota, New chat, close), the conversation, the input.
-void DrawAiWindow(const nickel::ai::UiRect& rect, float s, float opacity, ImTextureID logo) {
+// The chat window: header (mark, "Nickel AI", quota, New chat, close), the conversation, the input. Dragging the
+// header's free part moves the window and the bubble together; a double-click on it puts both back beside the menu.
+void DrawAiWindow(const nickel::ai::BubbleLayout& place, float s, float opacity, ImTextureID logo) {
     namespace ai = nickel::ai;
     AiMenu& m = Ai();
     ai::ChatPage& page = *m.page;
+    const ai::UiRect& rect = place.window;
     const float W = rect.w / s, H = rect.h / s, headH = 58;
     const ImVec2 origin(rect.x, rect.y);
     auto P = [&](float x, float y) {
@@ -1400,7 +1643,9 @@ void DrawAiWindow(const nickel::ai::UiRect& rect, float s, float opacity, ImText
     WindowFont(s * 13.5f * FontEmFactor);
     auto* d = ImGui::GetWindowDrawList();
     const float radius = 16 * s;
-    d->AddRectFilled(origin, P(W, H), Rgba(15, 15, 20, .98f * opacity), radius);
+    // opaque: at 98 % the HUD and the game showed through (a Keystrokes box drawn under the window looked like an
+    // empty grey rectangle in the conversation)
+    d->AddRectFilled(origin, P(W, H), Rgba(15, 15, 20, opacity), radius);
     d->AddRect(origin, P(W, H), Rgba(26, 26, 33, opacity), radius, 0, 1 * s);
     const bool opening = m.bubble.TakeOpening();
     if (opening) {
@@ -1408,7 +1653,20 @@ void DrawAiWindow(const nickel::ai::UiRect& rect, float s, float opacity, ImText
     }
     const ai::ConversationSnapshot& conv = page.Conversation();
 
-    // ---- header
+    // ---- header (its free part, left of New chat, is the handle that moves the window and the bubble)
+    Hit("##ai-header", origin, ImVec2((W - 130) * s, headH * s));
+    const ImGuiIO& io = ImGui::GetIO();
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+        AiKeepPlace(false, 0, 0); // back beside the menu
+        m.sides = {};
+        m.headerDrag.Cancel();
+    } else if (ImGui::IsItemActivated()) {
+        m.headerDrag.Press(io.MousePos.x, io.MousePos.y);
+        m.dragFrom = place;
+    }
+    if (ImGui::IsItemHovered() || m.headerDrag.Dragging()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
     DrawAiMark(d, logo, P(32, headH / 2), 17 * s, Rgba(28, 28, 36, opacity), opacity);
     Label(d, semibold, 15 * s, P(58, 12), "Nickel AI", Rgba(255, 255, 255, opacity));
     Label(d, regular, 12 * s, P(58, 32), page.QuotaLine().c_str(), Rgba(148, 148, 160, opacity));
@@ -1576,7 +1834,7 @@ void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity,
                      m.bubble.WindowOpen() && opened.load() && opacity > .05f);
     }
     if (m.bubble.WindowOpen() && m.page) {
-        DrawAiWindow(place.window, s, opacity, logo);
+        DrawAiWindow(place, s, opacity, logo);
     }
     // the bubble in its own small window (a few pixels larger for the ring), above the menu
     const ai::UiRect& b = place.bubble;
@@ -1588,9 +1846,17 @@ void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity,
                          | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollWithMouse
                          | (opened.load() ? 0 : ImGuiWindowFlags_NoInputs));
     auto* d = ImGui::GetWindowDrawList();
-    const bool click = Hit("##ai-bubble", ImVec2(b.x, b.y), ImVec2(b.w, b.h));
+    // a press that moves past kDragThreshold drags the bubble (the window follows); a shorter one is a click
+    // (AiDragTick)
+    Hit("##ai-bubble", ImVec2(b.x, b.y), ImVec2(b.w, b.h));
     const bool over = ImGui::IsItemHovered();
-    if (over) {
+    if (ImGui::IsItemActivated()) {
+        m.bubbleDrag.Press(ImGui::GetIO().MousePos.x, ImGui::GetIO().MousePos.y);
+        m.dragFrom = place;
+    }
+    if (m.bubbleDrag.Dragging()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    } else if (over) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     }
     const float glow = Animate("ai-bubble", over ? 1.f : 0.f, ImGui::GetIO().DeltaTime);
@@ -1598,7 +1864,7 @@ void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity,
     const ImVec2 c(b.x + b.w / 2, b.y + b.h / 2);
     const float r = b.w / 2;
     d->AddCircleFilled(ImVec2(c.x, c.y + 1.5f * s), r + 1 * s, Rgba(0, 0, 0, .35f * opacity), 48); // soft shadow
-    DrawAiMark(d, logo, c, r, Rgba(15, 15, 20, .98f * opacity), opacity);
+    DrawAiMark(d, logo, c, r, Rgba(15, 15, 20, opacity), opacity);
     d->AddCircle(c, r, Rgba(26, 26, 33, opacity), 48, 1 * s);
     const float ring = std::max(glow, open ? .55f : 0.f);
     if (ring > .001f) {
@@ -1611,9 +1877,7 @@ void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity,
         d->AddCircleFilled(dot, 3.5f * s, Acc(opacity), 16);
     }
     EndWindow();
-    if (click) {
-        m.bubble.Click();
-    }
+    AiDragTick(place, s);
 }
 
 #endif // NICKEL_AI_UI_DRAW

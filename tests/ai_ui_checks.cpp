@@ -3,8 +3,9 @@
 // action tools wait for Allow / Decline on a card built by the tools (never from model text), the 2-minute timeout,
 // nothing runs while the panel is hidden, all results of a step posted once in order, cancel and new chat, error texts,
 // and the script diff. Then the chat window: the local greeting (never sent, not counted), the timeline (sides, order,
-// avatars, typing indicator, errors as centred lines), the bubble that toggles the window, where both are placed, and
-// that the sidebar has no Nickel AI entry any more.
+// avatars, typing indicator, errors as centred lines), the bubble that toggles the window, where both are placed, the
+// bubble and window dragged anywhere (click or drag, kept on screen, the place saved as fractions of the screen), the
+// quota after a refunded failure, and that the sidebar has no Nickel AI entry any more.
 #include "ai_ui.hpp"
 
 #include <cstdio>
@@ -321,6 +322,25 @@ void QuotaAndErrors() {
     c2.Fail("offline", 0, 0);
     p2.Tick(41, kNoon, true);
     Check(p2.ErrorLine().find("offline") != std::string::npos && p2.CanSend("x"), "offline: shown, retry allowed");
+
+    // A turn the service gives back: the turn event said 1 used, the failure says 0 (error event or GET /status).
+    FakeClient c3;
+    ChatPage p3(&c3, &tools);
+    p3.Tick(1, kNoon, true);
+    p3.Send("hi");
+    c3.Turn(1, 25, "2026-11-17T00:00:00Z");
+    p3.Tick(2, kNoon, true);
+    Check(p3.QuotaLine() == "24 left today", "the turn event counts the message");
+    c3.Fail("model_unavailable", 200, 0);
+    c3.snap.quota.used = 0;
+    p3.Tick(3, kNoon, true);
+    Check(p3.QuotaLine() == "25 left today" && p3.ErrorLine().find("busy") != std::string::npos,
+          "after a refunded failure the quota line goes back to the count before sending");
+    c3.snap.quota.used = 1; // GET /status answering after the error: a later snapshot of the same failure
+    ++c3.snap.revision;
+    p3.Tick(4, kNoon, true);
+    Check(p3.QuotaLine() == "24 left today" && p3.CurrentActivity() == Activity::Error,
+          "a quota that arrives after the error is shown too");
 }
 
 void ReadToolsRunAtOnce() {
@@ -840,6 +860,98 @@ void BubblePlacement() {
           "on a short screen the window fits above the bubble");
 }
 
+bool OnScreen(const UiRect& r, float w, float h) {
+    return r.x >= kScreenMargin - .01f && r.y >= kScreenMargin - .01f && r.Right() <= w - kScreenMargin + .01f
+           && r.Bottom() <= h - kScreenMargin + .01f;
+}
+
+void BubbleDragAndPlace() {
+    // a press is a click until it travels more than kDragThreshold (4 px), then a drag for good
+    DragGesture press;
+    press.Press(100, 100);
+    Check(!press.Move(102, 103) && press.Pressed() && !press.Dragging(), "3.6 px of jitter is still a click");
+    Check(press.Release() && !press.Pressed(), "released there: a click (the window toggles)");
+    press.Press(100, 100);
+    Check(press.Move(104, 103) && press.Dragging() && Near(press.DX(), 4) && Near(press.DY(), 3),
+          "5 px: a drag, which follows the mouse");
+    Check(press.Move(100, 100) && press.Dragging(), "coming back to the start does not make it a click again");
+    Check(!press.Release(), "a drag released is not a click");
+    press.Press(0, 0);
+    press.Cancel();
+    Check(!press.Pressed() && !press.Release(), "a cancelled press is neither");
+
+    // the place kept as fractions of the screen: the same spot on another window size, always on screen
+    const UiRect menu{454, 251, 1012, 578};
+    const BubbleLayout start = PlaceBubble(menu, 1, 1920, 1080);
+    BubbleLayout dragged = DragBubble(start, 1200, -500, 1, 1920, 1080);
+    Check(dragged.moved && !dragged.bubbleInSidebar && Near(dragged.bubble.x, start.bubble.x + 1200)
+              && Near(dragged.bubble.y, start.bubble.y - 500),
+          "a dragged bubble follows the mouse");
+    float fx = 0, fy = 0;
+    BubbleFraction(dragged.bubble, 1920, 1080, &fx, &fy);
+    Check(Near(fx, (dragged.bubble.x + 24) / 1920) && Near(fy, (dragged.bubble.y + 24) / 1080),
+          "its place is the centre as a fraction of the screen");
+    float rx = 0, ry = 0;
+    Check(ReadBubblePlace(WriteBubblePlace(fx, fy), &rx, &ry) && Near(rx, fx) && Near(ry, fy),
+          "settings.ini keeps the fractions ([ai] bubble=x,y)");
+    Check(!ReadBubblePlace("", &rx, &ry) && !ReadBubblePlace("1.5,0.2", &rx, &ry) && !ReadBubblePlace("0.2", &rx, &ry)
+              && !ReadBubblePlace("0.2,0.3x", &rx, &ry) && !ReadBubblePlace("nan,0.5", &rx, &ry),
+          "a missing or damaged value is the default place");
+    const BubbleLayout same = PlaceBubbleAt(fx, fy, 1, 1920, 1080);
+    Check(Near(same.bubble.x, dragged.bubble.x) && Near(same.bubble.y, dragged.bubble.y),
+          "read back, the bubble is where it was left");
+    const BubbleLayout small = PlaceBubbleAt(fx, fy, .7f, 1280, 720);
+    Check(Near(small.bubble.x + small.bubble.w / 2, fx * 1280) && Near(small.bubble.y + small.bubble.h / 2, fy * 720)
+              && Near(small.bubble.w, 48 * .7f),
+          "on a 1280 x 720 window: the same spot, at the menu's scale");
+
+    // clamping: dragged off the screen, or a window made smaller, keeps both on screen
+    BubbleLayout far = DragBubble(start, -3000, 3000, 1, 1920, 1080);
+    Check(OnScreen(far.bubble, 1920, 1080) && OnScreen(far.window, 1920, 1080) && !far.window.Overlaps(far.bubble),
+          "dragged past the bottom-left corner: the bubble stops at the margin, the window stays on screen");
+    Check(far.sides.above && !far.sides.leftward, "bottom-left: the window opens above it, to its right");
+    BubbleLayout corner = PlaceBubbleAt(0, 0, 1, 1920, 1080);
+    Check(OnScreen(corner.bubble, 1920, 1080) && OnScreen(corner.window, 1920, 1080) && !corner.sides.above
+              && !corner.sides.leftward && !corner.window.Overlaps(corner.bubble),
+          "top-left: the window opens below it, to its right");
+    corner = PlaceBubbleAt(1, 0, 1, 1920, 1080);
+    Check(!corner.sides.above && corner.sides.leftward && Near(corner.window.Right(), corner.bubble.Right())
+              && OnScreen(corner.window, 1920, 1080),
+          "top-right: below it, to its left");
+    corner = PlaceBubbleAt(1, 1, 1, 1920, 1080);
+    Check(corner.sides.above && corner.sides.leftward && Near(corner.window.Bottom(), corner.bubble.y - 12),
+          "bottom-right: above it, to its left");
+    const float sizes[][2] = {{1920, 1080}, {1600, 900}, {1280, 720}, {1024, 576}, {800, 450}};
+    bool kept = true;
+    for (const auto& screen : sizes) {
+        for (float x : {0.f, .3f, .5f, 1.f}) {
+            for (float y : {0.f, .5f, 1.f}) {
+                const BubbleLayout p = PlaceBubbleAt(x, y, .7f, screen[0], screen[1]);
+                kept &= OnScreen(p.bubble, screen[0], screen[1]) && OnScreen(p.window, screen[0], screen[1]);
+            }
+        }
+    }
+    Check(kept, "every saved place, on every window size, keeps the bubble and the window inside the screen");
+
+    // the window keeps its sides while they have room (no flip from one frame to the next)
+    BubbleLayout middle = PlaceBubbleAt(.5f, .5f, 1, 1920, 1080, ChatSides{false, false});
+    Check(!middle.sides.above && !middle.sides.leftward && Near(middle.window.y, middle.bubble.Bottom() + 12)
+              && Near(middle.window.x, middle.bubble.x),
+          "in the middle of the screen the window stays on the sides it had");
+
+    // dragging the window by its header moves both, as one, and stops at the margin
+    const BubbleLayout together = DragTogether(start, 300, 200, 1920, 1080);
+    Check(Near(together.bubble.x - start.bubble.x, 300) && Near(together.window.x - start.window.x, 300)
+              && Near(together.window.y - start.window.y, 200) && together.moved,
+          "a header drag moves the bubble and the window by the same amount");
+    const BubbleLayout stopped = DragTogether(start, -5000, -5000, 1920, 1080);
+    Check(OnScreen(stopped.window, 1920, 1080) && OnScreen(stopped.bubble, 1920, 1080)
+              && Near(std::min(stopped.window.x, stopped.bubble.x), kScreenMargin)
+              && Near(std::min(stopped.window.y, stopped.bubble.y), kScreenMargin)
+              && Near(stopped.window.x - stopped.bubble.x, start.window.x - start.bubble.x),
+          "dragged past the top-left corner: both stop at the margin, still together");
+}
+
 std::string SourceFile(const char* relative) {
     std::ifstream file(std::string(NICKEL_SOURCE_DIR) + "/" + relative, std::ios::binary);
     std::stringstream text;
@@ -887,6 +999,7 @@ int main() {
     ErrorsAsSystemLines();
     BubbleToggles();
     BubblePlacement();
+    BubbleDragAndPlace();
     NoSidebarEntry();
     std::printf("%s (%d failed)\n", failed == 0 ? "all ai ui checks passed" : "ai ui checks failed", failed);
     return failed == 0 ? 0 : 1;

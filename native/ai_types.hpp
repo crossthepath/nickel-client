@@ -5,7 +5,10 @@
 //   POST /turns                          {"conversation_id", "message" (1..4000), "client": {...}} -> SSE
 //   POST /turns/{turn_id}/tool-results   {"results": [{"tool_use_id", "content" (JSON text, <= 16 KB), "is_error"}]}
 //   SSE events: turn {turn_id, conversation_id, quota {used, limit, reset_at}}, text {delta},
-//               tool_use {id, name, input}, done {stop_reason}, error {code, message, retry_after?}
+//               tool_use {id, name, input}, done {stop_reason}, error {code, message, retry_after?, quota?}
+//   GET /status                          {enabled, quota {used, limit, reset_at}, prompt_version}
+//   A turn that fails before any of its output reached the player is not counted: the error's quota (or, from an
+//   older service, GET /status asked after the failure) gives the count back.
 //
 // ToolUse, ToolResult and the protocol limits are shared with the network client (ai_client.hpp includes this file).
 // The panel only sees two small interfaces: ChatClient (the conversation, read as a snapshot each frame) and

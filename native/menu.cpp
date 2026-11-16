@@ -8,6 +8,7 @@
 // In-game menu (toggled with Right Shift): module list, settings panel, Home/Settings/Configs screens and the HUD.
 // Layout sizes below are in menu units (1012 x 578 at scale 1). Setting definitions come from generated_catalog.hpp.
 #include "menu.hpp"
+#include "menu_fit.hpp"   // the menu's scale, size and place for the game window's size
 #include "crosshair_pattern.hpp"
 #include <shellapi.h>
 #include <winhttp.h>
@@ -117,7 +118,7 @@ float progress=0;int category=0,tab=0,selected=-1,listening=-1;char search[160]{
 ImFont *regular{},*bold{},*semibold{},*icons{},*tiny{};
 // Menu geometry, adjustable with the mouse: drag the title to move, drag an edge to resize that side,
 // drag a corner to change the overall scale, double-click the title to reset.
-float menuW=1012,menuH=578,menuScale=1,menuX=-1,menuY=-1,dragW=0,dragH=0,dragScale=1,dragX=0,dragY=0;int dragMode=0;ImVec2 dragStart;std::map<std::string,float> animation;std::map<std::string,std::string> keybinds;std::map<std::string,int> keycodes;struct Notice{int kind;std::string title,body;};std::vector<Notice> notices;   // pending notifications (5 = module toggled by key, 7 = configs)
+float menuW=1012,menuH=578,menuWantW=1012,menuWantH=578,menuScale=1,menuX=-1,menuY=-1,dragW=0,dragH=0,dragScale=1,dragX=0,dragY=0;int dragMode=0;ImVec2 dragStart;std::map<std::string,float> animation;std::map<std::string,std::string> keybinds;std::map<std::string,int> keycodes;struct Notice{int kind;std::string title,body;};std::vector<Notice> notices;   // pending notifications (5 = module toggled by key, 7 = configs)
 bool mapOpen=false,worldCameraWanted=false;bool waypointsOpen=false;HWND gameWindowForKeys=nullptr;const char* particleOptions[15]={"All Particles","Critical Hit","Sharpness","Totem","Potion Effects","Smoke","Flames","Explosions","Water Splashes","Bubbles","Portals","Hearts","Enchanting Table","Block Breaking","Redstone"};   // full-screen MiniMap view (World Map Key)
 #include "script_engine_api.hpp"   // the Luau engine, as the menu and the hooks see it (defined in script_engine.hpp)
 ScriptHost& MenuScriptHostInstance();   // what the engine may use of the menu (menu_script_host.hpp)
@@ -334,7 +335,7 @@ void InitializeMenu(HMODULE module){
  auto acronyms=[](std::string& name){for(const char* word:{"Esp","Fov","Fps","Ip","Hud","Tps","Xp"}){size_t n=strlen(word),at=0;while((at=name.find(word,at))!=std::string::npos){bool start=at==0||name[at-1]==' ',end=at+n==name.size()||name[at+n]==' ';if(start&&end)for(size_t i=0;i<n;++i)name[at+i]=(char)std::toupper((unsigned char)name[at+i]);at+=n;}}};
  for(auto& item:modules){acronyms(item.name);for(auto& setting:item.settings)acronyms(setting.name);}
  {auto number=[&](const wchar_t* key,float fallback){wchar_t text[32]{};GetPrivateProfileStringW(L"menu",key,L"",text,32,configPath.c_str());wchar_t* end{};double value=wcstod(text,&end);return text[0]&&end&&!*end?(float)value:fallback;};
-  menuW=std::clamp(number(L"width",1012),820.f,1600.f);menuH=std::clamp(number(L"height",578),430.f,1000.f);menuScale=std::clamp(number(L"scale",1),.6f,1.8f);menuX=number(L"x",-1);menuY=number(L"y",-1);}
+  menuW=menuWantW=std::clamp(number(L"width",1012),820.f,1600.f);menuH=menuWantH=std::clamp(number(L"height",578),430.f,1000.f);menuScale=std::clamp(number(L"scale",1),.6f,1.8f);menuX=number(L"x",-1);menuY=number(L"y",-1);}
  // Setting options missing from the catalogue (Block Hit); Item Inspect's default key is V.
  for(auto& item:modules)if(item.id=="block_hit")for(auto& setting:item.settings)if(setting.id=="animation"){setting.kind="enum";setting.options={"1.7","1.8","Exhibition"};setting.text="1.7";}
  // Nuker mode (Nickel): Auto breaks around the player all the time, On Break only around a block the player breaks.
@@ -2904,17 +2905,14 @@ void DrawMenu(float opacity,ImTextureID logo){
  DrawHud(logo);
  if(waypointsOpen){DrawWaypointManager(opacity);return;}
  if(opacity<=0||hudEditing||mapOpen)return;auto& io=ImGui::GetIO();
- // The menu is never enlarged beyond scale 1; it only shrinks in windows smaller than 1101 x 618.
- const float fit=std::min({io.DisplaySize.x/1101.f,io.DisplaySize.y/618.f,1.f});
- // the menu always fits the screen (8 px margin): scale first, then width and height, then position
- {const float room=8,wide=io.DisplaySize.x-2*room,tall=io.DisplaySize.y-2*room;if(fit>0&&menuW>0&&menuH>0)menuScale=std::min(menuScale,std::max(.6f,std::min(wide/(menuW*fit),tall/(menuH*fit))));
-  const float k=fit*menuScale;if(k>0){menuW=std::min(menuW,std::max(820.f,wide/k));menuH=std::min(menuH,std::max(430.f,tall/k));}}
- const float s=fit*menuScale;if(s<=0)return;
+ // Scale, size and place for this window (menu_fit.hpp): the menu, its side panel and the Nickel AI bubble shrink
+ // together in a small window (text never below 0.7), and are drawn as before from 1920 x 1080 up. The player's own
+ // size, scale and place (menuWantW, menuWantH, menuScale, menuX, menuY) are kept; menuW and menuH are this frame's.
+ const bool panel=(tab<6&&selected>=0)||tab==7||tab==8||tab==9||PublicTab(tab)||(tab==6&&profileOpen>=0);
+ const nickel::menu::MenuFit fitted=nickel::menu::FitMenu({io.DisplaySize.x,io.DisplaySize.y,menuWantW,menuWantH,menuScale,menuX,menuY,panel,dragMode!=0});
+ const float s=fitted.s,base=fitted.base;if(s<=0)return;menuW=fitted.w;menuH=fitted.h;
  const float areaW=menuW-279,cardW=(areaW-10)/2;
- ImVec2 origin(std::floor((io.DisplaySize.x-menuW*s)/2),std::floor((io.DisplaySize.y-menuH*s)/2));
- if(menuX>=0&&menuY>=0){origin.x=std::floor(std::clamp(menuX,8.f,std::max(8.f,io.DisplaySize.x-8-menuW*s)));origin.y=std::floor(std::clamp(menuY,8.f,std::max(8.f,io.DisplaySize.y-8-menuH*s)));}
- // keep the settings panel on screen: in a narrow window the menu shifts left
- const bool panel=(tab<6&&selected>=0)||tab==7||tab==8||PublicTab(tab);if(panel&&!dragMode&&origin.x+(menuW+19+297)*s>io.DisplaySize.x-8)origin.x=std::max(8.f,std::floor(io.DisplaySize.x-8-(menuW+19+297)*s));
+ const ImVec2 origin(fitted.x,fitted.y);   // centred or the player's place, inside an 8 px margin; left of a side panel
  auto P=[&](float x,float y){return ImVec2(origin.x+x*s,origin.y+y*s);};
  const nickel::ai::BubbleLayout aiPlace=AiLayout(origin,s);   // Nickel AI bubble and chat window, left of the menu (ai_ui.hpp)
  ImGui::SetNextWindowPos(origin);ImGui::SetNextWindowSize(ImVec2(menuW*s,menuH*s));ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(0,0));ImGui::PushStyleVar(ImGuiStyleVar_Alpha,opacity);
@@ -2929,22 +2927,23 @@ void DrawMenu(float opacity,ImTextureID logo){
   if(inside){if(close(mouse.x,origin.x))edge|=1;if(close(mouse.x,corner.x))edge|=2;if(close(mouse.y,origin.y))edge|=4;if(close(mouse.y,corner.y))edge|=8;}
   const bool header=inside&&!edge&&mouse.y<origin.y+64*s&&mouse.x>origin.x+244*s&&mouse.x<corner.x-(tab==5?425:tab<6?270:tab==7||tab==8||PublicTab(tab)?296:140)*s;const int mode=dragMode?dragMode:edge;
   if(mode&&mode!=16)ImGui::SetMouseCursor(((mode&3)&&(mode&12))?((((mode&1)&&(mode&4))||((mode&2)&&(mode&8)))?ImGuiMouseCursor_ResizeNWSE:ImGuiMouseCursor_ResizeNESW):(mode&3)?ImGuiMouseCursor_ResizeEW:ImGuiMouseCursor_ResizeNS);
-  auto keep=[&]{auto write=[&](const wchar_t* key,float value){WritePrivateProfileStringW(L"menu",key,std::to_wstring(value).c_str(),configPath.c_str());};write(L"width",menuW);write(L"height",menuH);write(L"scale",menuScale);write(L"x",menuX);write(L"y",menuY);};
-  if(header&&ImGui::IsMouseDoubleClicked(0)){menuW=1012;menuH=578;menuScale=1;menuX=menuY=-1;dragMode=0;keep();}
-  else if(!dragMode&&io.MouseClicked[0]&&(edge||header)){dragMode=edge?edge:16;dragStart=mouse;dragW=menuW;dragH=menuH;dragScale=menuScale;dragX=origin.x;dragY=origin.y;menuX=origin.x;menuY=origin.y;}
+  auto keep=[&]{auto write=[&](const wchar_t* key,float value){WritePrivateProfileStringW(L"menu",key,std::to_wstring(value).c_str(),configPath.c_str());};write(L"width",menuWantW);write(L"height",menuWantH);write(L"scale",menuScale);write(L"x",menuX);write(L"y",menuY);};
+  if(header&&ImGui::IsMouseDoubleClicked(0)){menuWantW=1012;menuWantH=578;menuScale=1;menuX=menuY=-1;dragMode=0;keep();}
+  else if(!dragMode&&io.MouseClicked[0]&&(edge||header)){dragMode=edge?edge:16;dragStart=mouse;dragW=menuW;dragH=menuH;dragScale=s/base;dragX=origin.x;dragY=origin.y;menuX=origin.x;menuY=origin.y;}
   if(dragMode){
    if(!io.MouseDown[0]){dragMode=0;keep();}
    else{const float dx=mouse.x-dragStart.x,dy=mouse.y-dragStart.y;
     if(dragMode==16){menuX=dragX+dx;menuY=dragY+dy;}
-    else if((dragMode&3)&&(dragMode&12)){   // corner: uniform scale, the opposite corner stays in place
-     const float width=dragW*fit*dragScale,height=dragH*fit*dragScale,roomX=(dragMode&2)?io.DisplaySize.x-8-dragX:dragX+width-8,roomY=(dragMode&8)?io.DisplaySize.y-8-dragY:dragY+height-8;
-     const float next=std::clamp(dragScale*(width+((dragMode&2)?dx:-dx))/width,.6f,std::max(.6f,std::min({1.8f,roomX/(dragW*fit),roomY/(dragH*fit)})));   // stops at the screen edges
-     menuScale=next;menuX=(dragMode&1)?dragX+width-dragW*fit*next:dragX;menuY=(dragMode&4)?dragY+height-dragH*fit*next:dragY;}
-    else{const float unit=fit*menuScale;   // edge: stretch that side only
+    else if((dragMode&3)&&(dragMode&12)){   // corner: uniform scale, the opposite corner stays in place; never below readable text
+     const float width=dragW*base*dragScale,height=dragH*base*dragScale,roomX=(dragMode&2)?io.DisplaySize.x-8-dragX:dragX+width-8,roomY=(dragMode&8)?io.DisplaySize.y-8-dragY:dragY+height-8;
+     const float lo=std::max(nickel::menu::kMinScale,nickel::menu::kMinReadableScale/base);
+     const float next=std::clamp(dragScale*(width+((dragMode&2)?dx:-dx))/width,lo,std::max(lo,std::min({nickel::menu::kMaxScale,roomX/(dragW*base),roomY/(dragH*base)})));   // stops at the screen edges
+     menuScale=next;menuX=(dragMode&1)?dragX+width-dragW*base*next:dragX;menuY=(dragMode&4)?dragY+height-dragH*base*next:dragY;}
+    else{const float unit=s;   // edge: stretch that side only
      // each side stops at the screen edge (8 px margin)
      const float maxRight=std::max(820.f,(io.DisplaySize.x-8-dragX)/unit),maxLeft=std::max(820.f,(dragX+dragW*unit-8)/unit),maxDown=std::max(430.f,(io.DisplaySize.y-8-dragY)/unit),maxUp=std::max(430.f,(dragY+dragH*unit-8)/unit);
-     if(dragMode&2)menuW=std::clamp(dragW+dx/unit,820.f,std::min(1600.f,maxRight));if(dragMode&1){const float w=std::clamp(dragW-dx/unit,820.f,std::min(1600.f,maxLeft));menuX=dragX+(dragW-w)*unit;menuW=w;}
-     if(dragMode&8)menuH=std::clamp(dragH+dy/unit,430.f,std::min(1000.f,maxDown));if(dragMode&4){const float h=std::clamp(dragH-dy/unit,430.f,std::min(1000.f,maxUp));menuY=dragY+(dragH-h)*unit;menuH=h;}}
+     if(dragMode&2)menuWantW=std::clamp(dragW+dx/unit,820.f,std::min(1600.f,maxRight));if(dragMode&1){const float w=std::clamp(dragW-dx/unit,820.f,std::min(1600.f,maxLeft));menuX=dragX+(dragW-w)*unit;menuWantW=w;}
+     if(dragMode&8)menuWantH=std::clamp(dragH+dy/unit,430.f,std::min(1000.f,maxDown));if(dragMode&4){const float h=std::clamp(dragH-dy/unit,430.f,std::min(1000.f,maxUp));menuY=dragY+(dragH-h)*unit;menuWantH=h;}}
    }
   }
  }
