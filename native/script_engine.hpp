@@ -386,6 +386,8 @@ void ScanScripts(){
  if(h==INVALID_HANDLE_VALUE&&GetLastError()==ERROR_PATH_NOT_FOUND)dirsMade=false;
  if(h!=INVALID_HANDLE_VALUE){do{std::wstring n=data.cFileName;if(n.size()>7&&!_wcsicmp(n.c_str()+n.size()-7,L".d.luau"))continue;found.push_back(n);}while(FindNextFileW(h,&data));FindClose(h);}
  std::lock_guard<std::recursive_mutex> lock(scriptGuard);
+ // An unreadable held.txt fails closed (every PUBLIC script held) and is read again at each scan (script_files.hpp).
+ ScriptHeld().Refresh();{const std::string notice=ScriptHeld().TakeNotice();if(!notice.empty())Host().Log(notice);}
  bool added=false;
  for(size_t i=0;i<scripts.size();){auto& s=*scripts[i];const std::wstring n=s.file.substr(s.file.find_last_of(L'\\')+1);if(std::find(found.begin(),found.end(),n)==found.end()){ScriptUnload(s);scripts.erase(scripts.begin()+i);}else ++i;}
  // Libraries: any change under lib/ reloads every script.

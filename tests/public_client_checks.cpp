@@ -47,6 +47,7 @@ void Check(bool ok, const char* what) {
 
 const char* const kScriptId = "7k2m9x4qa1dz";
 const char* const kGoneId = "abcdefghjkmn";
+const char* const kQuotaId = "qqqqqqqqqqqq";   // the fake server answers a report of it with 429 quota_exceeded
 const char* const kTamperedId = "23456789abcd";
 const char* const kNoDigestId = "pqrstvwxyz01";
 const char* const kConfigId = "9x8w7v6t5s4r";
@@ -79,7 +80,7 @@ std::string CardJson(const std::string& id, const char* kind, const std::string&
 std::string DetailJson() {
     return CardJson(kScriptId, "script", "Totem Reminder", 3, Sha(kScriptBytes),
             ",\"description\":\"Line one.\\nLine two.\",\"state\":\"published\",\"state_reason\":null,"
-            "\"listed\":true,\"page_url\":\"https://nickelclient.com/public/script/item-7k2m9x4qa1dz\","
+            "\"listed\":true,\"page_url\":\"https://nickelclient.com/community.html#scripts\","
             "\"versions\":[{\"number\":3,\"label\":\"1.2.0\",\"created_at\":\"2026-11-12T10:00:00.000Z\","
             "\"size\":15,\"sha256\":\"" + Sha(kScriptBytes) + "\",\"reviewed\":true,\"reviewed_at\":null,"
             "\"changelog\":\"Fixed the border.\"}]");
@@ -105,7 +106,7 @@ void ServerShapeChecks() {
     }
     Check(parsed && page.items.size() == 1 && page.dropped == 0, "the v2 server's list answer is read, item kept");
     {
-        const char* detailAnswer = R"({"id":"33tbnyankrmg","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T06:00:49.972Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"trending_score":0},"published_at":"2026-11-16T06:00:49.972Z","updated_at":"2026-11-16T06:00:49.972Z","description":"The smallest script: a module with a text setting that greets you when enabled.","listed":true,"page_url":"https://nickelclient.com/community#scripts","versions":[{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T06:00:49.972Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null,"changelog":""}],"state":"published","state_reason":null})";
+        const char* detailAnswer = R"({"id":"33tbnyankrmg","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T06:00:49.972Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"trending_score":0},"published_at":"2026-11-16T06:00:49.972Z","updated_at":"2026-11-16T06:00:49.972Z","description":"The smallest script: a module with a text setting that greets you when enabled.","listed":true,"page_url":"https://nickelclient.com/community.html#scripts","versions":[{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T06:00:49.972Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null,"changelog":""}],"state":"published","state_reason":null})";
         json::Value detailValue;
         Detail detail;
         std::string detailError;
@@ -114,6 +115,8 @@ void ServerShapeChecks() {
             std::printf("server detail refused: %s\n", detailError.c_str());
         }
         Check(detailOk && !detail.card.author.displayName.empty(), "the v2 server's item detail is read");
+        Check(detail.pageUrl == "https://nickelclient.com/community.html#scripts",
+              "the server's page_url (the community page, not under /public/) is kept");
         const char* lookupAnswer = R"({"items":[{"id":"33tbnyankrmg","kind":"script","slug":"hello","name":"Hello","summary":"The smallest script: a module with a text setting that greets you when enabled.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"NOASSERTION","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T06:00:49.972Z","size":436,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"trending_score":0},"published_at":"2026-11-16T06:00:49.972Z","updated_at":"2026-11-16T06:00:49.972Z"},{"id":"zzzzzzzzzzzz","state":"not_found"}]})";
         json::Value lookupValue;
         std::vector<LookupEntry> entries;
@@ -127,8 +130,42 @@ void ServerShapeChecks() {
     }
 }
 
+// "Open on nickelclient.com": the server's page_url when it is a page of the site, else the community page.
+void SitePageChecks() {
+    Check(SitePageUrl("https://nickelclient.com/community.html#scripts") && SitePageUrl("https://nickelclient.com/")
+                  && SitePageUrl("https://nickelclient.com/public/script/hello-7k2m9x4qa1dz"),
+          "any path of https://nickelclient.com/ is a page of the site");
+    Check(!SitePageUrl("http://nickelclient.com/community.html") && !SitePageUrl("https://nickelclient.com")
+                  && !SitePageUrl("https://nickelclient.com.example.org/") && !SitePageUrl("https://example.org/")
+                  && !SitePageUrl("https://nickelclient.com@example.org/")
+                  && !SitePageUrl("https://NICKELCLIENT.com/") && !SitePageUrl("")
+                  && !SitePageUrl("https://nickelclient.com/a b") && !SitePageUrl("https://nickelclient.com/a\"b")
+                  && !SitePageUrl("https://nickelclient.com/a\nb") && !SitePageUrl("https://nickelclient.com/a\\b"),
+          "nothing else: another scheme or host, a look-alike host, spaces, quotes, controls, backslashes");
+    Check(SitePageFor(Kind::Script, "https://nickelclient.com/community.html#scripts")
+                          == "https://nickelclient.com/community.html#scripts"
+                  && SitePageFor(Kind::Config, "https://nickelclient.com/x/y?z=1")
+                             == "https://nickelclient.com/x/y?z=1",
+          "the server's page_url is opened when it is a page of the site");
+    Check(SitePageFor(Kind::Script, "") == "https://nickelclient.com/community.html#scripts"
+                  && SitePageFor(Kind::Config, "") == "https://nickelclient.com/community.html#configs"
+                  && SitePageFor(Kind::Script, "https://example.org/")
+                             == "https://nickelclient.com/community.html#scripts",
+          "else the community page of the kind (never a made-up /public/<kind>/<slug> page)");
+    json::Value value;
+    Detail detail;
+    const std::string base = R"({"id":"7k2m9x4qa1dz","kind":"script","slug":"hello","name":"Hello","summary":"Hi.","author":{"name":"Nickel","handle":"nickel","kind":"official","verified":true},"tags":[],"license":"MIT","featured":false,"latest_version":{"number":1,"label":"","nickel_min":"","created_at":"2026-11-16T06:00:49.972Z","size":1,"sha256":"96c6e0cc11ca5bcb497ee5c053e12d97122efe0b966a8532cd96b4f4c8eef01a","reviewed":false,"reviewed_at":null},"capabilities":[],"stats":{"downloads":0,"trending_score":0},"published_at":"2026-11-16T06:00:49.972Z","updated_at":"2026-11-16T06:00:49.972Z","description":"Hi.","listed":true,"versions":[],"state":"published","state_reason":null,"page_url":)";
+    Check(json::Parse(base + "\"https://evil.example/nickelclient.com/\"}", &value) && ParseDetail(value, &detail)
+                  && detail.pageUrl.empty(),
+          "a page_url outside the site is dropped from the detail");
+    Check(json::Parse(base + "\"https://nickelclient.com/community.html#configs\"}", &value)
+                  && ParseDetail(value, &detail) && detail.pageUrl == "https://nickelclient.com/community.html#configs",
+          "a page_url on the site is kept");
+}
+
 void ModelChecks() {
     ServerShapeChecks();
+    SitePageChecks();
     int64_t ms = 0;
     Check(ParseIsoTime("2026-11-15T18:00:00.000Z", &ms) && ms == 1794765600000LL, "ISO time with milliseconds");
     Check(ParseIsoTime("1970-01-01T00:00:00Z", &ms) && ms == 0, "ISO time without a fraction");
@@ -644,12 +681,37 @@ private:
             return Json("201 Created", "{\"version\":{\"number\":2,\"state\":\"published\"}}");
         }
         if (path == "/reports" && request.method == "POST") {
+            // The server's contract (ReportCreate): item_id, reason in ReportReason, optional details up to 1000
+            // characters; any other field is refused.
             json::Value body;
-            if (!json::Parse(request.body, &body) || !body["item_id"].IsString() || !body["category"].IsString()) {
+            if (!json::Parse(request.body, &body) || !body.IsObject()) {
                 return ProblemReply("400 Bad Request", 400, "invalid");
             }
+            static const char* const kReasons[] = {"malicious", "broken", "stolen", "spam", "inappropriate", "other"};
+            bool knownReason = false;
+            for (const char* reason : kReasons) {
+                knownReason = knownReason || (body["reason"].IsString() && body["reason"].AsString() == reason);
+            }
+            bool onlyKnownFields = true;
+            for (size_t i = 0; i < body.size(); ++i) {
+                const std::string& key = body.KeyAt(i);
+                onlyKnownFields = onlyKnownFields && (key == "item_id" || key == "reason" || key == "details");
+            }
+            const json::Value* details = body.Find("details");
+            if (!body["item_id"].IsString() || !knownReason || !onlyKnownFields
+                || (details != nullptr && (!details->IsString() || details->AsString().size() > 1000))) {
+                const std::string field = !body["item_id"].IsString() ? "item_id" : !knownReason ? "reason" : "details";
+                return ProblemReply("422 Unprocessable Entity", 422, "validation_failed",
+                                    ",\"errors\":[{\"field\":\"" + field
+                                            + "\",\"code\":\"invalid\",\"message\":\"Not valid.\"}]");
+            }
+            // the server's answers: 409 already_reported, 429 quota_exceeded with Retry-After, else 202 {id}
             if (body["item_id"].AsString() == kGoneId) {
                 return ProblemReply("409 Conflict", 409, "already_reported");
+            }
+            if (body["item_id"].AsString() == kQuotaId) {
+                return ProblemReply("429 Too Many Requests", 429, "quota_exceeded", ",\"retry_after\":60",
+                                    "Retry-After: 60\r\n");
             }
             return Json("202 Accepted", "{\"id\":\"r1\"}");
         }
@@ -909,7 +971,7 @@ void DetailAndFileChecks(TestServer& server) {
                     && snapshot.detail->detail.description == "Line one.\nLine two."
                     && snapshot.detail->detail.versions.size() == 1
                     && snapshot.detail->detail.versions[0].changelog == "Fixed the border."
-                    && snapshot.detail->detail.pageUrl == "https://nickelclient.com/public/script/item-7k2m9x4qa1dz",
+                    && snapshot.detail->detail.pageUrl == "https://nickelclient.com/community.html#scripts",
             "detail fields");
 
     Check(client.Detail(kGoneId), "a removed item");
@@ -1900,14 +1962,39 @@ void PublishChecks(TestServer& server, const std::wstring& root) {
     Check(WaitSlot(client, [](const Snapshot& s) { return s.report && !s.report->loading; }), "the report answer");
     Check(client.Snap().report->outcome.Ok(), "202: reported");
     Check(json::Parse(server.LastBody("POST /api/community/v1/reports"), &body)
-                  && body["item_id"].AsString() == kScriptId && body["category"].AsString() == "malicious"
-                  && body["details"].AsString() == "Sends my chat to a webhook.",
-          "the report body");
-    Check(!client.Report(kScriptId, "boring", ""), "an unknown category is refused");
+                  && body["item_id"].AsString() == kScriptId && body["reason"].AsString() == "malicious"
+                  && body.Find("category") == nullptr && body["details"].AsString() == "Sends my chat to a webhook.",
+          "the report body: item_id, reason, details (the server's ReportCreate)");
+    Check(!client.Report(kScriptId, "boring", ""), "an unknown reason is refused");
+    Check(!client.Report(kScriptId, "rules", ""), "\"rules\" is a removal category, not a report reason: refused");
+    Check(client.Report(kScriptId, "other", "Breaks the rules."), "the menu's \"Breaks rules\" choice");
+    Check(WaitSlot(client, [](const Snapshot& s) { return s.report && !s.report->loading; }), "its answer");
+    Check(client.Snap().report->outcome.Ok()
+                  && json::Parse(server.LastBody("POST /api/community/v1/reports"), &body)
+                  && body["reason"].AsString() == "other",
+          "\"other\" is accepted by the server");
     Check(client.Report(kGoneId, "spam", ""), "a second report");
     Check(WaitSlot(client, [](const Snapshot& s) { return s.report && !s.report->loading && s.report->id == kGoneId; }),
           "its answer");
-    Check(client.Snap().report->outcome.status == Status::Conflict, "409: already reported");
+    Check(client.Snap().report->outcome.status == Status::Conflict
+                  && client.Snap().report->outcome.problem.code == "already_reported",
+          "409 already_reported: already reported");
+    // last: a 429 blocks this client's requests until its Retry-After has elapsed
+    Check(client.Report(kQuotaId, "spam", ""), "a report over the daily limit");
+    Check(WaitSlot(client,
+                   [](const Snapshot& s) { return s.report && !s.report->loading && s.report->id == kQuotaId; }),
+          "its answer");
+    Check(client.Snap().report->outcome.status == Status::RateLimited && client.Snap().report->outcome.retryAfter == 60
+                  && client.Snap().report->outcome.problem.code == "quota_exceeded",
+          "429 quota_exceeded with Retry-After: rate limited");
+    const int reports = server.Hits("POST /api/community/v1/reports");
+    Check(client.Report(kScriptId, "spam", ""), "another report while blocked");
+    Check(WaitSlot(client,
+                   [](const Snapshot& s) { return s.report && !s.report->loading && s.report->id == kScriptId; }),
+          "its answer");
+    Check(client.Snap().report->outcome.status == Status::RateLimited
+                  && server.Hits("POST /api/community/v1/reports") == reports,
+          "it waits for Retry-After without reaching the server");
 }
 
 // Publishing is final and stars are local: the client has no request that deletes, unlists or hides an item, and

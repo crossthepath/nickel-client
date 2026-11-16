@@ -219,7 +219,7 @@ pub::Snapshot PublicReviewSnapshot(int mode) {
                                  "servers you list in its settings.";
     detail->detail.versions.push_back(detail->detail.card.latest);
     detail->detail.versions[0].changelog = "Added the per-server filter.";
-    detail->detail.pageUrl = "https://nickelclient.com/public/script/review-7k2m9x4qa1dz";
+    detail->detail.pageUrl = "https://nickelclient.com/community.html#scripts";
     snap.detail = detail;
     auto source = std::make_shared<pub::FileResult>();
     source->id = ids[0];
@@ -1475,7 +1475,8 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
         }
     }
     if (m.reportFor == card.id) {
-        static const char* const kCategories[6] = {"malicious", "broken", "spam", "inappropriate", "stolen", "rules"};
+        // the API's report reasons (KnownReportReason): "Breaks rules" is sent as "other"
+        static const char* const kCategories[6] = {"malicious", "broken", "spam", "inappropriate", "stolen", "other"};
         static const char* const kLabels[6] = {
                 "Malicious", "Broken", "Spam", "Inappropriate", "Stolen", "Breaks rules"};
         note("Why should the Nickel team look at it?", Rgba(214, 214, 222, a));
@@ -1631,10 +1632,8 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
     }
     ImGui::Dummy(ImVec2(1, 8 * s));
     {
-        std::string url = detail != nullptr && detail->outcome.Ok() ? detail->detail.pageUrl : std::string();
-        if (url.rfind("https://nickelclient.com/", 0) != 0) {
-            url = std::string("https://nickelclient.com/public/") + pub::KindName(kind) + "/" + card.slug;
-        }
+        const std::string url = pub::SitePageFor(
+                kind, detail != nullptr && detail->outcome.Ok() ? detail->detail.pageUrl : std::string());
         const ImVec2 at = ImGui::GetCursorScreenPos();
         if (UiButton(c,
                      "pub-open-site",
@@ -1643,7 +1642,7 @@ void DrawPublicPanel(ImVec2 origin, float s, float opacity) {
                      width,
                      30 * U,
                      0,
-                     pub::ValidSlug(card.slug),
+                     true,
                      a,
                      s)) {
             ShellExecuteW(nullptr, L"open", Wide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);

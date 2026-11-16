@@ -160,9 +160,17 @@ inline bool ParseMissingState(std::string_view text, MissingState* out) {
     return true;
 }
 
+// Why moderation removed an item (reason_category of a 410 or a lookup).
 inline bool KnownReasonCategory(std::string_view text) {
     return text == "malicious" || text == "stolen" || text == "spam" || text == "inappropriate" || text == "broken"
             || text == "rules";
+}
+
+// The reason of a report (POST /reports "reason", ReportReason in the API): the list of KnownReasonCategory with
+// "other" instead of "rules".
+inline bool KnownReportReason(std::string_view text) {
+    return text == "malicious" || text == "broken" || text == "stolen" || text == "spam" || text == "inappropriate"
+            || text == "other";
 }
 
 // What the client knows about an installed item, joined from the install record, the lookup answer and the
@@ -234,7 +242,7 @@ struct Detail {
     std::string state;                        // "published" for the public
     std::string stateReason;
     bool listed = true;
-    std::string pageUrl;                      // https://nickelclient.com/public/..., empty when not on that site
+    std::string pageUrl;                      // https://nickelclient.com/..., empty when not on that site
 };
 
 struct Page {
@@ -877,6 +885,28 @@ inline bool ParseCard(const json::Value& value, Card* out, std::string* error = 
     return true;
 }
 
+// True for a page of the website itself: https://nickelclient.com/ followed by any path, with no space, quote, control
+// character or other character that has no place in a URL.
+inline bool SitePageUrl(std::string_view url) {
+    constexpr std::string_view site = "https://nickelclient.com/";
+    if (url.size() > 200 || url.compare(0, site.size(), site) != 0 || url.find_first_of(" \"<>\\^`{|}") != url.npos) {
+        return false;
+    }
+    return std::none_of(url.begin(), url.end(), [](char c) {
+        return static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) == 0x7f;
+    });
+}
+
+// The page "Open on nickelclient.com" opens: the item's page_url from the server when it is a page of the site
+// (SitePageUrl), else the community page of the website for that kind.
+inline std::string SitePageFor(Kind kind, const std::string& pageUrl) {
+    if (SitePageUrl(pageUrl)) {
+        return pageUrl;
+    }
+    return kind == Kind::Script ? "https://nickelclient.com/community.html#scripts"
+                                : "https://nickelclient.com/community.html#configs";
+}
+
 inline bool ParseDetail(const json::Value& value, Detail* out, std::string* error = nullptr) {
     Detail detail;
     if (!ParseCard(value, &detail.card, error)) {
@@ -892,9 +922,8 @@ inline bool ParseDetail(const json::Value& value, Detail* out, std::string* erro
             || !read.String("page_url", &pageUrl, false, 200, detail::TextRule::OneLine)) {
         return false;
     }
-    // Only a page of the site itself is ever opened; anything else is dropped.
-    const std::string_view site = "https://nickelclient.com/public/";
-    if (pageUrl.compare(0, site.size(), site) == 0 && pageUrl.find_first_of(" \"<>\\^`{|}") == std::string::npos) {
+    // Only a page of the site itself is ever opened (SitePageUrl); anything else is dropped.
+    if (SitePageUrl(pageUrl)) {
         detail.pageUrl = pageUrl;
     }
     const json::Value* versions = value.Find("versions");

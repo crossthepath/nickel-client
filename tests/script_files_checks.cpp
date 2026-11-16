@@ -311,6 +311,96 @@ void HeldNames(const std::wstring& base) {
     Check(none.Names().empty() && !none.Contains("One"), "with no held.txt, nothing is held");
 }
 
+// A held.txt that exists but cannot be read fails closed: every script PUBLIC installed is held, held.txt is never
+// written from that state, and it is read again at each scan, with this session's holds and starts merged in.
+void UnreadableHeldList(const std::wstring& base) {
+    const std::wstring scripts = base + L"\\scripts";
+    MakeScriptFolders(scripts);
+    CreateDirectoryW((scripts + L"\\.public").c_str(), nullptr);
+    const std::wstring sidecar = scripts + L"\\.public\\installed.json";
+    WriteScriptFileInOneStep(sidecar, L"installed",
+                             "{\"format\":1,\"items\":[{\"id\":\"7k2m9x4qa1dz\",\"file\":\"Auto GG.luau\"},"
+                             "{\"id\":\"abcdefghjkmn\",\"file\":\"Fly.luau\"}]}\n");
+    const std::wstring list = HeldListPath(scripts);
+
+    // corrupt: NUL bytes and malformed UTF-8 (a damaged or binary file), not read as a shorter list
+    const std::string corrupt("Mine\n\0\0\xff\xfe junk", 14);
+    WriteScriptFileInOneStep(list, L"held", corrupt);
+    {
+        ScriptHeldNames held(scripts);
+        Check(held.Degraded() && !held.TakeNotice().empty() && held.TakeNotice().empty(),
+              "a corrupt held.txt: degraded, logged once");
+        Check(held.Contains("Auto GG") && held.Contains("fly") && !held.Contains("Mine"),
+              "every PUBLIC script is held, the player's own scripts are not");
+        held.Refresh();
+        Check(held.Degraded() && held.TakeNotice().empty(), "still corrupt at the next scan: no new log line");
+        bool added = false;
+        Check(held.Add("Mine", &added) && added && held.Contains("Mine"), "Add holds for this session");
+        Check(!held.Remove("Fly") && !held.Contains("Fly"), "Start (Remove) releases a PUBLIC script for this session");
+        Check(held.Add("Auto GG", &added) && !added, "Add of a name already held: not added");
+        Check(Bytes(list) == corrupt, "held.txt is never rewritten while it cannot be read");
+    }
+
+    // a hold asked for a PUBLIC script that is already held: not added, so a failed write that gives its hold back
+    // (WriteScriptFileLocked) does not release it
+    {
+        ScriptHeldNames held(scripts);
+        bool added = false;
+        Check(held.Add("Fly", &added) && !added, "a PUBLIC script is already held");
+        Check(held.Contains("Fly"), "still held");
+    }
+
+    // unreadable: held open by another process with no sharing
+    WriteScriptFileInOneStep(list, L"held", "Mine\nFly\nOld\n");
+    HANDLE lock = CreateFileW(list.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(lock != INVALID_HANDLE_VALUE, "held.txt is locked");
+    {
+        ScriptHeldNames held(scripts);
+        Check(held.Degraded() && held.Contains("Auto GG") && held.Contains("Fly"),
+              "a held.txt that cannot be opened: degraded, PUBLIC scripts held");
+        held.TakeNotice();
+        held.Remove("Fly");  // started in this session
+        held.Add("New");     // written (so held) in this session
+        held.Refresh();
+        Check(held.Degraded(), "still locked at the next scan: still degraded");
+        CloseHandle(lock);
+        lock = INVALID_HANDLE_VALUE;
+        held.Refresh();
+        Check(!held.Degraded() && !held.TakeNotice().empty(), "readable again at the next scan, logged once");
+        Check(held.Names() == std::vector<std::string>({"Mine", "Old", "New"}) && !held.Contains("Auto GG")
+                      && !held.Contains("Fly"),
+              "the file's list with this session's holds and starts; PUBLIC scripts no longer held by default");
+        Check(Bytes(list) == "Mine\nOld\nNew\n", "and only then written back");
+    }
+    if (lock != INVALID_HANDLE_VALUE) {
+        CloseHandle(lock);
+    }
+
+    // installed.json unreadable too: every script is held
+    WriteScriptFileInOneStep(list, L"held", corrupt);
+    WriteScriptFileInOneStep(sidecar, L"installed", "{not json");
+    {
+        ScriptHeldNames held(scripts);
+        Check(held.Degraded() && held.Contains("Anything") && held.Contains("Mine"),
+              "held.txt and installed.json both unreadable: every script is held");
+        held.Remove("Mine");
+        Check(!held.Contains("Mine") && held.Contains("Anything"), "Start still releases one for this session");
+    }
+
+    // no installed.json: no PUBLIC script to hold
+    DeleteFileW(sidecar.c_str());
+    {
+        ScriptHeldNames held(scripts);
+        Check(held.Degraded() && !held.Contains("Auto GG"), "no installed.json: no PUBLIC script to hold");
+    }
+
+    // a missing held.txt is not degraded
+    DeleteFileW(list.c_str());
+    ScriptHeldNames missing(scripts);
+    Check(!missing.Degraded() && missing.Names().empty() && missing.TakeNotice().empty(),
+          "no held.txt: nothing held, nothing logged");
+}
+
 // Two threads writing the same script, each from the revision it last read: the files lock orders them, so no write
 // is lost half way, every temporary file is gone and the file holds one of the writes that succeeded.
 void Threads(const std::wstring& base) {
@@ -354,6 +444,7 @@ int main() {
     FailedWrites(root + L"\\failed");
     Removal(root + L"\\removal");
     HeldNames(root + L"\\held");
+    UnreadableHeldList(root + L"\\unreadable");
     Threads(root + L"\\threads");
     DeleteTree(root);
     std::printf(failed ? "%d check(s) FAILED\n" : "all checks passed\n", failed);

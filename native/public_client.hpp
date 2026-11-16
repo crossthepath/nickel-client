@@ -661,9 +661,10 @@ public:
         return StartPublish(request, id.empty() ? std::string("-") : id);
     }
 
-    // Reports an item to the moderators (POST /reports): category is one of malicious, stolen, spam, inappropriate,
-    // broken, rules. Anonymous: the install key only lets the server limit how often one install reports.
-    bool Report(const std::string& id, const std::string& category, const std::string& details) {
+    // Reports an item to the moderators (POST /reports, {item_id, reason, details}): reason is one of malicious,
+    // broken, stolen, spam, inappropriate, other (KnownReportReason). Anonymous: the install key only lets the server
+    // limit how often one install reports. A repeated report is a 409 with code "already_reported".
+    bool Report(const std::string& id, const std::string& reason, const std::string& details) {
         auto placeholder = std::make_shared<ReportResult>();
         placeholder->id = id;
         placeholder->loading = true;
@@ -671,13 +672,13 @@ public:
         auto publish = [this, generation](std::shared_ptr<ReportResult> result) {
             PublishSlot(&snapshot_.report, &reportGeneration_, generation, std::move(result));
         };
-        if (!usable_ || !ValidId(id) || !KnownReasonCategory(category)
+        if (!usable_ || !ValidId(id) || !KnownReportReason(reason)
             || !detail::ValidText(details, kMaxReportChars, detail::TextRule::MultiLine)) {
             return Refuse(placeholder, publish);
         }
         json::Value body = json::Value::MakeObject();
         body.Set("item_id", json::Value::MakeString(id));
-        body.Set("category", json::Value::MakeString(category));
+        body.Set("reason", json::Value::MakeString(reason));
         body.Set("details", json::Value::MakeString(details));
         auto token = worker_.Post([this, id, publish, text = json::Serialize(body)](net::CancelToken& cancel) {
             auto result = std::make_shared<ReportResult>();

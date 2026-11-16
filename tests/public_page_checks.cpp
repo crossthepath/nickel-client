@@ -914,6 +914,7 @@ void MessageAndTimerChecks() {
         auto refused = std::make_shared<ReportResult>();
         refused->id = config.id;
         refused->outcome.status = Status::Conflict;
+        refused->outcome.problem.code = "already_reported";
         snap.report = refused;
         page.Tick(snap, true, now += 16);
         Check(HasNotice(page.TakeNotices(), "You already reported this."), "report refusal: HUD notice");
@@ -1407,6 +1408,7 @@ void ReportAndFinalChecks() {
         page.Tick(snap, true, now);
         const Card card = MakeCard("7k2m9x4qa1dz", Kind::Script, "Auto GG", 3, "print(1)\n");
         Check(!page.Report(card, "boring", ""), "an unknown category is refused");
+        Check(!page.Report(card, "rules", ""), "\"rules\" is not a report reason (the menu sends \"other\")");
         Check(page.Report(card, "malicious", "Sends my chat away.") && page.ReportSending(), "a report");
         Check(!page.Report(card, "spam", ""), "one report at a time");
         const Recorded* report = requests.Last("report");
@@ -1418,6 +1420,18 @@ void ReportAndFinalChecks() {
         snap.report = answer;
         page.Tick(snap, true, now += 16);
         Check(!page.ReportSending() && HasNotice(page.TakeNotices(), "The report was sent"), "reported");
+        // another 409 than already_reported is not shown as a repeated report
+        Check(page.Report(card, "other", "Breaks the rules."), "a report with the reason \"other\"");
+        auto conflict = std::make_shared<ReportResult>();
+        conflict->id = card.id;
+        conflict->outcome.status = Status::Conflict;
+        conflict->outcome.problem.code = "conflict";
+        snap.report = conflict;
+        page.Tick(snap, true, now += 16);
+        const auto notices = page.TakeNotices();
+        Check(!page.ReportSending() && !HasNotice(notices, "You already reported this.")
+                      && HasNotice(notices, "could not be sent"),
+              "a 409 that is not already_reported: the report could not be sent");
     }
     DeleteTree(root);
 
