@@ -4,6 +4,7 @@
 #include "game_sky.hpp"
 #include "game_block_esp.hpp"
 #include "game_utility.hpp"
+#include "game_packet_capture.hpp"   // Nickel AI: capture_packets / read_packets (installed on first use)
 #include <unordered_set>
 // In-game menu (toggled with Right Shift): module list, settings panel, Home/Settings/Configs screens and the HUD.
 // Layout sizes below are in menu units (1012 x 578 at scale 1). Setting definitions come from generated_catalog.hpp.
@@ -2896,6 +2897,7 @@ void DrawMenu(float opacity,ImTextureID logo){
  PublicTick();   // PUBLIC answers (installs, revocations, updates) are handled even while the menu is closed
  if(!nickel::ai::Factory())nickel::ai::Factory()=&MakeAiServices;   // Nickel AI: the real client and tools (ai_menu.hpp)
  AiTick();       // Nickel AI: reads its option once; nothing exists while it is off
+ game::CaptureTick();   // packet capture (Nickel AI): the server peer, while a capture runs
  // "Background blur": blurred game frame under the HUD and the menu, faded with the menu opening
  if(opacity>0&&interfaceOptions[0].value&&RequestBlur){auto* under=ImGui::GetBackgroundDrawList();if(auto blurred=RequestBlur(under))under->AddImage(blurred,ImVec2(0,0),ImGui::GetIO().DisplaySize,ImVec2(0,0),ImVec2(1,1),Rgba(255,255,255,opacity));}
  // "Auto save config": every change is copied into the most recently loaded or created config

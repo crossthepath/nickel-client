@@ -1,7 +1,7 @@
 // Nickel AI panel logic without ImGui (native/ai_ui.hpp, nickel::ai::ChatPage) on a fake client and fake tools:
 // sending and its limits (4000 characters, busy, quota, Retry-After), the activity line, read tools run at once,
 // action tools wait for Allow / Decline on a card built by the tools (never from model text), the 2-minute timeout,
-// nothing runs while the panel is hidden, all results of a step posted once in order, cancel and new chat, error texts,
+// reading tools run while the panel is hidden (the player keeps playing), notices while hidden, all results of a step posted once in order, cancel and new chat, error texts,
 // and the script diff. Then the chat window: the local greeting (never sent, not counted), the timeline (sides, order,
 // avatars, typing indicator, errors as centred lines), the bubble that toggles the window, where both are placed, the
 // bubble and window dragged anywhere (click or drag, kept on screen, the place saved as fractions of the screen), the
@@ -363,10 +363,8 @@ void ReadToolsRunAtOnce() {
     client.Tools({Use("u1", "search_modules", "{\"query\":\"esp\"}"), Use("u2", "get_client_status", "{}"),
                   Use("u3", "launch_rockets", "{}")});
     page.Tick(2, kNoon, false);
-    Check(tools.ran.empty() && client.posts.empty() && page.CurrentActivity() == Activity::UsingTools,
-          "nothing runs while the panel is hidden");
-    page.Tick(3, kNoon, true);
-    Check(tools.ran.size() == 2 && tools.describes == 0, "read tools run without a card when the panel is visible");
+    Check(tools.ran.size() == 2 && tools.describes == 0,
+          "read tools run without a card, even while the panel is hidden (the player keeps playing)");
     Check(client.posts.size() == 1 && client.posts[0].size() == 3 && client.posts[0][0].toolUseId == "u1"
               && client.posts[0][1].toolUseId == "u2" && client.posts[0][2].toolUseId == "u3",
           "all results go back in one post, in order");
@@ -540,6 +538,53 @@ void CardArming() {
     page.PlaceCard("d2", 0, 100);
     Check(page.Allow("d2") && tools.ran.size() == 2 && client.posts.size() == 1,
           "it answers once it has stayed in place for the delay");
+}
+
+// The player closes the window and plays: the answer goes on, a notice says when it is done, failed or waits on a card;
+// a card's time to answer only runs while the window shows, and it is armed again when the window comes back.
+void BackgroundAndNotices() {
+    FakeClient client;
+    FakeTools tools;
+    ChatPage page(&client, &tools);
+    page.Tick(1, kNoon, true);
+    page.Send("look into kill aura");
+    client.Turn(1, 25, "");
+    page.Tick(2, kNoon, false);
+    Check(page.TakeNotice().kind == PageNotice::Kind::None, "background: no notice while the answer runs");
+    client.Text("Here is what I found.");
+    client.Done(StopReason::EndTurn);
+    page.Tick(3, kNoon, false);
+    const PageNotice done = page.TakeNotice();
+    Check(done.kind == PageNotice::Kind::Answered && !done.text.empty(), "background: a notice when the answer is done");
+    Check(page.TakeNotice().kind == PageNotice::Kind::None, "background: the notice is given once");
+
+    page.Tick(4, kNoon, true);
+    page.Send("turn it on");
+    client.Turn(2, 25, "");
+    page.Tick(5, kNoon, false);
+    client.Tools({Use("b1", "set_module_enabled", "{\"module_id\":\"kill_aura\",\"enabled\":true}")});
+    page.Tick(6, kNoon, false);
+    page.Tick(7, kNoon, false);
+    Check(page.TakeNotice().kind == PageNotice::Kind::NeedsYou, "background: a notice when a card waits for the player");
+    for (double t = 8; t < 600; t += 1) {
+        page.Tick(t, kNoon, false);
+    }
+    Check(page.OpenCards().size() == 1 && client.posts.empty() && tools.ran.empty(),
+          "background: a hidden card is never declined by the clock and nothing runs without Allow");
+    page.Tick(600, kNoon, true);
+    Check(!page.Armed(*page.OpenCards()[0]) && !page.Allow("b1"), "background: the card is armed again when the window comes back");
+    page.Tick(600 + kCardArmSeconds, kNoon, true);
+    Check(page.Allow("b1") && tools.ran.size() == 1 && client.posts.size() == 1, "background: then Allow works");
+
+    page.Tick(601, kNoon, true);
+    page.Send("again");
+    client.Turn(3, 25, "");
+    page.Tick(602, kNoon, false);
+    client.Fail("model_unavailable", 200, 30);
+    page.Tick(603, kNoon, false);
+    Check(page.TakeNotice().kind == PageNotice::Kind::Failed, "background: a notice when the answer fails");
+    page.Tick(604, kNoon, true);
+    Check(page.TakeNotice().kind == PageNotice::Kind::None, "background: nothing to tell while the window shows");
 }
 
 // After Allow, the other open cards of the step are described again from the new state and armed again; one the tools
@@ -783,10 +828,10 @@ void TypingIndicator() {
     items = page.Timeline();
     Check(Kinds(items) == "GPA", "the indicator goes away once the answer streams");
     client.Tools({Use("r1", "search_modules", "{\"query\":\"esp\"}")});
-    page.Tick(5, kNoon, false);
+    page.Tick(5, kNoon, false); // read tools run at once (even hidden) and their results go back
     items = page.Timeline();
-    Check(Kinds(items) == "GPAT" && items.back().text == "Searching modules" && !items.back().groupStart,
-          "using tools: the indicator names the tool and continues the assistant's run");
+    Check(Kinds(items) == "GPAT" && tools.ran.size() == 1 && !items.back().groupStart,
+          "using tools: the indicator continues the assistant's run while the results go back");
     page.Tick(6, kNoon, true);
     client.snap.state = TurnState::Streaming;
     ++client.snap.revision;
@@ -1195,6 +1240,7 @@ int main() {
     MarkdownLayout();
     MarkdownCost();
     CardsDescribedAgain();
+    BackgroundAndNotices();
     std::printf("%s (%d failed)\n", failed == 0 ? "all ai ui checks passed" : "ai ui checks failed", failed);
     return failed == 0 ? 0 : 1;
 }

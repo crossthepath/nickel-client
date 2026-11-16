@@ -15,8 +15,10 @@
 //   first time the player opens the chat window.
 // - Read tools run at once; every action tool (settings, modules, scripts) waits for the player's Allow on a card drawn
 //   from ToolRunner::Describe (the registry and the script library), never from the model's text. Decline, or no answer
-//   within 2 minutes, sends the "declined" error and changes nothing.
-// - Tools run only while the chat window is visible: nothing changes behind the player's back.
+//   within 2 minutes of the window showing, sends the "declined" error and changes nothing.
+// - The work goes on while the player plays with the window closed: reading tools run, nothing that changes something
+//   runs without the player's Allow. When the answer is done, fails or waits on a card, a notice is shown
+//   (TakeNotice; drawn by the menu, ai_ui draw part).
 // - A script write shows the diff and says the script is saved held (it does not run until the player starts it).
 // - A player message is 1..4000 characters; the quota comes from the service ("22 left today").
 // - The greeting is local: it is never sent and does not count in the quota.
@@ -284,6 +286,8 @@ inline std::string ToolActivity(const std::string& tool) {
             {"read_script", "Reading a script"},
             {"validate_script", "Checking a script"},
             {"navigate_ui", "Opening a screen"},
+            {"capture_packets", "Capturing packets"},
+            {"read_packets", "Reading packets"},
             {"set_setting", "Changing a setting"},
             {"revert_changes", "Undoing changes"},
             {"set_module_enabled", "Switching a module"},
@@ -319,6 +323,13 @@ struct PendingCall {
     bool placed = false;  // PlaceCard was called at least once
     float placedX = 0;
     float placedY = 0;
+};
+
+// What the page tells the player while the chat window is hidden (ChatPage::TakeNotice).
+struct PageNotice {
+    enum class Kind { None, Answered, NeedsYou, Failed };
+    Kind kind = Kind::None;
+    std::string text;
 };
 
 // A line in the chat about a confirmed or refused change, placed after the message it followed.
@@ -374,15 +385,34 @@ public:
 
     bool Available() const { return client_ != nullptr && tools_ != nullptr; }
 
-    // Once per frame on the render thread. `now` is a monotonic clock in seconds, `utcNow` the wall clock (seconds
-    // since 1970, UTC) for the quota reset. Tool calls only run while `visible`.
+    // Once per frame on the render thread, whether the chat window shows or not (`visible`). `now` is a monotonic
+    // clock in seconds, `utcNow` the wall clock (seconds since 1970, UTC) for the quota reset.
+    // Work goes on while the player plays: reading tools run and their results go back at once. A call that changes
+    // something waits on its card until the player opens the window and answers it; the card's time to answer only
+    // runs while the window shows, and a card is armed again when the window comes back.
     void Tick(double now, int64_t utcNow, bool visible) {
+        const double hiddenFor = !visible && lastTick_ > 0 && now > lastTick_ ? now - lastTick_ : 0;
+        const bool cameBack = visible && !lastVisible_;
+        lastTick_ = now;
+        lastVisible_ = visible;
         now_ = now;
         utcNow_ = utcNow;
         if (!Available()) {
             return;
         }
         Refresh();
+        WatchForNotice(visible);
+        for (auto& call : calls_) {
+            if (!call.carded || call.decided) {
+                continue;
+            }
+            if (hiddenFor > 0) {
+                call.shownAt += hiddenFor; // the countdown waits for the player
+            }
+            if (cameBack) {
+                call.armedAt = std::max(call.armedAt, now + kCardArmSeconds);
+            }
+        }
         if (snap_.state != TurnState::AwaitingToolResults) {
             calls_.clear(); // cancelled or failed: nothing left to answer
             sendFailed_ = false;
@@ -401,7 +431,7 @@ public:
             sendFailed_ = false;
             retrySendAt_ = 0;
         }
-        if (!visible || sent_) {
+        if (sent_) {
             return;
         }
         for (auto& call : calls_) {
@@ -440,7 +470,7 @@ public:
                     call.result = Checked(call.use.id, std::move(refusal));
                     call.decided = true;
                 }
-            } else if (now - call.shownAt >= kConfirmTimeoutSeconds) {
+            } else if (visible && now - call.shownAt >= kConfirmTimeoutSeconds) {
                 call.result = MakeToolError(call.use.id, "declined",
                                             "The player did not answer in time; nothing was changed.");
                 call.decided = true;
@@ -489,6 +519,13 @@ public:
         }
         Refresh();
         return true;
+    }
+
+    // The notice raised while the window was hidden (answer done, failed, a card waiting), once; empty otherwise.
+    PageNotice TakeNotice() {
+        PageNotice out = notice_;
+        notice_ = {};
+        return out;
     }
 
     bool Busy() const {
@@ -873,6 +910,38 @@ private:
     size_t markCount_ = 0;
     size_t markText_ = 0;
     double now_ = 0;
+    double lastTick_ = 0;
+    bool lastVisible_ = false;
+    bool wasWorking_ = false;   // a turn was running at the last tick (for the notice when it ends)
+    bool cardsNoticed_ = false; // the open cards were already announced
+    PageNotice notice_;
+
+    // While the window is hidden: a notice when the answer is done, when it failed, or when a card waits.
+    void WatchForNotice(bool visible) {
+        bool openCards = false;
+        for (const auto& call : calls_) {
+            openCards = openCards || (call.carded && !call.decided);
+        }
+        const bool working = Busy();
+        if (visible) {
+            notice_ = {};
+            wasWorking_ = working;
+            cardsNoticed_ = openCards;
+            return;
+        }
+        if (openCards && !cardsNoticed_) {
+            notice_ = {PageNotice::Kind::NeedsYou, "Nickel AI is waiting for your OK on a change."};
+            cardsNoticed_ = true;
+        } else if (wasWorking_ && !working) {
+            notice_ = snap_.state == TurnState::Failed
+                              ? PageNotice{PageNotice::Kind::Failed, "Nickel AI stopped before the end of its answer."}
+                              : PageNotice{PageNotice::Kind::Answered, "Nickel AI finished its answer."};
+        }
+        wasWorking_ = working;
+        if (!openCards) {
+            cardsNoticed_ = false;
+        }
+    }
     int64_t utcNow_ = 0;
     double retryUntil_ = 0;
 };
@@ -1206,6 +1275,10 @@ struct AiMenu {
     nickel::ai::DragGesture headerDrag;        // a press on the window's header: a drag moves both
     nickel::ai::BubbleLayout dragFrom;         // the layout when that press began
     std::string reviewSend;                    // offline review (probe only): a message sent once the chat can send
+    bool windowVisible = false;                // the chat window showed last frame (DrawAiBubble)
+    nickel::ai::PageNotice toast;              // shown at the top of the screen while the window is hidden
+    double toastUntil = 0;
+    bool unread = false;                       // a notice came while hidden: a dot on the bubble until it opens
 };
 
 // Never destroyed, like PUBLIC's client: the overlay has no unload path, and a destructor at process exit would join the
@@ -1272,6 +1345,20 @@ void AiTick() {
     }
     if (!AiOption().value && m.created) {
         AiShutdown();
+    }
+    // The page ticks every frame, menu open or closed: the answer goes on while the player plays (ChatPage::Tick).
+    if (m.page) {
+        m.page->Tick(ImGui::GetTime(), static_cast<int64_t>(std::time(nullptr)), m.windowVisible);
+        nickel::ai::PageNotice notice = m.page->TakeNotice();
+        if (notice.kind != nickel::ai::PageNotice::Kind::None) {
+            m.toast = std::move(notice);
+            m.toastUntil = ImGui::GetTime() + (m.toast.kind == nickel::ai::PageNotice::Kind::NeedsYou ? 12.0 : 7.0);
+            m.unread = true;
+        }
+    }
+    if (m.windowVisible) {
+        m.unread = false;
+        m.toastUntil = 0;
     }
 }
 
@@ -1981,11 +2068,39 @@ void DrawAiWindow(const nickel::ai::BubbleLayout& place, float s, float opacity,
     }
 }
 
+// The notice of AiTick (answer done, failed, a card waiting) while the chat window is hidden: a dark pill at the top of
+// the screen for a few seconds, over the game whether the menu is open or not, fading in and out.
+void AiDrawToast(float menuOpacity) {
+    AiMenu& m = Ai();
+    const double now = ImGui::GetTime();
+    if (m.toastUntil <= now || m.toast.text.empty() || !AiOption().value) {
+        return;
+    }
+    const double left = m.toastUntil - now, shown = (m.toast.kind == nickel::ai::PageNotice::Kind::NeedsYou ? 12.0 : 7.0) - left;
+    const float a = static_cast<float>(std::clamp(std::min(shown / .25, left / .4), 0.0, 1.0));
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+    const float s = std::clamp(screen.y / 1080.f, .7f, 1.6f);
+    const char* hint = menuOpacity > .05f ? "Open the Nickel AI bubble to read it." : "Right Shift, then the Nickel AI bubble.";
+    const float titleW = TextWidth(semibold, 14.f, m.toast.text.c_str()), hintW = TextWidth(regular, 12.f, hint);
+    const float w = (std::max(titleW, hintW) + 52) * s, h = 50 * s;
+    const ImVec2 lo((screen.x - w) / 2, 18 * s - (1 - a) * 8 * s), hi(lo.x + w, lo.y + h);
+    ImDrawList* d = ImGui::GetForegroundDrawList();
+    d->AddRectFilled(ImVec2(lo.x, lo.y + 2 * s), ImVec2(hi.x, hi.y + 2 * s), Rgba(0, 0, 0, .35f * a), 14 * s);
+    d->AddRectFilled(lo, hi, Rgba(15, 15, 20, .96f * a), 14 * s);
+    d->AddRect(lo, hi, Rgba(38, 38, 48, a), 14 * s, 0, 1 * s);
+    const ImU32 dot = m.toast.kind == nickel::ai::PageNotice::Kind::Failed ? Rgba(246, 160, 171, a) : Acc(a);
+    d->AddCircleFilled(ImVec2(lo.x + 20 * s, lo.y + h / 2), 4.5f * s, dot, 16);
+    Label(d, semibold, 14.f * s, ImVec2(lo.x + 34 * s, lo.y + 8 * s), m.toast.text.c_str(), Rgba(255, 255, 255, a));
+    Label(d, regular, 12.f * s, ImVec2(lo.x + 34 * s, lo.y + 27 * s), hint, Rgba(148, 148, 160, a));
+}
+
 // Called by DrawMenu after the menu and its side panels while Nickel AI is on: the page's tick, the chat window when it
 // is open, then the bubble. The page (client, worker, install key) is created the first time the window opens.
 void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity, ImTextureID logo) {
     namespace ai = nickel::ai;
     AiMenu& m = Ai();
+    m.windowVisible = false; // set again below when the window shows; AiTick reads it next frame
+    AiDrawToast(opacity);
     if (!ai::BubbleState::BubbleShown(AiOption().value, opacity > 0)) {
         return;
     }
@@ -1998,11 +2113,8 @@ void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity,
         }
         m.page = std::make_unique<ai::ChatPage>(m.client.get(), m.tools.get());
     }
-    // tool calls run only while the window shows; a closed window keeps the conversation and its open cards
-    if (m.page) {
-        m.page->Tick(ImGui::GetTime(), static_cast<int64_t>(std::time(nullptr)),
-                     m.bubble.WindowOpen() && opened.load() && opacity > .05f);
-    }
+    // the page ticks in AiTick every frame; here only whether the window shows (cards answerable, notices off)
+    m.windowVisible = m.bubble.WindowOpen() && opened.load() && opacity > .05f;
     if (m.bubble.WindowOpen() && m.page) {
         DrawAiWindow(place, s, opacity, logo);
     }
@@ -2040,8 +2152,8 @@ void DrawAiBubble(const nickel::ai::BubbleLayout& place, float s, float opacity,
     if (ring > .001f) {
         d->AddCircle(c, r + 1.5f * s, Acc(ring * opacity), 48, 2 * s);
     }
-    // a closed window with an answer on its way or a card waiting: an accent dot
-    if (!open && m.page && (m.page->Busy() || !m.page->OpenCards().empty())) {
+    // a closed window with an answer on its way, a card waiting or an answer not read yet: an accent dot
+    if (!open && m.page && (m.page->Busy() || !m.page->OpenCards().empty() || m.unread)) {
         const ImVec2 dot(c.x + r * .72f, c.y - r * .72f);
         d->AddCircleFilled(dot, 5 * s, Rgba(15, 15, 20, opacity), 16);
         d->AddCircleFilled(dot, 3.5f * s, Acc(opacity), 16);

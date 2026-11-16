@@ -297,7 +297,7 @@ struct World {
 void ChecksBasics() {
     World world;
     AssistantTools tools = world.Tools();
-    Check(AssistantTools::ToolNames().size() == 12, "twelve tools");
+    Check(AssistantTools::ToolNames().size() == 14, "fourteen tools (packets included)");
     Check(IsError(tools.Run("delete_everything", Input("{}")), "unknown_tool"), "an unknown tool is refused");
     Check(IsError(tools.Run("get_module", Input("[1]")), "invalid_input"), "an input that is not an object is refused");
     Check(!tools.Run("get_client_status", json::Value()).isError, "a null input counts as {}");
@@ -959,10 +959,66 @@ void ChecksUnavailable() {
     Check(!off.isError && tools.Journal().empty(), "turning it off (already off) is allowed and changes nothing");
 }
 
+// capture_packets / read_packets over a fake source: start, records both ways, filters, hex, stop, unavailable.
+struct FakePackets : nickel::ai::tools::PacketSource {
+    nickel::packets::Capture capture;
+    int64_t now = 1000;
+    bool ready = true;
+    bool Ready(std::string* why) override {
+        if (!ready) *why = "not in this build";
+        return ready;
+    }
+    nickel::packets::Capture& Capture() override { return capture; }
+    int64_t NowMs() override { return now; }
+};
+
+void ChecksPackets() {
+    World world;
+    FakePackets packets;
+    nickel::ai::tools::Deps deps{world.registry, world.library, world.writer, world.ui, world.status, &world.defaults};
+    deps.packets = &packets;
+    AssistantTools tools(deps);
+    Check(!AssistantTools::NeedsConfirmation("capture_packets", json::Value::MakeObject())
+                  && !AssistantTools::NeedsConfirmation("read_packets", json::Value::MakeObject()),
+          "packets: both tools are reading tools (no card)");
+    json::Value body = Parse(tools.Run("capture_packets", Input("{\"action\":\"start\",\"seconds\":60}")).content);
+    Check(body["capturing"].AsBool() && body["seconds_left"].AsInt64(0) == 60, "packets: a capture starts");
+    const unsigned char open[] = {0x2e, 0x07, 0x00, 0x01};          // ContainerOpen (0x2e), payload 07 00 01
+    const unsigned char auth[] = {0x90, 0x01, 0xaa, 0xbb};          // PlayerAuthInput (0x90): two-byte header
+    packets.capture.Record(1100, false, open, sizeof(open));
+    packets.capture.Record(1200, true, auth, sizeof(auth));
+    body = Parse(tools.Run("read_packets", Input("{}")).content);
+    Check(body["packets"].size() == 2 && body["packets"].At(0)["id"].AsInt64(0) == 0x2e
+                  && body["packets"].At(0)["dir"].AsString() == "in" && body["packets"].At(0)["hex"].AsString() == "070001"
+                  && body["packets"].At(1)["id"].AsInt64(0) == 0x90 && body["packets"].At(1)["hex"].AsString() == "aabb",
+          "packets: records in order, id from the varint header, payload in hex");
+    body = Parse(tools.Run("read_packets", Input("{\"direction\":\"out\"}")).content);
+    Check(body["packets"].size() == 1 && body["packets"].At(0)["dir"].AsString() == "out", "packets: direction filter");
+    body = Parse(tools.Run("read_packets", Input("{\"ids\":[46],\"max_bytes\":1}")).content);
+    Check(body["packets"].size() == 1 && body["packets"].At(0)["hex"].AsString() == "07"
+                  && body["packets"].At(0)["cut"].AsBool(), "packets: id filter and max_bytes");
+    body = Parse(tools.Run("read_packets", Input("{\"from_seq\":2}")).content);
+    Check(body["packets"].size() == 1 && body["packets"].At(0)["seq"].AsInt64(0) == 2 && body["next_seq"].AsInt64(0) == 3,
+          "packets: from_seq pages through the capture");
+    packets.now = 1000 + 61000;
+    body = Parse(tools.Run("capture_packets", Input("{\"action\":\"status\"}")).content);
+    Check(!body["capturing"].AsBool() && body["kept"].AsInt64(0) == 2, "packets: the capture stops by itself, records stay");
+    Check(IsError(tools.Run("capture_packets", Input("{\"action\":\"jump\"}")), "invalid_input")
+                  && IsError(tools.Run("read_packets", Input("{\"ids\":[5000]}")), "invalid_input"),
+          "packets: bad input is refused");
+    packets.ready = false;
+    Check(IsError(tools.Run("capture_packets", Input("{\"action\":\"start\"}")), "unavailable"),
+          "packets: a game build without the hook says so");
+    nickel::ai::tools::Deps none{world.registry, world.library, world.writer, world.ui, world.status, &world.defaults};
+    AssistantTools bare(none);
+    Check(IsError(bare.Run("read_packets", Input("{}")), "unavailable"), "packets: no source, unavailable");
+}
+
 } // namespace
 
 int main() {
     ChecksBasics();
+    ChecksPackets();
     ChecksSearch();
     ChecksGetModule();
     ChecksStatus();
