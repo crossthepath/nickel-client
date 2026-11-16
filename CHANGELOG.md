@@ -19,7 +19,13 @@ record. Do not add a handwritten entry here for each change.
   Scripts it writes are saved held and run only when you start them.
 - Answers show their formatting (bold, lists, headings, code).
 - 25 messages a day. No account and no sign-in: Nickel AI uses the anonymous key of this install.
-- Nickel AI is off by default (Settings > Connection > Nickel AI (assistant)). While it is off, Nickel sends nothing.
+- Nickel AI is on by default; turn it off in Settings > Connection > Nickel AI (assistant). While it is off, Nickel
+  sends nothing.
+
+### PUBLIC
+
+- The online community (PUBLIC) is now on by default; turn it off in Settings > Connection > Online community
+  (PUBLIC). A player who already turned it off keeps it off.
 
 ### Menu
 
