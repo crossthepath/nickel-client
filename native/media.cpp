@@ -29,7 +29,7 @@ bool Decode(const std::vector<unsigned char>& bytes,std::vector<unsigned char>* 
 }
 void ReadCover(const GlobalSystemMediaTransportControlsSessionMediaProperties& properties){
  std::vector<unsigned char> pixels;int w=0,h=0;bool ok=false;
- try{if(auto reference=properties.Thumbnail()){auto stream=reference.OpenReadAsync().get();const uint64_t size=stream.Size();if(size>=1&&size<=0x7fffff){winrt::Windows::Storage::Streams::DataReader reader(stream);reader.LoadAsync((uint32_t)size).get();std::vector<unsigned char> bytes((size_t)size);reader.ReadBytes(bytes);ok=Decode(bytes,&pixels,&w,&h);}}}catch(...){ok=false;}
+ try{if(auto reference=properties.Thumbnail()){auto stream=reference.OpenReadAsync().get();const uint64_t size=stream.Size();if(size>=1&&size<=0x7fffff){winrt::Windows::Storage::Streams::DataReader reader(stream);reader.LoadAsync((uint32_t)size).get();std::vector<unsigned char> bytes((size_t)size);reader.ReadBytes(bytes);ok=Decode(bytes,&pixels,&w,&h);}}}catch(...){ok=false;}   // not a game address: size limit
  std::lock_guard<std::mutex> lock(guard);if(ok){cover.swap(pixels);coverWidth=w;coverHeight=h;coverSerial=++serials;}else{cover.clear();coverSerial=0;}
 }
 void Worker(){

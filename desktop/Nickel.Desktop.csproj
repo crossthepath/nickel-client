@@ -2,7 +2,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType><TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>Nickel</AssemblyName><RootNamespace>Nickel.Desktop</RootNamespace><Version>1.2.0-beta</Version>
+    <AssemblyName>Nickel</AssemblyName><RootNamespace>Nickel.Desktop</RootNamespace><Version>1.3.0-beta</Version>
     <PlatformTarget>x64</PlatformTarget><RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained><PublishSingleFile>true</PublishSingleFile>
     <DebugType>none</DebugType><ApplicationIcon>Assets/Nickel/nickel.ico</ApplicationIcon><ApplicationManifest>app.manifest</ApplicationManifest>

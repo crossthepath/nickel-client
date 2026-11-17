@@ -24,7 +24,7 @@ inline MaterialStreamFunction materialStreamOriginal=nullptr;
 
 inline bool MaterialNamed(const uint8_t* d,size_t n,const char* name){
  static const char kind[]="RenderDragon.CompiledMaterialDefinition";const size_t len=strlen(name);
- if(n<0x43||*(const uint64_t*)d!=0xa11da1a||*(const uint32_t*)(d+8)!=0x27||memcmp(d+0xc,kind,0x27)!=0||*(const uint32_t*)(d+0x3b)!=0x4e4f4e45)return false;
+ if(n<0x43||*(const uint64_t*)d!=0xa11da1a||*(const uint32_t*)(d+8)!=0x27||memcmp(d+0xc,kind,0x27)!=0||*(const uint32_t*)(d+0x3b)!=0x4e4f4e45)return false;   // not a game address: file magic value
  const uint32_t got=*(const uint32_t*)(d+0x3f);return got<=n-0x43&&got==len&&memcmp(d+0x43,name,len)==0;}
 inline bool MaterialResource(int id,const uint8_t** data,size_t* size){HMODULE self{};if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,(LPCWSTR)&Materials,&self))return false;
  HRSRC r=FindResourceW(self,MAKEINTRESOURCEW(id),RT_RCDATA);if(!r)return false;*data=(const uint8_t*)LockResource(LoadResource(self,r));*size=SizeofResource(self,r);return *data&&*size;}

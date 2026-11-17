@@ -70,6 +70,7 @@ struct ClientInfo {
     std::string nickelVersion;
     std::string gameVersion;
     std::string language;  // the player's language ("fr", "en-US"...), so the answer uses it
+    std::string memory;    // "on" or "off": Nickel AI memory in Settings; empty sends nothing (the service: off)
 };
 
 struct ClientConfig {
@@ -170,7 +171,8 @@ struct ErrorInfo {
 struct Quota {
     int64_t used = -1;      // -1 until the server says
     int64_t limit = -1;
-    std::string resetAt;    // as the server wrote it
+    std::string resetAt;    // as the server wrote it: when the next message comes back (empty when full)
+    bool unlimited = false; // this install has no quota
 };
 
 enum class Role : uint8_t { User, Assistant };
@@ -328,6 +330,9 @@ inline bool ReadQuota(const json::Value& value, Quota* out) {
     Quota quota;
     quota.used = usedValue;
     quota.limit = limitValue;
+    if (const json::Value* unlimited = value.Find("unlimited"); unlimited != nullptr && unlimited->IsBool()) {
+        quota.unlimited = unlimited->AsBool();
+    }
     const json::Value* reset = value.Find("reset_at");
     if (reset == nullptr) {
         reset = value.Find("resets_at");
@@ -393,6 +398,12 @@ public:
     void SetClientInfo(ClientInfo info) {
         std::lock_guard<std::mutex> lock(mutex_);
         config_.client = std::move(info);
+    }
+
+    // Nickel AI memory for the next turns (the Settings toggle may change while a chat is open).
+    void SetMemory(bool on) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        config_.client.memory = on ? "on" : "off";
     }
 
     // Starts a turn with the player's message (1 to 4000 code points of UTF-8, not blank). False when it was refused
@@ -593,6 +604,9 @@ private:
         client.Set("nickel_version", json::Value::MakeString(config_.client.nickelVersion));
         client.Set("game_version", json::Value::MakeString(config_.client.gameVersion));
         client.Set("language", json::Value::MakeString(config_.client.language));
+        if (!config_.client.memory.empty()) {
+            client.Set("memory", json::Value::MakeString(config_.client.memory));
+        }
         json::Value root = json::Value::MakeObject();
         root.Set("conversation_id",
                 conversationId.empty() ? json::Value() : json::Value::MakeString(conversationId));

@@ -27,6 +27,8 @@ tools/*
 !tools/check_game_builds.py
 !tools/check_game_builds_test.py
 !tools/port_build.py
+!tools/build_profile.py
+!tools/gen_signatures.py
 !tools/boundaries.json
 !tools/release-signer/
 tools/release-signer/bin/

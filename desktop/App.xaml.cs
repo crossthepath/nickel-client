@@ -8,9 +8,11 @@ public partial class App : Application
   if(e.Args.Contains("--self-test")){Shutdown(SelfCheck.Run());return;}
   if(e.Args.Length==2&&e.Args[0]=="--check-game")
   {
-   // Support check of a game file without running it: does it hold a validated build? Writes data/check-game.json.
+   // Support check of a game file without running it: a tested build ("validated"), a supported version the overlay
+   // adapts to in game ("adapted", message says why it is not a tested build), or "refused". Writes data/check-game.json.
    object outcome;var code=1;
-   try{var refusal=GameBuilds.Check(e.Args[1],GameBuilds.Validated,out _);code=refusal==null?0:3;outcome=new{status=refusal==null?"validated":"refused",file=e.Args[1],message=refusal};}
+   try{var refusal=GameBuilds.Check(e.Args[1],GameBuilds.Validated,out var build,out var note);code=refusal==null?0:3;
+    outcome=new{status=refusal!=null?"refused":build!=null?"validated":"adapted",file=e.Args[1],message=refusal??(note==""?null:note)};}
    catch(Exception error){outcome=new{status="error",file=e.Args[1],message=error.Message};}
    try{var at=System.IO.Path.Combine(AppContext.BaseDirectory,"data","check-game.json");System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(at)!);System.IO.File.WriteAllText(at,System.Text.Json.JsonSerializer.Serialize(outcome));}
    catch{code=1;}

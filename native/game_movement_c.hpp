@@ -75,7 +75,7 @@ inline bool MoveCBit(uintptr_t input,int bit){uint32_t w{};return Read(input+0x1
 inline uintptr_t MoveCFlagsElement(const Context& c){uintptr_t f{};return Element(c.registry,c.entity,"ActorDataFlagComponent",0x18,&f)?f:0;}
 inline bool MoveCGliding(const Context& c){const uintptr_t f=MoveCFlagsElement(c);uint64_t v{};return f&&Read(f,&v)&&((v>>32)&1);}
 inline bool MoveCClientLevel(const Context& c){uint64_t level{};return Read(c.actor+0x200,&level)&&level&&(uint64_t)currentTickLevel==level;}   // LevelTick of the client level only
-inline bool MoveCShiftHeld(){return (GetAsyncKeyState(VK_LSHIFT)&0x8000)||(GetAsyncKeyState(VK_RSHIFT)&0x8000);}
+inline bool MoveCShiftHeld(){return overlay::GameplayInputAllowed()&&((GetAsyncKeyState(VK_LSHIFT)&0x8000)||(GetAsyncKeyState(VK_RSHIFT)&0x8000));}
 inline float MoveCSignedFill(float other,bool negative){const float v=other!=0.f?std::fabs(other):1.f;return negative?-v:v;}   // |other|, or 1 when other is 0, with the sign flipped for the losing side
 
 // ---- Glide: GameUpdate (every frame)

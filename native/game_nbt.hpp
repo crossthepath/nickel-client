@@ -83,7 +83,7 @@ struct BlockEntry{std::string name;Tag states;int32_t version=0;};
 struct Data{int sx=0,sy=0,sz=0;std::vector<BlockEntry> palette;std::vector<int32_t> l0,l1;bool hasOrigin=false;int ox=0,oy=0,oz=0;int format=0;};
 inline size_t Index(const Data& d,int x,int y,int z){return ((size_t)x*d.sy+y)*d.sz+z;}
 inline bool ReadMcstructure(const Tag& r,Data& d){const Tag* size=r.get("size");const Tag* st=r.get("structure");if(!size||!st||size->list.size()<3)return false;
- d.sx=(int)size->list[0].i;d.sy=(int)size->list[1].i;d.sz=(int)size->list[2].i;if(d.sx<=0||d.sy<=0||d.sz<=0)return false;const size_t total=(size_t)d.sx*d.sy*d.sz;if(total>0x4000000)return false;
+ d.sx=(int)size->list[0].i;d.sy=(int)size->list[1].i;d.sz=(int)size->list[2].i;if(d.sx<=0||d.sy<=0||d.sz<=0)return false;const size_t total=(size_t)d.sx*d.sy*d.sz;if(total>0x4000000)return false;   // not a game address: size limit
  const Tag* idx=st->get("block_indices");const Tag* pal=st->get("palette");const Tag* def=pal?pal->get("default"):nullptr;const Tag* bp=def?def->get("block_palette"):nullptr;if(!idx||!bp)return false;
  for(auto& e:bp->list){BlockEntry b;if(auto n=e.get("name"))b.name=n->s;if(auto s=e.get("states"))b.states=*s;else b.states=MakeCompound();if(auto v=e.get("version"))b.version=(int32_t)v->i;d.palette.push_back(std::move(b));}
  auto layer=[&](size_t k,std::vector<int32_t>& out){out.assign(total,-1);if(k>=idx->list.size())return;const Tag& l=idx->list[k];if(l.list.size()!=total)return;for(size_t i=0;i<total;++i)out[i]=(int32_t)l.list[i].i;};
@@ -96,13 +96,13 @@ inline BlockEntry JavaEntry(const std::string& full){BlockEntry b;b.states=MakeC
 inline BlockEntry JavaCompound(const Tag& e){BlockEntry b;b.states=MakeCompound();if(auto n=e.get("Name"))b.name=n->s;if(auto p=e.get("Properties"))for(auto& [k,v]:p->comp)b.states.add(k,MakeString(v.s));
  if(b.name.find(':')==std::string::npos)b.name="minecraft:"+b.name;return b;}
 inline bool ReadJavaStructure(const Tag& r,Data& d){const Tag* size=r.get("size");const Tag* blocks=r.get("blocks");const Tag* pal=r.get("palette");if(!pal)if(auto ps=r.get("palettes"))if(!ps->list.empty())pal=&ps->list[0];
- if(!size||!blocks||!pal||size->list.size()<3)return false;d.sx=(int)size->list[0].i;d.sy=(int)size->list[1].i;d.sz=(int)size->list[2].i;if(d.sx<=0||d.sy<=0||d.sz<=0)return false;const size_t total=(size_t)d.sx*d.sy*d.sz;if(total>0x4000000)return false;
+ if(!size||!blocks||!pal||size->list.size()<3)return false;d.sx=(int)size->list[0].i;d.sy=(int)size->list[1].i;d.sz=(int)size->list[2].i;if(d.sx<=0||d.sy<=0||d.sz<=0)return false;const size_t total=(size_t)d.sx*d.sy*d.sz;if(total>0x4000000)return false;   // not a game address: size limit
  for(auto& e:pal->list)d.palette.push_back(JavaCompound(e));d.l0.assign(total,-1);d.l1.assign(total,-1);
  for(auto& b:blocks->list){const Tag* pos=b.get("pos");const Tag* st=b.get("state");if(!pos||!st||pos->list.size()<3)continue;const int x=(int)pos->list[0].i,y=(int)pos->list[1].i,z=(int)pos->list[2].i;
   if(x<0||y<0||z<0||x>=d.sx||y>=d.sy||z>=d.sz)continue;d.l0[Index(d,x,y,z)]=(int32_t)st->i;}d.format=3;return true;}
 inline bool ReadSponge(const Tag& root,Data& d){const Tag* r=root.get("Schematic");if(!r||r->type!=Compound)r=&root;const Tag* w=r->get("Width");const Tag* h=r->get("Height");const Tag* l=r->get("Length");if(!r->get("Version")||!w||!h||!l)return false;
  const Tag* pal=r->get("Palette");const Tag* data=r->get("BlockData");if(const Tag* bl=r->get("Blocks")){if(!pal)pal=bl->get("Palette");if(!data)data=bl->get("Data");}if(!pal||!data)return false;
- d.sx=(int)w->i;d.sy=(int)h->i;d.sz=(int)l->i;if(d.sx<=0||d.sy<=0||d.sz<=0)return false;const size_t total=(size_t)d.sx*d.sy*d.sz;if(total>0x4000000)return false;
+ d.sx=(int)w->i;d.sy=(int)h->i;d.sz=(int)l->i;if(d.sx<=0||d.sy<=0||d.sz<=0)return false;const size_t total=(size_t)d.sx*d.sy*d.sz;if(total>0x4000000)return false;   // not a game address: size limit
  int maxId=-1;for(auto& [k,v]:pal->comp)maxId=std::max<int>(maxId,(int)v.i);if(maxId<0||maxId>65535)return false;d.palette.resize(maxId+1);for(auto& p:d.palette){p.name="minecraft:air";p.states=MakeCompound();}
  for(auto& [k,v]:pal->comp)d.palette[(size_t)v.i]=JavaEntry(k);d.l0.assign(total,-1);d.l1.assign(total,-1);
  size_t at=0,index=0;while(at<data->array.size()&&index<total){uint32_t value=0;int shift=0;for(;;){const uint8_t b=(uint8_t)data->array[at++];value|=(uint32_t)(b&0x7f)<<shift;shift+=7;if(!(b&0x80)||at>=data->array.size())break;}
@@ -115,7 +115,7 @@ inline bool ReadLitematic(const Tag& r,Data& d){const Tag* regions=r.get("Region
  for(auto& [name,reg]:regions->comp){const Tag* pos=reg.get("Position");const Tag* size=reg.get("Size");const Tag* pal=reg.get("BlockStatePalette");const Tag* bs=reg.get("BlockStates");if(!pos||!size||!pal||!bs)continue;R x{};
   const char* axes[3]={"x","y","z"};for(int a=0;a<3;++a){auto pa=pos->get(axes[a]);auto sa=size->get(axes[a]);x.p[a]=pa?(int)pa->i:0;x.s[a]=sa?(int)sa->i:0;const int s=x.s[a];const int from=s<0?x.p[a]+s+1:x.p[a],to=s<0?x.p[a]:x.p[a]+s-1;lo[a]=std::min(lo[a],from);hi[a]=std::max(hi[a],to);}
   x.pal=pal;x.states=bs;list.push_back(x);}
- if(list.empty())return false;d.sx=hi[0]-lo[0]+1;d.sy=hi[1]-lo[1]+1;d.sz=hi[2]-lo[2]+1;const size_t total=(size_t)d.sx*d.sy*d.sz;if(d.sx<=0||d.sy<=0||d.sz<=0||total>0x4000000)return false;
+ if(list.empty())return false;d.sx=hi[0]-lo[0]+1;d.sy=hi[1]-lo[1]+1;d.sz=hi[2]-lo[2]+1;const size_t total=(size_t)d.sx*d.sy*d.sz;if(d.sx<=0||d.sy<=0||d.sz<=0||total>0x4000000)return false;   // not a game address: size limit
  d.l0.assign(total,-1);d.l1.assign(total,-1);
  for(auto& x:list){const int base=(int)d.palette.size();for(auto& e:x.pal->list)d.palette.push_back(JavaCompound(e));const int count=(int)x.pal->list.size();int bits=2;while((1<<bits)<count)++bits;
   const int ax=std::abs(x.s[0]),ay=std::abs(x.s[1]),az=std::abs(x.s[2]);const int ox=x.s[0]<0?x.p[0]+x.s[0]+1:x.p[0],oy=x.s[1]<0?x.p[1]+x.s[1]+1:x.p[1],oz=x.s[2]<0?x.p[2]+x.s[2]+1:x.p[2];
@@ -125,7 +125,7 @@ inline bool ReadLitematic(const Tag& r,Data& d){const Tag* regions=r.get("Region
    d.l0[Index(d,ox+xx-lo[0],oy+y-lo[1],oz+z-lo[2])]=base+id;}}
  d.format=1;return true;}
 // Detection by content; 0 = little-endian .mcstructure, otherwise Java big-endian.
-inline bool Decode(const std::vector<uint8_t>& file,Data& d){std::vector<uint8_t> raw;if(!Decompress(file,raw,0x10000000))return false;
+inline bool Decode(const std::vector<uint8_t>& file,Data& d){std::vector<uint8_t> raw;if(!Decompress(file,raw,0x10000000))return false;   // not a game address: size limit
  Tag le;if(Read(raw,false,&le)&&le.get("structure")&&le.get("size")&&ReadMcstructure(le,d))return true;
  Tag be;if(!Read(raw,true,&be))return false;if(be.get("Regions"))return ReadLitematic(be,d);
  {const Tag* r=be.get("Schematic");if(!r||r->type!=Compound)r=&be;if(r->get("Version")&&r->get("Width")&&(r->get("Palette")||r->get("Blocks")))return ReadSponge(be,d);}

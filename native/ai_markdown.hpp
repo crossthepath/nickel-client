@@ -207,6 +207,30 @@ inline size_t CharBytes(unsigned char lead) {
 
 } // namespace detail
 
+// Symbols the menu's fonts do not have (they would show as "?"), written with characters they have: arrows, comparison
+// and check marks the model likes to use. Everything else is kept as is.
+inline std::string FontSafe(std::string_view text) {
+    static const struct {
+        const char* from;
+        const char* to;
+    } kSymbols[] = {
+            {"â", "->"}, {"â", "<-"}, {"â", "<->"}, {"â", "=>"},
+            {"â", "<="}, {"â", "->"}, {"â¶", "->"}, {"â¥", ">="},
+            {"â¤", "<="}, {"â ", "!="}, {"â", "~"}, {"â", "ok"},
+            {"â", "ok"}, {"â", "x"},   {"â", "x"},   {"â", "ok"},
+            {"â", "x"},  {"â ï¸", "!"}, {"â ", "!"},
+    };
+    std::string out(text);
+    for (const auto& symbol : kSymbols) {
+        const std::string_view from(symbol.from);
+        for (size_t at = out.find(from); at != std::string::npos; at = out.find(from, at)) {
+            out.replace(at, from.size(), symbol.to);
+            at += std::string_view(symbol.to).size();
+        }
+    }
+    return out;
+}
+
 // The spans of one line of text (no block marks).
 inline std::vector<Span> ParseInline(std::string_view line) {
     std::vector<Span> out;

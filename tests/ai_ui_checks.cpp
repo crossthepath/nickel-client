@@ -1,7 +1,7 @@
 // Nickel AI panel logic without ImGui (native/ai_ui.hpp, nickel::ai::ChatPage) on a fake client and fake tools:
 // sending and its limits (4000 characters, busy, quota, Retry-After), the activity line, read tools run at once,
 // action tools wait for Allow / Decline on a card built by the tools (never from model text), the 2-minute timeout,
-// nothing runs while the panel is hidden, all results of a step posted once in order, cancel and new chat, error texts,
+// reading tools run while the panel is hidden (the player keeps playing), notices while hidden, all results of a step posted once in order, cancel and new chat, error texts,
 // and the script diff. Then the chat window: the local greeting (never sent, not counted), the timeline (sides, order,
 // avatars, typing indicator, errors as centred lines), the bubble that toggles the window, where both are placed, the
 // bubble and window dragged anywhere (click or drag, kept on screen, the place saved as fractions of the screen), the
@@ -219,7 +219,9 @@ void TextHelpers() {
           "cutting keeps whole characters");
     Check(Trim("  hi \n") == "hi" && Trim(" \t\r\n").empty(), "trim removes spaces and newlines");
     Check(ParseUtc("2026-11-17T00:00:00Z") == 1794873600 && ParseUtc("tomorrow") == 0, "reset_at is read as UTC");
-    Check(ResetText("2026-11-17T00:00:00Z") == "Resets at 00:00 UTC." && ResetText("").empty(),
+    Check(NextMessageText("2026-11-17T00:00:00Z", ParseUtc("2026-11-16T23:48:00Z")) == "+1 in 12 min"
+              && ResetText("2026-11-17T00:00:00Z", ParseUtc("2026-11-16T23:48:00Z")) == "One message comes back in 12 min."
+              && ResetText("").empty(),
           "the reset time is shown in UTC");
     Check(ErrorText({"offline", "", 0, 0}).find("offline") != std::string::npos
               && ErrorText({"quota_exceeded", "", 429, 0}).find("messages") != std::string::npos
@@ -268,7 +270,7 @@ void Sending() {
     FakeTools tools;
     ChatPage page(&client, &tools);
     page.Tick(1, kNoon, true);
-    Check(page.QuotaLine() == "25 messages a day" && page.CurrentActivity() == Activity::Idle,
+    Check(page.QuotaLine() == "Up to 25 messages" && page.CurrentActivity() == Activity::Idle,
           "before the first answer: the default limit, idle");
     Check(!page.Send("   ") && client.started.empty(), "an empty message is not sent");
     Check(!page.Send(std::string(kMaxMessageChars + 1, 'x')) && client.started.empty(), "4001 characters are refused");
@@ -284,7 +286,7 @@ void Sending() {
     Check(!page.Send("again") && client.started.size() == 1, "no second message while a turn runs");
     client.Turn(3, 25, "2026-11-17T00:00:00Z");
     page.Tick(2, kNoon, true);
-    Check(page.QuotaLine() == "22 left today", "the quota line comes from the turn event");
+    Check(page.QuotaLine().rfind("22 left", 0) == 0, "the quota line comes from the turn event");
     Check(page.CurrentActivity() == Activity::Thinking, "no text yet: still thinking");
     client.Text("Sure");
     page.Tick(3, kNoon, true);
@@ -309,9 +311,9 @@ void QuotaAndErrors() {
     client.Text("ok");
     client.Done(StopReason::EndTurn);
     page.Tick(2, kNoon, true);
-    Check(page.QuotaLine() == "0 left today" && page.QuotaUsedUp() && !page.CanSend("more"),
+    Check(page.QuotaLine().rfind("0 left", 0) == 0 && page.QuotaUsedUp() && !page.CanSend("more"),
           "25 of 25 used: input blocked");
-    Check(page.SendBlockedReason("more").find("Resets at 00:00 UTC.") != std::string::npos,
+    Check(page.SendBlockedReason("more").find("One message comes back in") != std::string::npos,
           "the block says when the quota resets");
     page.Tick(3, 1794873601, true);
     Check(!page.QuotaUsedUp() && page.CanSend("more"), "after the reset time the service decides again");
@@ -340,16 +342,16 @@ void QuotaAndErrors() {
     p3.Send("hi");
     c3.Turn(1, 25, "2026-11-17T00:00:00Z");
     p3.Tick(2, kNoon, true);
-    Check(p3.QuotaLine() == "24 left today", "the turn event counts the message");
+    Check(p3.QuotaLine().rfind("24 left", 0) == 0, "the turn event counts the message");
     c3.Fail("model_unavailable", 200, 0);
     c3.snap.quota.used = 0;
     p3.Tick(3, kNoon, true);
-    Check(p3.QuotaLine() == "25 left today" && p3.ErrorLine().find("busy") != std::string::npos,
+    Check(p3.QuotaLine().rfind("25 left", 0) == 0 && p3.ErrorLine().find("busy") != std::string::npos,
           "after a refunded failure the quota line goes back to the count before sending");
     c3.snap.quota.used = 1; // GET /status answering after the error: a later snapshot of the same failure
     ++c3.snap.revision;
     p3.Tick(4, kNoon, true);
-    Check(p3.QuotaLine() == "24 left today" && p3.CurrentActivity() == Activity::Error,
+    Check(p3.QuotaLine().rfind("24 left", 0) == 0 && p3.CurrentActivity() == Activity::Error,
           "a quota that arrives after the error is shown too");
 }
 
@@ -363,10 +365,8 @@ void ReadToolsRunAtOnce() {
     client.Tools({Use("u1", "search_modules", "{\"query\":\"esp\"}"), Use("u2", "get_client_status", "{}"),
                   Use("u3", "launch_rockets", "{}")});
     page.Tick(2, kNoon, false);
-    Check(tools.ran.empty() && client.posts.empty() && page.CurrentActivity() == Activity::UsingTools,
-          "nothing runs while the panel is hidden");
-    page.Tick(3, kNoon, true);
-    Check(tools.ran.size() == 2 && tools.describes == 0, "read tools run without a card when the panel is visible");
+    Check(tools.ran.size() == 2 && tools.describes == 0,
+          "read tools run without a card, even while the panel is hidden (the player keeps playing)");
     Check(client.posts.size() == 1 && client.posts[0].size() == 3 && client.posts[0][0].toolUseId == "u1"
               && client.posts[0][1].toolUseId == "u2" && client.posts[0][2].toolUseId == "u3",
           "all results go back in one post, in order");
@@ -542,6 +542,53 @@ void CardArming() {
           "it answers once it has stayed in place for the delay");
 }
 
+// The player closes the window and plays: the answer goes on, a notice says when it is done, failed or waits on a card;
+// a card's time to answer only runs while the window shows, and it is armed again when the window comes back.
+void BackgroundAndNotices() {
+    FakeClient client;
+    FakeTools tools;
+    ChatPage page(&client, &tools);
+    page.Tick(1, kNoon, true);
+    page.Send("look into kill aura");
+    client.Turn(1, 25, "");
+    page.Tick(2, kNoon, false);
+    Check(page.TakeNotice().kind == PageNotice::Kind::None, "background: no notice while the answer runs");
+    client.Text("Here is what I found.");
+    client.Done(StopReason::EndTurn);
+    page.Tick(3, kNoon, false);
+    const PageNotice done = page.TakeNotice();
+    Check(done.kind == PageNotice::Kind::Answered && !done.text.empty(), "background: a notice when the answer is done");
+    Check(page.TakeNotice().kind == PageNotice::Kind::None, "background: the notice is given once");
+
+    page.Tick(4, kNoon, true);
+    page.Send("turn it on");
+    client.Turn(2, 25, "");
+    page.Tick(5, kNoon, false);
+    client.Tools({Use("b1", "set_module_enabled", "{\"module_id\":\"kill_aura\",\"enabled\":true}")});
+    page.Tick(6, kNoon, false);
+    page.Tick(7, kNoon, false);
+    Check(page.TakeNotice().kind == PageNotice::Kind::NeedsYou, "background: a notice when a card waits for the player");
+    for (double t = 8; t < 600; t += 1) {
+        page.Tick(t, kNoon, false);
+    }
+    Check(page.OpenCards().size() == 1 && client.posts.empty() && tools.ran.empty(),
+          "background: a hidden card is never declined by the clock and nothing runs without Allow");
+    page.Tick(600, kNoon, true);
+    Check(!page.Armed(*page.OpenCards()[0]) && !page.Allow("b1"), "background: the card is armed again when the window comes back");
+    page.Tick(600 + kCardArmSeconds, kNoon, true);
+    Check(page.Allow("b1") && tools.ran.size() == 1 && client.posts.size() == 1, "background: then Allow works");
+
+    page.Tick(601, kNoon, true);
+    page.Send("again");
+    client.Turn(3, 25, "");
+    page.Tick(602, kNoon, false);
+    client.Fail("model_unavailable", 200, 30);
+    page.Tick(603, kNoon, false);
+    Check(page.TakeNotice().kind == PageNotice::Kind::Failed, "background: a notice when the answer fails");
+    page.Tick(604, kNoon, true);
+    Check(page.TakeNotice().kind == PageNotice::Kind::None, "background: nothing to tell while the window shows");
+}
+
 // After Allow, the other open cards of the step are described again from the new state and armed again; one the tools
 // now refuse is answered with that refusal.
 void CardsDescribedAgain() {
@@ -695,14 +742,14 @@ void Greeting() {
           "the greeting says what Nickel AI does and that it asks first");
     Check(client.started.empty() && client.snap.messages.empty() && client.snap.revision == 0,
           "the greeting is local: nothing is sent and the conversation stays empty");
-    Check(page.QuotaLine() == "25 messages a day" && page.CanSend("hi"), "the greeting is not counted in the quota");
+    Check(page.QuotaLine() == "Up to 25 messages" && page.CanSend("hi"), "the greeting is not counted in the quota");
     Check(page.Send("hi") && client.started.size() == 1 && client.started[0] == "hi",
           "the first message sent is the player's own, without the greeting");
     client.Turn(1, 25, "2026-11-17T00:00:00Z");
     client.Text("Hello!");
     client.Done(StopReason::EndTurn);
     page.Tick(2, kNoon, true);
-    Check(page.QuotaLine() == "24 left today", "one message sent, one counted: 24 left");
+    Check(page.QuotaLine().rfind("24 left", 0) == 0, "one message sent, one counted: 24 left");
     Check(Kinds(page.Timeline()) == "GPA", "the greeting stays first, before the conversation");
     page.NewChat();
     Check(Kinds(page.Timeline()) == "G" && client.started.size() == 1, "New chat shows the greeting again, sends nothing");
@@ -783,10 +830,10 @@ void TypingIndicator() {
     items = page.Timeline();
     Check(Kinds(items) == "GPA", "the indicator goes away once the answer streams");
     client.Tools({Use("r1", "search_modules", "{\"query\":\"esp\"}")});
-    page.Tick(5, kNoon, false);
+    page.Tick(5, kNoon, false); // read tools run at once (even hidden) and their results go back
     items = page.Timeline();
-    Check(Kinds(items) == "GPAT" && items.back().text == "Searching modules" && !items.back().groupStart,
-          "using tools: the indicator names the tool and continues the assistant's run");
+    Check(Kinds(items) == "GPAT" && tools.ran.size() == 1 && !items.back().groupStart,
+          "using tools: the indicator continues the assistant's run while the results go back");
     page.Tick(6, kNoon, true);
     client.snap.state = TurnState::Streaming;
     ++client.snap.revision;
@@ -1095,6 +1142,12 @@ float FakeWidth(const std::string& text, bool bold) {
 
 // Hostile Markdown stays linear: marks without their closing mark are searched for once, a huge word is measured
 // once per character.
+void MarkdownFontSafe() {
+    Check(md::FontSafe("client â server, a â¥ b â") == "client -> server, a >= b ok",
+          "font-safe: arrows, comparisons and check marks the fonts lack are written with plain characters");
+    Check(md::FontSafe("cafÃ© Ã  cÃ´tÃ©") == "cafÃ© Ã  cÃ´tÃ©", "font-safe: accents are kept");
+}
+
 void MarkdownCost() {
     std::string stars, brackets;
     for (int i = 0; i < 20000; ++i) {
@@ -1194,7 +1247,9 @@ int main() {
     MarkdownBlocks();
     MarkdownLayout();
     MarkdownCost();
+    MarkdownFontSafe();
     CardsDescribedAgain();
+    BackgroundAndNotices();
     std::printf("%s (%d failed)\n", failed == 0 ? "all ai ui checks passed" : "ai ui checks failed", failed);
     return failed == 0 ? 0 : 1;
 }

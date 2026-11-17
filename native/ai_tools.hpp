@@ -39,6 +39,7 @@
 
 #include "json_value.hpp"
 #include "module_registry.hpp"
+#include "packet_capture.hpp"
 #include "script_library.hpp"
 
 namespace nickel::ai::tools {
@@ -111,6 +112,24 @@ private:
     overlay::ModuleRegistry& registry_;
 };
 
+// The packet capture behind capture_packets and read_packets (packet_capture.hpp; game_packet_capture.hpp in the
+// game). Optional: without it both tools answer that packets are not available.
+struct PacketSource {
+    virtual ~PacketSource() = default;
+    // Installs the capture hook the first time; false (and why) when this game build does not allow it.
+    virtual bool Ready(std::string* why) = 0;
+    virtual nickel::packets::Capture& Capture() = 0;
+    virtual int64_t NowMs() = 0;
+};
+
+// What the game shows right now, for get_server_info and get_world_state (built in the game by ai_menu.hpp). Optional:
+// without it both tools answer that the game cannot be read.
+struct GameSource {
+    virtual ~GameSource() = default;
+    virtual json::Value ServerInfo(const json::Value& input) = 0;
+    virtual json::Value WorldState(const json::Value& input) = 0;
+};
+
 struct Deps {
     overlay::ModuleRegistry& registry;
     overlay::ScriptLibrary& scripts;
@@ -122,6 +141,8 @@ struct Deps {
     // True for the modules the player cannot switch on (the menu's "Soon" cards, which it keeps off every frame).
     // They are marked "available": false, and set_module_enabled (to on) and set_setting refuse them. Optional.
     std::function<bool(const std::string& id)> unavailable;
+    PacketSource* packets = nullptr;
+    GameSource* game = nullptr;
 };
 
 // ---- results and cards
@@ -873,11 +894,11 @@ class AssistantTools {
 public:
     explicit AssistantTools(Deps deps) : deps_(deps) {}
 
-    // The twelve tool names, read tools first.
+    // The tool names, read tools first.
     static const std::vector<std::string>& ToolNames() {
         static const std::vector<std::string> kNames = {
                 "search_modules", "get_module",     "get_client_status",  "list_scripts",
-                "read_script",    "validate_script", "navigate_ui",       "set_setting",
+                "read_script",    "validate_script", "navigate_ui",       "capture_packets", "read_packets", "get_server_info", "get_world_state", "set_setting",
                 "revert_changes", "set_module_enabled", "write_script",   "set_script_running"};
         return kNames;
     }
@@ -927,6 +948,16 @@ public:
         if (name == "read_script") return ReadScript(in);
         if (name == "validate_script") return ValidateScript(in);
         if (name == "navigate_ui") return NavigateUi(in);
+        if (name == "capture_packets") return CapturePackets(in);
+        if (name == "read_packets") return ReadPackets(in);
+        if (name == "get_server_info" || name == "get_world_state") {
+            if (deps_.game == nullptr) {
+                return Error("unavailable", "The game cannot be read in this build");
+            }
+            json::Value body = name == "get_server_info" ? deps_.game->ServerInfo(in) : deps_.game->WorldState(in);
+            body.Set("ok", json::Value::MakeBool(true));
+            return Done(body);
+        }
         if (name == "set_setting") return SetSetting(in);
         if (name == "revert_changes") return RevertChanges();
         if (name == "set_module_enabled") return SetModuleEnabled(in);
@@ -1441,6 +1472,123 @@ private:
             items.push_back(std::move(item));
         }
         detail::SetBounded(body, "errors", items);
+        return Done(body);
+    }
+
+    // capture_packets { action: start | stop | clear | status, seconds?, ids? }: records the packets between the game
+    // and the server (both directions) while it runs; read only for the game (nothing is changed or sent).
+    ToolResult CapturePackets(const json::Value& in) {
+        if (deps_.packets == nullptr) {
+            return Error("unavailable", "Packet capture is not available in this build");
+        }
+        detail::InputReader reader(in);
+        std::string action;
+        int64_t seconds = nickel::packets::kDefaultCaptureSeconds;
+        reader.String("action", &action, true, 16);
+        reader.Integer("seconds", &seconds, false, 1, nickel::packets::kMaxCaptureSeconds);
+        std::vector<int> ids;
+        if (const json::Value* list = in.Find("ids"); list != nullptr && !list->IsNull()) {
+            if (!list->IsArray() || list->size() > 64) {
+                return Error("invalid_input", "'ids' must be a list of at most 64 packet ids");
+            }
+            for (size_t i = 0; i < list->size(); ++i) {
+                int64_t id = -1;
+                if (!list->At(i).GetInt64(&id) || id < 0 || id > 1023) {
+                    return Error("invalid_input", "'ids' must hold packet ids from 0 to 1023");
+                }
+                ids.push_back(static_cast<int>(id));
+            }
+        }
+        if (!reader.ok()) {
+            return Error("invalid_input", reader.message());
+        }
+        auto& capture = deps_.packets->Capture();
+        const int64_t now = deps_.packets->NowMs();
+        if (action == "start") {
+            std::string why;
+            if (!deps_.packets->Ready(&why)) {
+                return Error("unavailable", why.empty() ? "Packet capture is not available in this game version" : why);
+            }
+            capture.Start(now, static_cast<int>(seconds), ids);
+        } else if (action == "stop") {
+            capture.Stop();
+        } else if (action == "clear") {
+            capture.Clear();
+        } else if (action != "status") {
+            return Error("invalid_input", "'action' must be start, stop, clear or status");
+        }
+        const nickel::packets::Status s = capture.Read(now);
+        json::Value body = json::Value::MakeObject();
+        body.Set("ok", json::Value::MakeBool(true));
+        body.Set("capturing", json::Value::MakeBool(s.capturing));
+        body.Set("elapsed_seconds", json::Value::MakeInt(s.elapsedMs / 1000));
+        body.Set("seconds_left", json::Value::MakeInt(s.leftMs / 1000));
+        body.Set("kept", json::Value::MakeInt(static_cast<int64_t>(s.kept)));
+        body.Set("seen", json::Value::MakeInt(static_cast<int64_t>(s.seen)));
+        body.Set("dropped", json::Value::MakeInt(static_cast<int64_t>(s.dropped)));
+        json::Value filter = json::Value::MakeArray();
+        for (int id : s.ids) {
+            filter.Push(json::Value::MakeInt(id));
+        }
+        body.Set("ids", std::move(filter));
+        return Done(body);
+    }
+
+    // read_packets { direction?: in | out | both, ids?, from_seq?, limit?, max_bytes? }: captured packets, oldest
+    // first, with their payload (after the id header) in hex, at most max_bytes bytes each.
+    ToolResult ReadPackets(const json::Value& in) {
+        if (deps_.packets == nullptr) {
+            return Error("unavailable", "Packet capture is not available in this build");
+        }
+        detail::InputReader reader(in);
+        std::string direction = "both";
+        int64_t fromSeq = 0, limit = 30, maxBytes = 256;
+        reader.String("direction", &direction, false, 8);
+        reader.Integer("from_seq", &fromSeq, false, 0, INT64_MAX);
+        reader.Integer("limit", &limit, false, 1, 100);
+        reader.Integer("max_bytes", &maxBytes, false, 0, 4096);
+        nickel::packets::Query q;
+        if (const json::Value* list = in.Find("ids"); list != nullptr && !list->IsNull()) {
+            if (!list->IsArray() || list->size() > 64) {
+                return Error("invalid_input", "'ids' must be a list of at most 64 packet ids");
+            }
+            for (size_t i = 0; i < list->size(); ++i) {
+                int64_t id = -1;
+                if (!list->At(i).GetInt64(&id) || id < 0 || id > 1023) {
+                    return Error("invalid_input", "'ids' must hold packet ids from 0 to 1023");
+                }
+                q.ids.push_back(static_cast<int>(id));
+            }
+        }
+        if (!reader.ok()) {
+            return Error("invalid_input", reader.message());
+        }
+        if (direction != "both" && direction != "in" && direction != "out") {
+            return Error("invalid_input", "'direction' must be in, out or both");
+        }
+        q.direction = direction == "out" ? 1 : direction == "in" ? -1 : 0;
+        q.fromSeq = static_cast<uint64_t>(fromSeq);
+        q.limit = static_cast<size_t>(limit);
+        const std::vector<nickel::packets::Record> found = deps_.packets->Capture().Find(q);
+        std::vector<json::Value> items;
+        for (const auto& r : found) {
+            json::Value item = json::Value::MakeObject();
+            item.Set("seq", json::Value::MakeInt(static_cast<int64_t>(r.seq)));
+            item.Set("ms", json::Value::MakeInt(r.atMs));
+            item.Set("dir", json::Value::MakeString(r.outgoing ? "out" : "in"));
+            item.Set("id", json::Value::MakeInt(r.id));
+            item.Set("size", json::Value::MakeInt(r.size));
+            item.Set("hex", json::Value::MakeString(nickel::packets::Hex(r.payload, static_cast<size_t>(maxBytes))));
+            if (r.truncated || r.payload.size() > static_cast<size_t>(maxBytes)) {
+                item.Set("cut", json::Value::MakeBool(true));
+            }
+            items.push_back(std::move(item));
+        }
+        json::Value body = json::Value::MakeObject();
+        body.Set("ok", json::Value::MakeBool(true));
+        body.Set("capturing", json::Value::MakeBool(deps_.packets->Capture().Capturing(deps_.packets->NowMs())));
+        body.Set("next_seq", json::Value::MakeInt(found.empty() ? fromSeq : static_cast<int64_t>(found.back().seq) + 1));
+        detail::SetBounded(body, "packets", items);
         return Done(body);
     }
 

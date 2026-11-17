@@ -8,14 +8,17 @@ namespace Nickel.Desktop;
 public sealed class MinecraftConnection : IDisposable
 {
  public const string Version="1.26.62.01";
- // Any installation of a validated build is accepted (Microsoft Store / Xbox app, LeviLauncher, other launchers): the
- // image must be Minecraft.Windows.exe, carry a validated version and hold that build's code, constants and data
- // (GameBuilds). The overlay checks the version and the section layout again before it hooks anything.
+ // Any installation of a supported version is accepted (Microsoft Store / Xbox app, LeviLauncher, other launchers):
+ // the image must be Minecraft.Windows.exe with a tested version or one the overlay adapts to (GameBuilds.Check). The
+ // overlay checks the build again before it hooks anything, and finds its game functions itself in a build it has no
+ // profile for.
  private readonly SafeProcessHandle handle;
  public int Pid{get;}
  public string ImagePath{get;}
  public bool IsAlive=>!handle.IsClosed&&!handle.IsInvalid&&GetExitCodeProcess(handle,out var code)&&code==259;
- private MinecraftConnection(SafeProcessHandle handle,int pid,string path){this.handle=handle;Pid=pid;ImagePath=path;}
+ /// <summary>True when the game is a tested build (file and running code); false when the overlay adapts to it.</summary>
+ public bool Exact{get;}
+ private MinecraftConnection(SafeProcessHandle handle,int pid,string path,bool exact){this.handle=handle;Pid=pid;ImagePath=path;Exact=exact;}
  public static Task<MinecraftConnection> OpenAsync(CancellationToken cancellation)=>Task.Run(()=>
  {
   var processes=Process.GetProcessesByName("Minecraft.Windows");
@@ -41,16 +44,16 @@ public sealed class MinecraftConnection : IDisposable
     // Same file, not same text: a Microsoft Store / Xbox app installation reports its main module under
     // C:\Program Files\WindowsApps\... and its image under C:\XboxGames\..., two names of one file.
     if(!SameFile(path,actual.ToString()))throw new InvalidOperationException("Minecraft changed during connection. Try again.");
-    if(GameBuilds.Check(actual.ToString(),GameBuilds.Validated,out var build) is string refusal)throw new InvalidOperationException(refusal);
-    // The code that runs, not only the file: refused when it differs from the build (file replaced after the game
-    // started, code patched at start-up). Skipped once Nickel is loaded: its own hooks change that code, and the
-    // overlay checked it before installing them.
+    if(GameBuilds.Check(actual.ToString(),GameBuilds.Validated,out var build,out _) is string refusal)throw new InvalidOperationException(refusal);
+    // A tested build whose running code is still that build's loads with its profile. Any other build of a supported
+    // version (a launcher's copy, code patched at start-up by another program, a hotfix) loads too: the overlay then
+    // looks for every game function Nickel uses and keeps game features off when one differs (native/game_resolve.hpp),
+    // which the launcher shows after loading (NativeLoader.GameStatus).
     var loaded=false;foreach(ProcessModule m in process.Modules)if(string.Equals(m.ModuleName,"Nickel.Overlay.dll",StringComparison.OrdinalIgnoreCase))loaded=true;
-    if(!loaded&&!GameBuilds.MemoryCodeMatches(opened,(ulong)module.BaseAddress.ToInt64(),build!))
-     throw new InvalidOperationException("Minecraft's loaded code is not the validated build (the game file was replaced, or another program changed the game's code); Nickel will not load into it.");
+    var exact=build!=null&&(loaded||GameBuilds.MemoryCodeMatches(opened,(ulong)module.BaseAddress.ToInt64(),build));
     cancellation.ThrowIfCancellationRequested();
     if(!GetExitCodeProcess(opened,out var code)||code!=259)throw new InvalidOperationException("Minecraft closed during connection.");
-    return new MinecraftConnection(opened,pid,path);
+    return new MinecraftConnection(opened,pid,path,exact);
    }
    catch{opened.Dispose();throw;}
   }

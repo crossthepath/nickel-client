@@ -290,7 +290,7 @@ bool Initialize(IDXGISwapChain* swap){
 struct HideState{HWND hwnd=nullptr;std::atomic<bool> windowReady{false},windowFailed{false};ComPtr<IDCompositionDevice> dcomp;ComPtr<IDCompositionTarget> target;ComPtr<IDCompositionVisual> visual;
  ComPtr<IDXGISwapChain3> chain;std::vector<Frame> frames;ComPtr<ID3D12DescriptorHeap> rtv;UINT w=0,h=0;RECT placed{};bool failed=false,shown=false;};
 HideState& Hide(){static auto* h=new HideState;return *h;}
-void HideWindowThread(){auto& h=Hide();h.hwnd=CreateWindowExW(0x082800a0,L"STATIC",L"",WS_POPUP|WS_DISABLED,0,0,1,1,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+void HideWindowThread(){auto& h=Hide();h.hwnd=CreateWindowExW(0x082800a0,L"STATIC",L"",WS_POPUP|WS_DISABLED,0,0,1,1,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);   // not a game address: window style bits
  if(!h.hwnd){h.windowFailed=true;return;}SetLayeredWindowAttributes(h.hwnd,0,255,LWA_ALPHA);SetWindowDisplayAffinity(h.hwnd,0x11);h.windowReady=true;
  MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}}
 bool HideBuildFrames(HideState& h){h.frames.clear();h.frames.resize(2);D3D12_DESCRIPTOR_HEAP_DESC heap{};heap.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV;heap.NumDescriptors=2;
@@ -444,10 +444,19 @@ bool InstallInputHooks(std::vector<void*>& seen,bool lastAttempt){
  if(lastAttempt)Log(("GameInput: hooks incomplete ("+std::to_string(interfaces)+" interface versions, "+std::to_string(readings)+" readings, "+std::to_string(mouseSlots)+" mouse, "+std::to_string(keySlots)+" keyboard)").c_str());
  return false;
 }
+// Tells the launcher whether game features work in this Minecraft: a named shared memory block
+// "Local\NickelOverlay.Build.<pid>" holding "ok\n<build>" or "off\n<reason>" (UTF-8), kept for the life of the game.
+void PublishBuildStatus(bool ok,const std::string& detail){
+ static HANDLE mapping{};if(mapping)return;
+ const auto name=L"Local\\NickelOverlay.Build."+std::to_wstring(GetCurrentProcessId());
+ mapping=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,1024,name.c_str());if(!mapping)return;
+ auto view=(char*)MapViewOfFile(mapping,FILE_MAP_WRITE,0,0,1024);if(!view)return;
+ const std::string text=std::string(ok?"ok\n":"off\n")+detail;memcpy(view,text.data(),text.size()<1023?text.size():1023);UnmapViewOfFile(view);}
 DWORD WINAPI Worker(void*){
  HMODULE pinned{};GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,(LPCWSTR)&Worker,&pinned);
  wchar_t path[32768]{};GetModuleFileNameW(ownModule,path,32768);directory=path;directory=directory.substr(0,directory.find_last_of(L"\\/"));logFile.open(std::filesystem::path(directory+L"\\overlay.log"),std::ios::app);Log("Overlay component started; no gameplay adapters enabled");{uintptr_t gameBase{};uint32_t gameSize{};const bool validated=game::Supported(&gameBase,&gameSize);   // before any game hook: checks the loaded code too
- Log(validated?(std::string("Game build: ")+game::kGameBuilds[game::currentBuild].name+", code verified").c_str():"Game build: not a validated Minecraft build, game features stay off");}DecodeLogo();
+ const std::string buildLine=validated?std::string("Game build: ")+game::CurrentProfile().name+(game::currentBuild==game::kAdaptedBuild?", Nickel's game functions found and verified":", code verified"):"Game build: game features stay off: "+game::buildRefusal;
+ Log(buildLine.c_str());PublishBuildStatus(validated,validated?game::CurrentProfile().name:game::buildRefusal);}DecodeLogo();
  game::faultLog=Log;   // fault boundaries report from the first hook on, before the menu sets its own log
  auto eventName=L"Local\\NickelOverlay.Rendered."+std::to_wstring(GetCurrentProcessId());readyEvent=CreateEventW(nullptr,TRUE,FALSE,eventName.c_str());
  WNDCLASSEXW wc{sizeof(wc)};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=ownModule;wc.lpszClassName=L"NickelOverlayProbe";RegisterClassExW(&wc);auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPEDWINDOW,0,0,16,16,nullptr,nullptr,ownModule,nullptr);

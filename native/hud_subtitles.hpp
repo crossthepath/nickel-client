@@ -59,7 +59,7 @@ void DrawSubtitles(std::vector<std::string>& drawn){
  const double start=lines[cur].at,next=cur+1<(int)lines.size()?lines[cur+1].at:start+5;const float progress=(float)std::clamp((t-start)/std::max(.05,next-start),0.0,1.0);
  const float transition=num("transition",350)/1000.f;const float fade=transition>0?(float)std::clamp((t-start)/transition,0.0,1.0):1.f;
  const ImU32 ink=ImGui::ColorConvertFloat4ToU32(ParseColor(text("text_color").empty()?"#ffffffff":text("text_color"))),glow=ImGui::ColorConvertFloat4ToU32(ParseColor(text("highlight_color").empty()?"#59d9ffff":text("highlight_color")));
- auto alpha=[](ImU32 c,float a){return (c&0x00ffffff)|((ImU32)std::clamp((float)((c>>24)&255)*a,0.f,255.f)<<24);};const bool karaoke=Flag(*mod,"karaoke_highlight",true),showNext=Flag(*mod,"show_next_line",true);
+ auto alpha=[](ImU32 c,float a){return (c&0x00ffffff)|((ImU32)std::clamp((float)((c>>24)&255)*a,0.f,255.f)<<24);};const bool karaoke=Flag(*mod,"karaoke_highlight",true),showNext=Flag(*mod,"show_next_line",true);   // not a game address: colour mask
  const std::string mode=text("mode");auto* d=HudList();const std::string& line=lines[cur].text;const std::string upcoming=cur+1<(int)lines.size()?lines[cur+1].text:std::string();
  auto drawLine=[&](ImVec2 center,float size,bool current){const std::string& s=current?line:upcoming;if(s.empty())return;const float w=TextWidth(semibold,size,s.c_str());const ImVec2 p(std::round(center.x-w/2),std::round(center.y));
   const ImU32 base=current?alpha(ink,fade):alpha(ink,.55f*fade);Label(d,semibold,size,ImVec2(p.x+1,p.y+1),s.c_str(),alpha(IM_COL32(0,0,0,255),.6f*fade));Label(d,semibold,size,p,s.c_str(),base);

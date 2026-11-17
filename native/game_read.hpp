@@ -11,6 +11,7 @@
 #include <cstring>
 #include "game_fault.hpp"
 #include "game_build.hpp"
+#include "game_resolve.hpp"
 extern "C" {
 #include "../vendor/minhook/src/hde/hde64.h"
 }
@@ -65,14 +66,25 @@ inline bool LocalActor(uintptr_t registry,uint32_t entity,uintptr_t* actor){
  uintptr_t local{},slot{};uint32_t packed{};if(!Storage(registry,Fnv("LocalPlayerComponent"),&local)||!Packed(local,entity,&packed))return false;
  uint64_t found{};if(!Element(registry,entity,"ActorOwnerComponent",8,&slot)||!Read(slot,&found)||!found)return false;*actor=found;return true;
 }
-// Active only in Minecraft.Windows.exe holding a validated build: its version resource and its section layout
-// (game_build.hpp). Any installation of that build is accepted (Microsoft Store / Xbox app, LeviLauncher, other
-// launchers), whatever its file size or hash; each hook still checks the code it patches before installing.
+// Why game features stay off ("" while they work), set by the first Supported() call.
+inline std::string buildRefusal;
+// Active only in Minecraft.Windows.exe holding a validated build (game_build.hpp: version resource, section layout and
+// loaded code), or a build of a version in AdaptableVersion() whose functions game_resolve.hpp finds: any
+// installation is accepted (Microsoft Store / Xbox app, LeviLauncher, other launchers, copies changed elsewhere), and
+// each hook still checks the code it patches before installing.
 inline bool Supported(uintptr_t* base,uint32_t* size){
  static int state=0;static uintptr_t image=0;static uint32_t imageSize=0;
  if(!state){state=-1;wchar_t path[MAX_PATH]{};GetModuleFileNameW(nullptr,path,MAX_PATH);auto file=wcsrchr(path,L'\\');
-  if(!_wcsicmp(file?file+1:path,L"Minecraft.Windows.exe")){image=(uintptr_t)GetModuleHandleW(nullptr);auto dos=(const IMAGE_DOS_HEADER*)image;auto nt=(const IMAGE_NT_HEADERS64*)(image+dos->e_lfanew);imageSize=nt->OptionalHeader.SizeOfImage;
-   uint16_t version[4]{};if(GameVersion((HMODULE)image,version)){currentBuild=MatchBuild((const uint8_t*)image,version);if(currentBuild>=0)state=1;}}}
+  if(_wcsicmp(file?file+1:path,L"Minecraft.Windows.exe"))buildRefusal="this process is not Minecraft.Windows.exe";
+  else{image=(uintptr_t)GetModuleHandleW(nullptr);auto dos=(const IMAGE_DOS_HEADER*)image;auto nt=(const IMAGE_NT_HEADERS64*)(image+dos->e_lfanew);imageSize=nt->OptionalHeader.SizeOfImage;
+   uint16_t version[4]{};
+   // NICKEL_FORCE_ADAPT=1 in the game's environment skips the profiles (test of the adapted path on a tested build).
+   const bool forceAdapt=GetEnvironmentVariableW(L"NICKEL_FORCE_ADAPT",nullptr,0)>0;
+   if(!GameVersion((HMODULE)image,version))buildRefusal="the game has no version information";
+   else if(!forceAdapt&&(currentBuild=MatchBuild((const uint8_t*)image,version))>=0)state=1;
+   else if(!AdaptableVersion(version)){char text[160];snprintf(text,sizeof text,"Minecraft %u.%u.%u is not supported (Nickel supports 1.26.60 and later)",version[0],version[1],version[2]);buildRefusal=text;}
+   else{AdaptedBuild adapted=AdaptBuild((const uint8_t*)image);const std::string error=adapted.error;
+    if(UseAdaptedBuild((const uint8_t*)image,version,std::move(adapted)))state=1;else buildRefusal=error;}}}
  *base=image;*size=imageSize;return state==1;
 }
 // Main client instance: *(base+0x128c0f90) -> +8 -> +0x20 -> +0x48, context at +0x30, tree at +0x9a0.
@@ -143,7 +155,7 @@ inline bool ReadServer(Server* server){
 // Guards: both vtables must lie in the game image and both functions in its code section (.text: RVA 0x1000,
 // size 0xeec6600); calls run under SEH and the output is a zeroed 256-byte buffer. `trace` records how far the chain got.
 struct PingTrace{int step;uint64_t getter,status;};   // step = last link reached; getter / status = RVAs of the two called functions
-inline bool InCode(const Context& context,uint64_t address){if(currentBuild<0)return false;const GameSection& text=kGameBuilds[currentBuild].sections[0];return address>=context.base+text.address&&address<context.base+text.address+text.size;}
+inline bool InCode(const Context& context,uint64_t address){if(currentBuild<0)return false;const GameSection& text=CurrentProfile().sections[0];return address>=context.base+text.address&&address<context.base+text.address+text.size;}
 inline bool CallGetter(uint64_t function,uint64_t self,uint64_t* result){__try{*result=reinterpret_cast<uint64_t(*)(uint64_t)>(function)(self);return true;}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
 inline bool CallFill(uint64_t function,uint64_t self,void* out){__try{reinterpret_cast<void*(*)(uint64_t,void*)>(function)(self,out);return true;}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
 // 1: latency read; 0: no latency (singleplayer or not yet connected, shown as 0 ms); -1: no player or a guard failed.

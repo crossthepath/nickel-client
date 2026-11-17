@@ -118,7 +118,10 @@ Check("ReleaseTrust.SelfTest passes", () => Report(ReleaseTrust.SelfTest()));
 Check("GameBuilds.SelfTest passes", () => Report(GameBuilds.SelfTest()));
 
 // ---- validated game builds
-Check("game builds: SupportedVersions is \"1.26.62 / 1.26.63\"", () => GameBuilds.SupportedVersions == "1.26.62 / 1.26.63");
+Check("game builds: SupportedVersions is \"1.26.62 / 1.26.63 / 1.26.65\"", () => GameBuilds.SupportedVersions == "1.26.62 / 1.26.63 / 1.26.65");
+Check("game builds: 1.26.60 and later versions are adapted in game, older ones refused", () =>
+ GameBuilds.Adaptable(1, 26, 60) && GameBuilds.Adaptable(1, 26, 64) && GameBuilds.Adaptable(1, 26, 80) && GameBuilds.Adaptable(1, 27, 0) &&
+ !GameBuilds.Adaptable(1, 26, 59) && !GameBuilds.Adaptable(1, 25, 90) && !GameBuilds.Adaptable(2, 0, 0));
 Check("game builds: each validated version is recognised, others are not", () =>
  GameBuilds.VersionValidated(1, 26, 62, GameBuilds.Validated) && GameBuilds.VersionValidated(1, 26, 63, GameBuilds.Validated) &&
  !GameBuilds.VersionValidated(1, 26, 64, GameBuilds.Validated) && !GameBuilds.VersionValidated(1, 25, 62, GameBuilds.Validated));

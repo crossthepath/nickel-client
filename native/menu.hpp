@@ -8,6 +8,7 @@ void SetWindow(HWND hwnd);   // game window, used to open the full-screen map fr
 void DrawMenu(float progress,ImTextureID logo);
 void ToggleMenu(HWND hwnd);
 bool MenuIsOpen();
+bool GameplayInputAllowed();   // foreground Minecraft world input, with all game and Nickel menus closed
 void NoteGameCursor(bool lock);   // the game asked to lock (ClipCursor area, SetCursorPos) or release the cursor while the menu is open
 bool Playing();   // the game owns the mouse (in the world, no game screen with a cursor)
 bool CanToggleNow();   // false when another game UI is open and "Open in menus" is off

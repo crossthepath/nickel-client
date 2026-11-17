@@ -37,7 +37,8 @@ constexpr double kConfirmTimeoutSeconds = 120;    // a card left unanswered is d
 inline const std::vector<std::string>& ReadToolNames() {
     static const std::vector<std::string> names = {"search_modules", "get_module",    "get_client_status",
                                                    "list_scripts",   "read_script",   "validate_script",
-                                                   "navigate_ui"};
+                                                   "navigate_ui",    "capture_packets", "read_packets",
+                                                   "get_server_info", "get_world_state"};
     return names;
 }
 
@@ -146,7 +147,8 @@ struct QuotaView {
     bool known = false; // false until the first "turn" event
     int used = 0;
     int limit = kDefaultDailyLimit;
-    std::string resetAt; // ISO 8601, UTC
+    std::string resetAt; // ISO 8601, UTC: when the next message comes back (one every 30 minutes, up to the limit)
+    bool unlimited = false;
 };
 
 // The text of a chat message, shared with the client's immutable message instead of copied: the panel takes a new
@@ -214,6 +216,8 @@ public:
     virtual void NewConversation() = 0;
     virtual uint64_t Revision() const = 0;
     virtual ConversationSnapshot Snapshot() const = 0;
+    // Nickel AI memory (Settings): sent with the next turns. Clients without memory ignore it.
+    virtual void SetMemory(bool) {}
 };
 
 // The tool side, as the panel uses it. Called on the render thread only, while the panel is visible.

@@ -9,6 +9,38 @@ Nickel's change history comes from its commits and, once published, its releases
 Write a short imperative commit or PR title describing the resulting behavior; release notes are written from that
 record. Do not add a handwritten entry here for each change.
 
+## 1.3.0-beta
+
+### Game versions
+
+- Minecraft 1.26.65 (the current Microsoft Store / Xbox app version) is supported, along with 1.26.62 and 1.26.63.
+- Nickel loads into any copy of Minecraft 1.26.60 or later, from any launcher: when the game is not a build Nickel
+  was tested on (a launcher's own copy, a game patched by another program, a newer update), Nickel finds every game
+  function it uses by itself and checks each one before hooking it. If one is missing or changed, the menu, HUD and
+  scripts still work, game modules stay off, and the launcher says which function differs.
+- A refused game now says why ("Load failed" with the reason).
+
+### Launcher
+
+- When a new version is out, the launcher says so in a pop-up as it opens: Update now downloads it, checks its
+  signature, and restarts the launcher on the new version; Later closes the pop-up; What's new opens the release notes.
+
+### Nickel AI (soon)
+
+- Nickel AI, an assistant inside the menu that answers questions about modules and servers and can change settings
+  or write scripts for you, is coming. It shows as "Soon" in Settings > Connection and cannot be turned on yet.
+
+### PUBLIC
+
+- The online community (PUBLIC) is now on by default; turn it off in Settings > Connection > Online community
+  (PUBLIC). A player who already turned it off keeps it off.
+
+### Menu
+
+- The menu fits the game window: it scales down on smaller windows instead of going past the edges.
+- Client keys (module binds, Right Shift, mouse buttons for Auto Clicker, Kill Aura and Aim Assist) no longer act
+  while the game is paused, a game screen is open or Minecraft is not the window in front.
+
 ## 1.2.0-beta
 
 ### PUBLIC

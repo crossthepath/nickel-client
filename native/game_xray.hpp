@@ -54,7 +54,7 @@ using XrayLightFn=uint64_t(*)(uint64_t,uint64_t,uint64_t,uint64_t);inline XrayLi
 inline uint64_t XrayLightDetour(uint64_t a,uint64_t b,uint64_t c,uint64_t d){const uint64_t r=xrayLightOriginal(a,b,c,d);if(XrayOn()&&b){__try{*(uint16_t*)b=0x0f0f;}__except(EXCEPTION_EXECUTE_HANDLER){InterlockedExchange(&Xray().fault,1);}}return r;}
 // #10 / #11
 inline void XrayVisible(uint8_t* p){
- *(uint32_t*)p=0;*(uint16_t*)(p+4)=0;*(uint16_t*)p=0x106;p[2]=1;p[0]=0x3e;*(uint32_t*)(p+1)|=0x1010204;p[1]=0x3d;p[5]|=3;p[3]|=6;p[4]|=6;
+ *(uint32_t*)p=0;*(uint16_t*)(p+4)=0;*(uint16_t*)p=0x106;p[2]=1;p[0]=0x3e;*(uint32_t*)(p+1)|=0x1010204;p[1]=0x3d;p[5]|=3;p[3]|=6;p[4]|=6;   // not a game address: packed flag bits
  uint32_t f;std::memcpy(&f,p+2,4);const uint32_t before=f;f|=0x38100804u;std::memcpy(p+2,&f,4);p[3]=(uint8_t)(((before>>8)&0xff)|0x30);p[4]|=0x20;p[5]|=0x18;
 }
 using XrayVisFn=uint64_t(*)(uint64_t,uint64_t,uint64_t,uint64_t);inline XrayVisFn xrayVisOriginal[2]{};

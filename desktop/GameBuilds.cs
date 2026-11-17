@@ -13,7 +13,8 @@ public sealed record GameSection(string Name, uint Address, uint Size, string Sh
 public sealed record GameDirectory(int Index, uint Address, uint Size);
 
 /// <summary>A Minecraft build Nickel was validated against: every offset, hook and structure of the overlay is checked
-/// against it. A running game is accepted only when its file and its loaded code hold one of these builds.</summary>
+/// against it. A game that holds none of them but has a version GameBuilds.Adaptable() accepts is loaded too: the
+/// overlay then finds its game functions itself (native/game_resolve.hpp).</summary>
 public sealed record GameBuild(string Name, int Major, int Minor, int Build, uint EntryPoint, GameDirectory[] Directories, GameSection[] Sections);
 
 /// <summary>
@@ -23,8 +24,9 @@ public sealed record GameBuild(string Name, int Major, int Minor, int Build, uin
 /// (exports, imports, exception table, relocations, TLS callbacks, load configuration, import address table, delayed
 /// imports, .NET header) are the build's. What may differ: signature, resources, debug data, other header fields and added sections, which
 /// installations from the Microsoft Store / Xbox app, LeviLauncher or other launchers change without moving anything the
-/// overlay depends on. The code loaded in the process is then compared with the build (MemoryCodeMatches), so a file
-/// swapped after the game started or code patched at start-up is refused too. Keep in step with native/game_build.hpp.
+/// overlay depends on. The code loaded in the process is then compared with the build (MemoryCodeMatches): a file
+/// swapped after the game started or code patched at start-up is not that build, and the overlay adapts to it like to
+/// any other copy of an adaptable version. Keep in step with native/game_build.hpp.
 /// </summary>
 public static class GameBuilds
 {
@@ -56,9 +58,23 @@ public static class GameBuilds
    new(".pdata", 0x12bdf000, 0xb59b78, "99ef9e1fcb99c725250d6953c9a5178a7736c4b7da9a105655648076243187e4"),
    new(".reloc", 0x13742000, 0xfa3c4, "4dfd51dff270c7a698325d00b229bfb83d8f9b48b8a2e2eb943fc545f01214cd"),
   ]),
+  // The Microsoft Store / Xbox app update of November 2026: same game code again, relinked
+  // (native/generated_build_1_26_65_1.hpp).
+  new("Minecraft 1.26.65.1", 1, 26, 65, 0xeea6e80,
+  [
+   new(0, 0xf9a54d8, 0x162), new(1, 0xf9a563c, 0x6f4), new(3, 0x12be0000, 0xb59ba8), new(5, 0x13743000, 0xfa3a4),
+   new(9, 0xf4f4a50, 0x28), new(10, 0xefc7990, 0x140), new(11, 0, 0), new(12, 0xf9a7f90, 0x2260), new(13, 0, 0), new(14, 0, 0),
+  ],
+  [
+   new(".text", 0x1000, 0xeec75c6, "7e23c77b2f7b5a06b6cf1ba881980a5e61f3e2af0ab56597cbf63c6a2e77b2d3"),
+   new(".rdata", 0xeec9000, 0x344143c, "d5d53f75445c4ca7a13b51fb2d1c4bf5af7379a7907b76a0f13eb28ee10e3efb"),
+   new(".data", 0x1230b000, 0x8d4b68, "1efbe5d55e5d450004973b0640a7c75ed2969a44d65b5e3659943d8700a4f608"),
+   new(".pdata", 0x12be0000, 0xb59ba8, "48b914569d08b5ad54d374ec4297c47a84bb3bf3bf084fda560e65f5615d2371"),
+   new(".reloc", 0x13743000, 0xfa3a4, "be9b11b103e56b672f9e70f36b4de99e4ebc0a7ce84ac2a876b81b57c7a5e4b8"),
+  ]),
  ];
 
- /// <summary>The validated game versions for display, for example "1.26.62 / 1.26.63".</summary>
+ /// <summary>The validated game versions for display, for example "1.26.62 / 1.26.63 / 1.26.65".</summary>
  public static string SupportedVersions => string.Join(" / ", Validated.Select(b => $"{b.Major}.{b.Minor}.{b.Build}").Distinct());
 
  /// <summary>True for the file name of the game's executable (any folder).</summary>
@@ -102,20 +118,28 @@ public static class GameBuilds
   return null;
  }
 
- /// <summary>Checks a game image file: null when it holds a validated build (returned in build), else the refusal.</summary>
- public static string? Check(string path, IReadOnlyList<GameBuild> builds, out GameBuild? build)
+ /// <summary>True for the versions the overlay adapts to when the game file holds no validated build (a launcher's copy
+ /// changed elsewhere, a relinked hotfix): it then finds every game function Nickel uses itself and keeps game features
+ /// off when one differs (native/game_resolve.hpp, AdaptableVersion; keep both in step).</summary>
+ public static bool Adaptable(int major, int minor, int build) => major == 1 && (minor > 26 || (minor == 26 && build >= 60));
+
+ /// <summary>Checks a game image file: null when Nickel can load into it, else the refusal. build is the validated build
+ /// the file holds; null with a version Adaptable() means the overlay will look for Nickel's game functions itself, and
+ /// note then says why the file is not a validated build.</summary>
+ public static string? Check(string path, IReadOnlyList<GameBuild> builds, out GameBuild? build, out string note)
  {
-  build = null;
+  build = null; note = "";
   if (!IsGameImage(path)) return "This process is not Minecraft.Windows.exe.";
   var info = FileVersionInfo.GetVersionInfo(path);
   var version = $"{info.FileMajorPart}.{info.FileMinorPart}.{info.FileBuildPart}.{info.FilePrivatePart}";
-  var supported = string.Join(", ", builds.Select(b => $"{b.Major}.{b.Minor}.{b.Build}").Distinct());
-  if (!VersionValidated(info.FileMajorPart, info.FileMinorPart, info.FileBuildPart, builds))
-   return $"Nickel supports Minecraft {supported}; this game is {version}.";
+  var validated = VersionValidated(info.FileMajorPart, info.FileMinorPart, info.FileBuildPart, builds);
+  if (!validated && !Adaptable(info.FileMajorPart, info.FileMinorPart, info.FileBuildPart))
+   return $"Nickel supports Minecraft 1.26.60 and later (tested: {SupportedVersions}); this game is {version}.";
   var sameVersion = builds.Where(b => b.Major == info.FileMajorPart && b.Minor == info.FileMinorPart && b.Build == info.FileBuildPart).ToArray();
   using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
   build = Identify(file, sameVersion, out var reason);
-  return build != null ? null : $"This Minecraft {version} is not a build Nickel was validated against ({reason}); Nickel will not load into it.";
+  if (build == null) note = sameVersion.Length == 0 ? $"Minecraft {version} has no profile yet" : $"this Minecraft {version} is not the tested build ({reason})";
+  return null;
  }
 
  /// <summary>True when the code (.text) loaded at imageBase in the process is byte for byte the build's code (it has no
@@ -222,6 +246,8 @@ public static class GameBuilds
   if (!IsGameImage(@"C:\XboxGames\Minecraft for Windows\Content\Minecraft.Windows.exe") || IsGameImage(@"C:\x\Minecraft.Windows.exe.bak") || IsGameImage(@"C:\x\Notepad.exe"))
    return "the game image name rule is wrong";
   if (!VersionValidated(1, 26, 62, builds) || VersionValidated(1, 26, 63, builds) || VersionValidated(1, 25, 62, builds)) return "the version rule is wrong";
+  if (!Adaptable(1, 26, 60) || !Adaptable(1, 26, 65) || !Adaptable(1, 26, 90) || !Adaptable(1, 27, 0) || Adaptable(1, 26, 59) || Adaptable(1, 21, 62) || Adaptable(2, 0, 0))
+   return "the adaptable version rule is wrong";
   // The in-memory comparison on this launcher's own process: a buffer holding the profile's code is accepted, and the
   // same buffer with one byte changed is refused.
   var code = new byte[0x1000 + 0x1f0]; good.AsSpan(0x400, 0x1f0).CopyTo(code.AsSpan(0x1000));
