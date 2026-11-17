@@ -141,7 +141,7 @@ inline bool HlFilter(bool players,bool mobs,bool items,bool projectiles,uintptr_
  if(local)return false;
  if(Storage(registry,Fnv("PlayerComponent"),&storage)&&Packed(storage,entity,&packed)){HlCount_(HdPlayer);return players;}
  if(!Element(registry,entity,"ActorTypeComponent",4,&element)||!Read(element,&type)){HlCount_(HdTypeFail);return false;}
- if(type&0x400000)return projectiles;if(type&0x100)return mobs;return items&&type==0x40;
+ if(type&0x400000)return projectiles;if(type&0x100)return mobs;return items&&type==0x40;   // not a game address: actor type flag
 }
 inline bool HlIsLocal(uintptr_t actor){uint64_t registry{};uint32_t entity{};uintptr_t storage{};uint32_t packed{};return Read(actor+0x10,&registry)&&registry&&Read(actor+0x18,&entity)&&Storage(registry,Fnv("LocalPlayerComponent"),&storage)&&Packed(storage,entity,&packed);}
 inline uint8_t HlSelect(const HlModules& m,uintptr_t actor,bool local){   // local: HlIsLocal(actor), computed once by the caller

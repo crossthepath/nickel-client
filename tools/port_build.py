@@ -82,7 +82,7 @@ def used_addresses(ref):
     ranges = {n: (ref['secs'][n][0], ref['secs'][n][0] + ref['secs'][n][1]) for n in ('.text', '.rdata', '.data')}
     found = {}
     for f in sorted((ROOT / 'native').glob('*.[hc]pp')):
-        if f.name.startswith('generated_build_'): continue
+        if f.name.startswith('generated_build_') or f.name == 'generated_signatures.hpp': continue
         for line in f.read_text(encoding='utf-8', errors='replace').splitlines():
             code = '' if line.lstrip().startswith('//') else line.split('//')[0]
             for m in re.finditer(r'0x([0-9a-fA-F]{6,8})\b', code):

@@ -586,10 +586,17 @@ public partial class MainWindow : Window
   var text = T(label, 14.5, SemiBold, "#0d0d0f"); text.Foreground = load.Label; load.Content.Children.Add(text);
   load.Surface.Cursor = LoadIsClickable ? Cursors.Hand : Cursors.Arrow;
   load.Surface.ToolTip = loaded && message != "" ? message : null;
-  var error = MonitorTick.Notice(waiting, loaded, failed, message, monitorError);
+  var error = MonitorTick.Notice(waiting, loaded, failed, message, monitorError, loaded ? gameWarning : "");
   homeNoticeText.Text = error; homeNotice.Visibility = error == "" ? Visibility.Collapsed : Visibility.Visible;
  }
- private void FinishLoaded() { loaded = true; failed = false; message = $"Press {SharedPreferences.MenuKey.Name} in Minecraft to open the menu."; Refresh(); if (preferences.CloseAfterLoading) Close(); }
+ private string gameWarning = "";   // shown under Load while loaded when the overlay keeps game features off
+ private void FinishLoaded()
+ {
+  loaded = true; failed = false; message = $"Press {SharedPreferences.MenuKey.Name} in Minecraft to open the menu.";
+  var status = connection != null ? NativeLoader.GameStatus(connection.Pid) : null;
+  gameWarning = status is { On: false } ? $"Nickel is loaded, but its game modules are off: {status.Detail}. The menu, HUD and scripts work." : "";
+  Refresh(); if (preferences.CloseAfterLoading && gameWarning == "") Close();
+ }
  private TextBlock? menuKeyValue, loadDescription; private bool listeningKey;
  private void ShowMenuKey() { if (loadDescription != null) loadDescription.Text = $"Injects Nickel into the running game. Press {SharedPreferences.MenuKey.Name} in game to open the menu."; }
  protected override void OnPreviewKeyDown(KeyEventArgs e)

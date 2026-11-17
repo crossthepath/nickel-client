@@ -131,7 +131,7 @@ inline void AimQuantize(const Context& c,AimAssistState& st,float* out){float re
    const float v0=out[0]+st.rem[0],v1=out[1]+st.rem[1];const float q0=truncf(v0/unit)*unit,q1=truncf(v1/unit)*unit;rem[0]=v0-q0;rem[1]=v1-q1;out[0]=q0;out[1]=q1;}}
  st.rem[0]=rem[0];st.rem[1]=rem[1];}
 inline bool AimSilentLike(const AimAssistConfig& k){auto& fl=FreeLookState();return k.silent||(fl.active&&!fl.fault);}
-inline bool AimGates(const Context& c,const AimAssistConfig& k){if(k.holdClick&&!(GetAsyncKeyState(VK_LBUTTON)&0x8000))return false;return !k.weaponsOnly||IsWeapon(c);}
+inline bool AimGates(const Context& c,const AimAssistConfig& k){if(k.holdClick&&(!overlay::GameplayInputAllowed()||!(GetAsyncKeyState(VK_LBUTTON)&0x8000)))return false;return !k.weaponsOnly||IsWeapon(c);}
 
 // GameUpdate: picks the target and submits the relative rotation request.
 inline void AimAssistWork(){auto& s=AimAssist();if(!s.enabled)return;AimAssistState& st=s.st;if(s.resetPending.exchange(false))st=AimAssistState{};

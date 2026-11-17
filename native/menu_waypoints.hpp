@@ -9,14 +9,14 @@ namespace waypointui{
 struct Entry{std::string name;int x=0,y=0,z=0,dim=-1;bool hasColor=false;unsigned color=0;};
 struct Form{bool open=false,editing=false;int index=-1;std::string original;std::string field[4];int focus=-1;int dim=-1;std::vector<std::pair<unsigned,bool>> colors;int chosen=0;std::string error;};
 Form form;float scroll=0;
-const unsigned palette[8]={0x59d9ff,0x4fd18b,0xffd23f,0xff8a3d,0xf0566a,0xd36aff,0x8b41f0,0xffffff};
+const unsigned palette[8]={0x59d9ff,0x4fd18b,0xffd23f,0xff8a3d,0xf0566a,0xd36aff,0x8b41f0,0xffffff};   // not a game address: colours
 std::vector<std::string> Split(const std::string& all){std::vector<std::string> out;size_t from=0;while(from<all.size()){size_t to=all.find(',',from);if(to==std::string::npos)to=all.size();if(to>from)out.push_back(all.substr(from,to-from));from=to+1;}return out;}
 bool Parse(const std::string& entry,Entry* out){std::vector<std::string> parts;{size_t at=0;while(at<entry.size()){size_t space=entry.find(' ',at);if(space==std::string::npos)space=entry.size();if(space>at)parts.push_back(entry.substr(at,space-at));at=space+1;}}
  Entry e;for(int pass=0;pass<2&&!parts.empty();++pass){std::string last=parts.back();std::transform(last.begin(),last.end(),last.begin(),[](unsigned char ch){return (char)std::tolower(ch);});
   if(last.size()==7&&last[0]=='#'){e.hasColor=true;e.color=(unsigned)strtoul(last.c_str()+1,nullptr,16);parts.pop_back();}else if(last=="overworld"||last=="nether"||last=="end"){e.dim=last=="overworld"?0:last=="nether"?1:2;parts.pop_back();}}
  if(parts.size()<4)return false;char* stop=nullptr;e.z=strtol(parts[parts.size()-1].c_str(),&stop,10);if(*stop)return false;e.y=strtol(parts[parts.size()-2].c_str(),&stop,10);if(*stop)return false;e.x=strtol(parts[parts.size()-3].c_str(),&stop,10);if(*stop)return false;
  for(size_t i=0;i+3<parts.size();++i){if(!e.name.empty())e.name+=" ";e.name+=parts[i];}*out=e;return true;}
-std::string Serialize(const Entry& e){std::string s=e.name+" "+std::to_string(e.x)+" "+std::to_string(e.y)+" "+std::to_string(e.z);if(e.dim>=0)s+=e.dim==0?" overworld":e.dim==1?" nether":" end";if(e.hasColor){char c[16];snprintf(c,sizeof(c)," #%06x",e.color&0xffffff);s+=c;}return s;}
+std::string Serialize(const Entry& e){std::string s=e.name+" "+std::to_string(e.x)+" "+std::to_string(e.y)+" "+std::to_string(e.z);if(e.dim>=0)s+=e.dim==0?" overworld":e.dim==1?" nether":" end";if(e.hasColor){char c[16];snprintf(c,sizeof(c)," #%06x",e.color&0xffffff);s+=c;}return s;}   // not a game address: colour mask
 Setting* EntriesSetting(Module* m){for(auto& s:m->settings)if(s.id=="entries")return &s;return nullptr;}
 bool Feet(float* feet){game::Context c{};return game::Local(&c)&&game::ReadVisualFeet(c,feet);}
 void OpenForm(Module* m,int index){
@@ -26,9 +26,9 @@ void OpenForm(Module* m,int index){
   std::vector<Entry> all;for(auto& item:items){Entry o;if(Parse(item,&o))all.push_back(o);}
   for(int n=(int)items.size()+1;;++n){std::string name="Waypoint "+std::to_string(n);bool used=false;for(auto& o:all)if(o.name==name)used=true;if(!used){e.name=name;break;}}
   float f[3];if(Feet(f)){e.x=(int)std::floor(f[0]);e.y=(int)std::floor(f[1]);e.z=(int)std::floor(f[2]);}int dim=0;if(game::ReadDimension(&dim))e.dim=dim;
-  int count[8]{};for(auto& o:all)if(o.hasColor)for(int i=0;i<8;++i)if(palette[i]==(o.color&0xffffff))++count[i];int best=0;for(int i=1;i<8;++i)if(count[i]<count[best])best=i;e.hasColor=true;e.color=palette[best];}
+  int count[8]{};for(auto& o:all)if(o.hasColor)for(int i=0;i<8;++i)if(palette[i]==(o.color&0xffffff))++count[i];int best=0;for(int i=1;i<8;++i)if(count[i]<count[best])best=i;e.hasColor=true;e.color=palette[best];}   // not a game address: colour mask
  form.field[0]=e.name;form.field[1]=std::to_string(e.x);form.field[2]=std::to_string(e.y);form.field[3]=std::to_string(e.z);form.dim=e.dim;
- for(unsigned c:palette)form.colors.push_back({c,true});int found=-1;for(size_t i=0;i<form.colors.size();++i)if(e.hasColor&&form.colors[i].first==(e.color&0xffffff))found=(int)i;
+ for(unsigned c:palette)form.colors.push_back({c,true});int found=-1;for(size_t i=0;i<form.colors.size();++i)if(e.hasColor&&form.colors[i].first==(e.color&0xffffff))found=(int)i;   // not a game address: colour mask
  if(found<0){form.colors.push_back({e.color,e.hasColor});found=(int)form.colors.size()-1;}form.chosen=found;}
 // save the form; true = saved
 bool SaveForm(Module* m){

@@ -106,7 +106,7 @@ struct BeMesh{int style;uint8_t layer;uint8_t* mesh;};
 struct BeMeshRec{uint64_t version=~0ull;uint64_t serial=0;std::vector<BeMesh> meshes;};
 struct BeRenderState{std::unordered_map<uint64_t,BeMeshRec> subs;uint64_t materials[17][2]{};bool materialsReady=false;uint64_t serial=0;};
 inline BeRenderState& BeRender(){static BeRenderState* r=new BeRenderState;return *r;}
-inline uint64_t BeKey(int x,int y,int z){return ((uint64_t)(uint32_t)(x>>4)&0x1fffff)<<42|((uint64_t)(uint32_t)(y>>4)&0x1fffff)<<21|((uint64_t)(uint32_t)(z>>4)&0x1fffff);}
+inline uint64_t BeKey(int x,int y,int z){return ((uint64_t)(uint32_t)(x>>4)&0x1fffff)<<42|((uint64_t)(uint32_t)(y>>4)&0x1fffff)<<21|((uint64_t)(uint32_t)(z>>4)&0x1fffff);}   // not a game address: bit masks of a chunk key
 inline void BeFreeMesh(const Context& c,uint8_t* mesh){if(!mesh)return;reinterpret_cast<void(*)(void*)>(c.base+Rva(0x4dea990))(mesh);::operator delete(mesh);}
 // Materials per render layer, HashedString {FNV-1 64, std::string, 0}.
 inline void BeMaterials(const Context& c){auto& r=BeRender();if(r.materialsReady)return;r.materialsReady=true;

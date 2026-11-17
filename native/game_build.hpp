@@ -20,6 +20,7 @@ struct RvaRange{uint32_t start,end;int32_t delta;};
 struct RvaPair{uint32_t from,to;};
 }
 #include "generated_build_1_26_63_1.hpp"
+#include "generated_build_1_26_65_1.hpp"
 namespace game {
 struct GameSection{char name[8];uint32_t address,size;};
 struct GameDirectory{int index;uint32_t address,size;};
@@ -37,11 +38,20 @@ inline constexpr GameBuildProfile kGameBuilds[]={
   {{".text",0x1000u,0xeec6a86u},{".rdata",0xeec8000u,0x34412bcu},{".data",0x1230a000u,0x8d4b68u},{".pdata",0x12bdf000u,0xb59b78u},{".reloc",0x13742000u,0xfa3c4u}},
   {0x59,0xb8,0xc7,0x27,0xd7,0x34,0xa5,0x19,0x7e,0x7d,0xd2,0x98,0xbb,0x7a,0x93,0x9c,0x0d,0xc6,0xb4,0x7f,0xe5,0x07,0x2d,0x1a,0xf3,0x51,0x87,0x93,0xa7,0x6a,0x79,0x95},
   kRanges_1_26_63_1,CountOf(kRanges_1_26_63_1),kData_1_26_63_1,CountOf(kData_1_26_63_1)},
+ {"Minecraft 1.26.65.1",{1,26,65},0xeea6e80u,
+  {{0,0xf9a54d8u,0x162u},{1,0xf9a563cu,0x6f4u},{3,0x12be0000u,0xb59ba8u},{5,0x13743000u,0xfa3a4u},{9,0xf4f4a50u,0x28u},{10,0xefc7990u,0x140u},{11,0x0u,0x0u},{12,0xf9a7f90u,0x2260u},{13,0x0u,0x0u},{14,0x0u,0x0u}},
+  {{".text",0x1000u,0xeec75c6u},{".rdata",0xeec9000u,0x344143cu},{".data",0x1230b000u,0x8d4b68u},{".pdata",0x12be0000u,0xb59ba8u},{".reloc",0x13743000u,0xfa3a4u}},
+  {0x7e,0x23,0xc7,0x7b,0x2f,0x7b,0x5a,0x06,0xb6,0xcf,0x1b,0xa8,0x81,0x98,0x0a,0x5e,0x61,0xf3,0xe2,0xaf,0x0a,0xb5,0x65,0x97,0xcb,0xf6,0x3c,0x6a,0x2e,0x77,0xb2,0xd3},
+  kRanges_1_26_65_1,CountOf(kRanges_1_26_65_1),kData_1_26_65_1,CountOf(kData_1_26_65_1)},
 };
 
 // The validated build the overlay runs in (index in kGameBuilds), set by Supported() before any game hook; -1 when the
-// game is not a validated build (then no game address is used).
+// game is not a validated build (then no game address is used); kAdaptedBuild for a build without a profile whose
+// addresses native/game_resolve.hpp found at start (adaptedProfile).
 inline int currentBuild=-1;
+inline constexpr int kAdaptedBuild=1000;
+inline GameBuildProfile adaptedProfile{};
+inline const GameBuildProfile& CurrentProfile(){return currentBuild==kAdaptedBuild?adaptedProfile:kGameBuilds[currentBuild<0?0:currentBuild];}
 
 // Address in the profile's build of a reference-build address: code through the ranges, data through the exact pairs.
 // 0 when the profile does not know the address (tests/game_build_checks.cpp checks every address Nickel uses).
@@ -53,7 +63,7 @@ inline uint32_t TranslateRva(const GameBuildProfile& build,uint32_t rva){
   return lo<build.rangeCount&&build.ranges[lo].start<=rva?(uint32_t)((int64_t)rva+build.ranges[lo].delta):0u;}
  for(unsigned i=0;i<build.dataCount;++i)if(build.data[i].from==rva)return build.data[i].to;
  return 0u;}
-inline uint32_t Rva(uint32_t rva){return currentBuild>0?TranslateRva(kGameBuilds[currentBuild],rva):rva;}
+inline uint32_t Rva(uint32_t rva){return currentBuild>0?TranslateRva(CurrentProfile(),rva):rva;}
 
 // File version (major.minor.build.private) from a module's version resource (VS_FIXEDFILEINFO).
 inline bool GameVersion(HMODULE image,uint16_t version[4]){

@@ -117,6 +117,8 @@ namespace {
 std::atomic<bool> opened{false};
 float progress=0;int category=0,tab=0,selected=-1,listening=-1;char search[160]{};
 ImFont *regular{},*bold{},*semibold{},*icons{},*tiny{};
+std::atomic<bool> gameplayInputAllowed{false};
+bool GameMenuScreenShown();
 // Menu geometry, adjustable with the mouse: drag the title to move, drag an edge to resize that side,
 // drag a corner to change the overall scale, double-click the title to reset.
 float menuW=1012,menuH=578,menuWantW=1012,menuWantH=578,menuScale=1,menuX=-1,menuY=-1,dragW=0,dragH=0,dragScale=1,dragX=0,dragY=0;int dragMode=0;ImVec2 dragStart;std::map<std::string,float> animation;std::map<std::string,std::string> keybinds;std::map<std::string,int> keycodes;struct Notice{int kind;std::string title,body;};std::vector<Notice> notices;   // pending notifications (5 = module toggled by key, 7 = configs)
@@ -263,7 +265,7 @@ static void ReadPackFileWork(const std::string& path,std::vector<std::string>& o
  struct Span{uint64_t count,begin;}span{(end-begin)/0x128,begin};/* gsl::span: size, then pointer */struct Location{uint32_t system;uint32_t pad;std::string path;uint64_t hash,full;}location{};location.path=path;location.hash=game::Fnv64(path);location.full=(0xcbf29ce484222325ull*0x100000001b3ull)^location.hash;
  struct Filter{bool(*fn)();uint64_t zero;}filter{&AcceptAllPacks,0};uint64_t results[3]{};
  reinterpret_cast<void(*)(uint64_t*,Span*,Location*,Filter*)>(c.base+game::Rva(0x17c2840))(results,&span,&location,&filter);
- for(uint64_t at=results[0];at&&at<results[1];at+=0xd8){uint64_t size{},cap{},data{};if(game::Read(at+0x10,&size)&&game::Read(at+0x18,&cap)&&size<=0x800000){data=cap<16?at:0;if(cap>=16)game::Read(at,&data);if(data)out.emplace_back((const char*)data,(size_t)size);}
+ for(uint64_t at=results[0];at&&at<results[1];at+=0xd8){uint64_t size{},cap{},data{};if(game::Read(at+0x10,&size)&&game::Read(at+0x18,&cap)&&size<=0x800000){data=cap<16?at:0;if(cap>=16)game::Read(at,&data);if(data)out.emplace_back((const char*)data,(size_t)size);}   // not a game address: size limit
   reinterpret_cast<void(*)(uint64_t)>(c.base+game::Rva(0x1158f0))(at);}   // the array itself stays allocated (game allocator)
 }
 static bool ReadPackFileGuarded(const std::string* path,std::vector<std::string>* out){__try{ReadPackFileWork(*path,*out);return true;}__except(EXCEPTION_EXECUTE_HANDLER){return false;}}
@@ -386,7 +388,12 @@ bool Playing(){
  if(OwnProbe())return true;CURSORINFO info{};info.cbSize=sizeof(info);const bool hidden=GetCursorInfo(&info)&&(!(info.flags&CURSOR_SHOWING)||!info.hCursor);
  RECT clip{};const bool clipped=GetClipCursor(&clip)&&(clip.right-clip.left<GetSystemMetrics(SM_CXVIRTUALSCREEN)||clip.bottom-clip.top<GetSystemMetrics(SM_CYVIRTUALSCREEN));return hidden||clipped;
 }
-bool KeysAllowed(){return interfaceOptions[4].value||Playing();}
+bool GameplayInputAllowed(){
+ if(!gameplayInputAllowed.load(std::memory_order_relaxed)||opened.load(std::memory_order_relaxed))return false;
+ const HWND root=gameWindowForKeys?GetAncestor(gameWindowForKeys,GA_ROOT):nullptr;
+ return root&&GetForegroundWindow()==root&&!GameMenuScreenShown();
+}
+bool KeysAllowed(){return interfaceOptions[4].value||OwnProbe()||GameplayInputAllowed();}   // the renderer test window counts as in game, as Playing() does
 bool CanToggleNow(){if(opened||KeysAllowed())return true;static ULONGLONG told=0;if(WriteLog&&GetTickCount64()-told>5000){told=GetTickCount64();WriteLog("Menu: Right Shift ignored, the game is showing another screen (Settings > Open in menus allows it)");}return false;}
 void SetWindow(HWND hwnd){gameWindowForKeys=hwnd;}
 // Key code of a key setting ("Name|code"), 0 if none.
@@ -406,7 +413,7 @@ void HandleKey(unsigned vk,long long lparam){
  // go back to Right Shift.
  if(opened&&listening==-101){auto& key=menuKeys[1];listening=-1;if(vk==VK_ESCAPE)return;unsigned code=SidedKey(vk,lparam);std::wstring name;
   if(vk==VK_BACK||vk==VK_DELETE){code=VK_RSHIFT;name=L"Right Shift";}
-  else{wchar_t text[64]{};const LONG scan=(LONG)(lparam&0x01ff0000);if(!GetKeyNameTextW(scan,text,64))swprintf(text,64,L"Key %u",code);name=text;
+  else{wchar_t text[64]{};const LONG scan=(LONG)(lparam&0x01ff0000);if(!GetKeyNameTextW(scan,text,64))swprintf(text,64,L"Key %u",code);name=text;   // not a game address: scan code mask
    if(code==VK_RSHIFT)name=L"Right Shift";else if(code==VK_RCONTROL)name=L"Right Ctrl";else if(code==VK_RMENU)name=L"Right Alt";}
   key.name=Utf8(name);key.code=(int)code;WritePrivateProfileStringW(L"menu",L"menu-key",name.c_str(),configPath.c_str());WritePrivateProfileStringW(L"menu",L"menu-key-code",std::to_wstring(code).c_str(),configPath.c_str());return;}
  // re-binding a Keystrokes key: Escape cancels, Backspace / Delete goes back to the game's binding, any other key is taken
@@ -762,12 +769,13 @@ ImDrawList* HudSink(){static ImDrawList* sink=nullptr;if(!sink)sink=IM_NEW(ImDra
 ImDrawList* HudList(){return hudShown?ImGui::GetBackgroundDrawList():HudSink();}
 void UpdateHudShown(){
  static ULONGLONG leftAt=0;const ULONGLONG now=GetTickCount64();
- const HWND root=gameWindowForKeys?GetAncestor(gameWindowForKeys,GA_ROOT):nullptr;const bool focused=!root||GetForegroundWindow()==root;
- game::Context c{};bool playing=hudShown;
+ const HWND root=gameWindowForKeys?GetAncestor(gameWindowForKeys,GA_ROOT):nullptr;const bool focused=root&&GetForegroundWindow()==root;
+ game::Context c{};const bool gameScreen=GameMenuScreenShown();const bool hasLocal=game::Local(&c);bool playing=hudShown;
  if(opened||hudEditing||mapOpen||waypointsOpen||OwnProbe())playing=true;
- else if(!game::Local(&c))playing=false;
- else if(GameMenuScreenShown())playing=false;   // focused or not: a pause / chat / inventory screen is on
+ else if(!hasLocal)playing=false;
+ else if(gameScreen)playing=false;   // focused or not: a pause / chat / inventory screen is on
  else if(focused)playing=Playing();
+ gameplayInputAllowed.store(!opened&&!hudEditing&&!mapOpen&&!waypointsOpen&&focused&&!gameScreen&&!OwnProbe()&&hasLocal&&Playing(),std::memory_order_relaxed);
  // hide 120 ms after leaving play (no flicker when the game briefly shows the cursor); show at once
  if(playing){leftAt=0;hudShown=true;}else{if(!leftAt)leftAt=now;if(now-leftAt>=120)hudShown=false;}
  game::hudHidden.store(!hudShown,std::memory_order_relaxed);
@@ -970,7 +978,7 @@ void DrawHud(ImTextureID logo){
    float strength=threshold<1?1.f:std::clamp((threshold-health)/threshold,0.f,1.f);strength*=number("strength",60)/100;
    // pulses between 70 % and 100 % (std::lerp(0.7, 1.0, f)), phased on our own clock
    if(Flag(*healthWarning,"pulse",true))strength*=.7f+.3f*(1-std::cos(6.2831853f*number("pulse_speed",1.5f)*(float)ImGui::GetTime()))/2;
-   auto tint=Find(*healthWarning,"color");ImVec4 color=tint&&tint->kind=="color"?ParseColor(tint->text):ImVec4(1,0,0,1);color.w*=strength;const ImU32 full=ImGui::ColorConvertFloat4ToU32(color),none=full&0x00ffffff;
+   auto tint=Find(*healthWarning,"color");ImVec4 color=tint&&tint->kind=="color"?ParseColor(tint->text):ImVec4(1,0,0,1);color.w*=strength;const ImU32 full=ImGui::ColorConvertFloat4ToU32(color),none=full&0x00ffffff;   // not a game address: colour mask
    const float w=io.DisplaySize.x,h=io.DisplaySize.y,cover=number("coverage",35)/100;
    d->AddRectFilledMultiColor(ImVec2(0,0),ImVec2(w,h*cover),full,full,none,none);d->AddRectFilledMultiColor(ImVec2(0,h-h*cover),ImVec2(w,h),none,none,full,full);
    d->AddRectFilledMultiColor(ImVec2(0,0),ImVec2(w*cover,h),full,none,none,full);d->AddRectFilledMultiColor(ImVec2(w-w*cover,0),ImVec2(w,h),none,full,full,none);
@@ -2503,7 +2511,7 @@ void DrawHud(ImTextureID logo){
    const float wy=bottom?place.y+H-mark*s-5*s:top-5*s,wx=left?edge-5*s:edge-300*s+5*s,high=mark*s,planet=logo?high:0,size=high*.62f,wordWidth=hudWidth(bold,size,"Nickel");
    float x=left?wx:wx+300*s-planet-high*.12f-wordWidth;if(logo){d->AddImage(logo,ImVec2(x,wy),ImVec2(x+planet,wy+high));x+=planet+high*.12f;}
    for(const char* c="Nickel";*c;++c){const char one[2]={*c,0};const float advance=hudWidth(bold,size,one);const ImU32 color=wave(g,(x+advance/2-wx)/(300*s)*1.15f+phase);
-    if(glow>0)for(int ring=0;ring<8;++ring)hudText(bold,size,ImVec2(x+std::cos(ring*.785f)*glow*s,wy+(high-size)/2+std::sin(ring*.785f)*glow*s),one,(color&0x00ffffff)|0x16000000);
+    if(glow>0)for(int ring=0;ring<8;++ring)hudText(bold,size,ImVec2(x+std::cos(ring*.785f)*glow*s,wy+(high-size)/2+std::sin(ring*.785f)*glow*s),one,(color&0x00ffffff)|0x16000000);   // not a game address: colour mask
     hudText(bold,size,ImVec2(x,wy+(high-size)/2),one,color);x+=advance;}
    if(bottom)base-=(mark+4)*s;else top+=(mark+4)*s;}
   const float total=std::max(1.f,rows.size()*row),ease=1-std::exp(-16*io.DeltaTime);auto phaseAt=[&](float t){return (t>1?1.15f:std::max(t,0.f)*1.15f)+phase;};
@@ -2513,9 +2521,9 @@ void DrawHud(ImTextureID logo){
    const ImU32 middle=wave(g,phaseAt((row/2+y-top)/total)),upper=wave(g,phaseAt((y-top)/total)),under=wave(g,phaseAt((y+row-top)/total));
    if(background)d->AddRectFilled(ImVec2(left?edge+pad:textEdge-r.width-gap,y),ImVec2(left?textEdge+r.width+gap:edge-pad,y+row),IM_COL32(0,0,0,(int)(a*140)));
    const ImVec2 b0(left?edge:edge-pad,y),b1(left?edge+pad:edge,y+row);
-   if(glow>0){for(int ring=3;ring>=1;--ring){const float out=ring*glow*.35f*2*s;d->AddRectFilled(ImVec2(b0.x-out,b0.y),ImVec2(b1.x+out,b1.y),(middle&0x00ffffff)|0x1c000000,out);}
-    for(int ring=0;ring<8;++ring)hudText(regular,font,ImVec2(x+std::cos(ring*.785f)*glow*s*.9f,y+std::sin(ring*.785f)*glow*s*.9f),r.name.c_str(),(middle&0x00ffffff)|0x16000000);}
-   d->AddRectFilledMultiColor(b0,b1,upper,upper,under,under);hudText(regular,font,ImVec2(x,y),r.name.c_str(),(middle&0x00ffffff)|((ImU32)(a*255)<<24));
+   if(glow>0){for(int ring=3;ring>=1;--ring){const float out=ring*glow*.35f*2*s;d->AddRectFilled(ImVec2(b0.x-out,b0.y),ImVec2(b1.x+out,b1.y),(middle&0x00ffffff)|0x1c000000,out);}   // not a game address: colour mask
+    for(int ring=0;ring<8;++ring)hudText(regular,font,ImVec2(x+std::cos(ring*.785f)*glow*s*.9f,y+std::sin(ring*.785f)*glow*s*.9f),r.name.c_str(),(middle&0x00ffffff)|0x16000000);}   // not a game address: colour mask
+   d->AddRectFilledMultiColor(b0,b1,upper,upper,under,under);hudText(regular,font,ImVec2(x,y),r.name.c_str(),(middle&0x00ffffff)|((ImU32)(a*255)<<24));   // not a game address: colour mask
    if(!r.extra.empty())hudText(regular,font,ImVec2(x+r.nameWidth,y),r.extra.c_str(),IM_COL32(170,170,170,(int)(a*255)));}
   place.right=!left;place.lo=ImVec2(left?place.x:place.x-W,place.y);place.hi=ImVec2(left?place.x+W:place.x,place.y+H);if(!rows.empty()||watermark)drawn.push_back("module_list");
  }

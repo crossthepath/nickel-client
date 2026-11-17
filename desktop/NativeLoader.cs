@@ -7,6 +7,9 @@ using System.Text;
 using Microsoft.Win32.SafeHandles;
 namespace Nickel.Desktop;
 public sealed record NativeLoadResult(MinecraftConnection Connection,bool RendererReady);
+/// <summary>What the overlay reported about the game build: game features on (Detail names the build) or off (Detail
+/// says why).</summary>
+public sealed record GameBuildStatus(bool On,string Detail);
 public static class NativeLoader
 {
  /// <summary>Launcher Stream Hide: the "stream_hide" module (menu and module list hidden from captures) is enabled before loading.</summary>
@@ -17,8 +20,23 @@ public static class NativeLoader
   var bytes=Payload();if(bytes.Length<512||bytes[0]!='M'||bytes[1]!='Z')throw new InvalidOperationException("Native component invalid.");
   var hash=Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();var folder=Path.Combine(AppContext.BaseDirectory,"data","runtime",hash);Directory.CreateDirectory(folder);var file=Path.Combine(folder,"Nickel.Overlay.dll");
   if(!File.Exists(file)||!SHA256.HashData(File.ReadAllBytes(file)).SequenceEqual(SHA256.HashData(bytes))){var pending=file+"."+Guid.NewGuid().ToString("N")+".tmp";File.WriteAllBytes(pending,bytes);File.Move(pending,file,true);}
+  AllowPackagedApps(file);
   if(StreamHide)SharedPreferences.Write("stream_hide","enabled","1");   // shared preferences in %APPDATA%\Nickel (read by the overlay)
   return file;
+ }
+ /// <summary>Lets a Minecraft that runs as a packaged app (an app container, as some launchers start it) read and run
+ /// the component: read and execute for ALL APPLICATION PACKAGES and ALL RESTRICTED APPLICATION PACKAGES. A failure is
+ /// ignored: a normal Minecraft does not need it.</summary>
+ private static void AllowPackagedApps(string file)
+ {
+  try
+  {
+   var info=new FileInfo(file);var rules=info.GetAccessControl();
+   foreach(var sid in new[]{"S-1-15-2-1","S-1-15-2-2"})
+    rules.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(new System.Security.Principal.SecurityIdentifier(sid),System.Security.AccessControl.FileSystemRights.ReadAndExecute,System.Security.AccessControl.AccessControlType.Allow));
+   info.SetAccessControl(rules);
+  }
+  catch(Exception error) when(error is IOException or UnauthorizedAccessException or InvalidOperationException or PlatformNotSupportedException or System.Security.Principal.IdentityNotMappedException){}
  }
  public static async Task<NativeLoadResult> LoadAsync(CancellationToken cancellation)
  {
@@ -53,6 +71,20 @@ public static class NativeLoader
   }
   finally{if(safeToFree)VirtualFreeEx(handle,memory,0,0x8000);}
   return new(verified,WaitForRenderer(verified.Pid,8000));
+ }
+ /// <summary>The game build status the overlay published in Minecraft (native/overlay.cpp PublishBuildStatus), or null
+ /// when there is none (an older overlay, or not loaded).</summary>
+ public static GameBuildStatus? GameStatus(int pid)
+ {
+  try
+  {
+   using var map=System.IO.MemoryMappedFiles.MemoryMappedFile.OpenExisting($"Local\\NickelOverlay.Build.{pid}",System.IO.MemoryMappedFiles.MemoryMappedFileRights.Read);
+   using var view=map.CreateViewStream(0,1024,System.IO.MemoryMappedFiles.MemoryMappedFileAccess.Read);
+   var bytes=new byte[1024];var read=view.Read(bytes,0,bytes.Length);var text=Encoding.UTF8.GetString(bytes,0,read).TrimEnd('\0');
+   var split=text.IndexOf('\n');if(split<0)return null;
+   return new(text[..split]=="ok",text[(split+1)..]);
+  }
+  catch(Exception error) when(error is FileNotFoundException or IOException or UnauthorizedAccessException){return null;}
  }
  public static bool WaitForRenderer(int pid,uint milliseconds)
  {

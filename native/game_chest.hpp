@@ -93,7 +93,7 @@ inline void ChestWork(void* levelPointer){
   boxes.push_back(box);}
  auto key6=[](const Box& b){return std::array<int,6>{b.lo[0],b.lo[1],b.lo[2],b.hi[0],b.hi[1],b.hi[2]};};
  std::sort(boxes.begin(),boxes.end(),[&](const Box& a,const Box& b){return key6(a)<key6(b);});boxes.erase(std::unique(boxes.begin(),boxes.end(),[&](const Box& a,const Box& b){return key6(a)==key6(b);}),boxes.end());
- auto pack=[](const int* v){return ((uint64_t)(uint32_t)v[0]<<38)|((uint64_t)(v[2]&0x3ffffff)<<12)|(uint64_t)(v[1]&0xfff);};
+ auto pack=[](const int* v){return ((uint64_t)(uint32_t)v[0]<<38)|((uint64_t)(v[2]&0x3ffffff)<<12)|(uint64_t)(v[1]&0xfff);};   // not a game address: bit mask of a block key
  std::unordered_set<uint64_t> doubled;for(const Box& b:boxes)if(b.lo[0]!=b.hi[0]||b.lo[1]!=b.hi[1]||b.lo[2]!=b.hi[2]){doubled.insert(pack(b.lo));doubled.insert(pack(b.hi));}
  boxes.erase(std::remove_if(boxes.begin(),boxes.end(),[&](const Box& b){return b.lo[0]==b.hi[0]&&b.lo[1]==b.hi[1]&&b.lo[2]==b.hi[2]&&doubled.count(pack(b.lo));}),boxes.end());
  std::vector<std::array<float,6>> out;out.reserve(boxes.size());for(const Box& b:boxes)out.push_back({(float)b.lo[0],(float)b.lo[1],(float)b.lo[2],(float)b.hi[0]+1,(float)b.hi[1]+1,(float)b.hi[2]+1});

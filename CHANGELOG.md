@@ -11,6 +11,15 @@ record. Do not add a handwritten entry here for each change.
 
 ## 1.3.0-beta
 
+### Game versions
+
+- Minecraft 1.26.65 (the current Microsoft Store / Xbox app version) is supported, along with 1.26.62 and 1.26.63.
+- Nickel loads into any copy of Minecraft 1.26.60 to 1.26.69, from any launcher: when the game is not a build Nickel
+  was tested on (a launcher's own copy, a game patched by another program, a small hotfix), Nickel finds every game
+  function it uses by itself and checks each one before hooking it. If one is missing or changed, the menu, HUD and
+  scripts still work, game modules stay off, and the launcher says which function differs.
+- A refused game now says why ("Load failed" with the reason).
+
 ### Nickel AI
 
 - Nickel AI, an assistant inside the menu: a bubble beside the menu opens a chat window. Ask about modules, settings

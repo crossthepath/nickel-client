@@ -117,7 +117,7 @@ inline void AutoClickerSchedule(AutoClickerShared& s){double interval=0,hold=0;C
  double comp=0;if(s.randomization!=0&&s.init){comp=interval*0.5;const double over=(double)(now-s.last)/1e6-s.delay;comp=comp<over?comp:std::max(0.0,over);}
  s.delay=interval-comp;s.interval=interval;s.holdMs=hold;s.last=now;s.active=true;s.init=true;}
 inline void AutoClickerTrace(const char* why){static const char* last=nullptr;if(why==last)return;last=why;if(actionLog){char t[160];snprintf(t,sizeof(t),"Auto Clicker: %s",why);actionLog(t);}}
-inline void AutoClickerWork(const char* screen){auto& s=AutoClicker();std::lock_guard<std::mutex> lock(s.guard);if(!s.enabled)return;if(menuPause){AutoClickerReset(s);return;}Context c{};
+inline void AutoClickerWork(const char* screen){auto& s=AutoClicker();std::lock_guard<std::mutex> lock(s.guard);if(!s.enabled)return;if(menuPause||!overlay::GameplayInputAllowed()){AutoClickerReset(s);return;}Context c{};
  if(!Local(&c)){AutoClickerTrace("no local player");AutoClickerReset(s);return;}
  // Screen rendering visits every layer (hud_screen, hud_crosshair_screen...): act once per frame, on hud_screen when
  // no UI is open, or on inventory_screen with the Inventory option; any other screen suspends clicking.
@@ -125,7 +125,7 @@ inline void AutoClickerWork(const char* screen){auto& s=AutoClicker();std::lock_
  const bool playing=hud&&!uiOpen;
  if(hud&&(uiOpen||strcmp(screen,"hud_screen")))return;
  if(!hud&&!(s.inventory&&strcmp(screen,"inventory_screen")==0)){AutoClickerReset(s);return;}
- if(s.hold&&!(GetAsyncKeyState(VK_LBUTTON)&0x8000)){AutoClickerReset(s);return;}
+ if(s.hold&&(!(GetAsyncKeyState(VK_LBUTTON)&0x8000)||!overlay::GameplayInputAllowed())){AutoClickerReset(s);return;}
  if(s.weaponsOnly&&!IsWeapon(c)){AutoClickerReset(s);return;}
  if(s.breakBlocks){uint64_t hit{};int32_t kind=-1;if(CrosshairHit(c,&hit,&kind)&&kind==0){AutoClickerReset(s);return;}}
  if(!s.init){AutoClickerSchedule(s);return;}
@@ -138,7 +138,7 @@ inline void AutoClickerWork(const char* screen){auto& s=AutoClicker();std::lock_
 // Delay in ms (CPS = 1000 / Delay for both bounds); Start Delay counts from activation; Blocks Only and item
 // whitelist / blacklist. "Valid player" guard: no UI open (last non-HUD screen render more than 150 ms ago).
 inline std::atomic<uint64_t> combatUiTick{0};
-inline bool CombatNoInterface(){return !menuPause&&GetTickCount64()-combatUiTick.load()>150;}
+inline bool CombatNoInterface(){return overlay::GameplayInputAllowed()&&!menuPause&&GetTickCount64()-combatUiTick.load()>150;}
 struct RightClickerShared{std::mutex guard;bool enabled=false,onlyHolding=true,blocksOnly=true,useWhite=false,useBlack=false;int delayMs=100,startDelay=0,randomization=0;
  std::vector<std::string> white,black;bool clicked=false,init=false;int64_t last=0,start=0;double delay=0,interval=0,holdMs=0;ClickModel model;};
 inline RightClickerShared& RightClicker(){static auto* s=new RightClickerShared;return *s;}
@@ -150,7 +150,7 @@ inline void RightClickerSchedule(RightClickerShared& s,double overshoot){double 
 inline bool InList(const std::vector<std::string>& list,const std::string& name){const std::string n=BareItemName(name);for(auto& e:list)if(BareItemName(e)==n)return true;return false;}
 inline void RightClickerWork(){auto& s=RightClicker();std::lock_guard<std::mutex> lock(s.guard);s.clicked=false;if(!s.enabled)return;Context c{};
  if(!Local(&c)||!CombatNoInterface()){RightClickerReset(s);return;}
- if(s.onlyHolding&&!(GetAsyncKeyState(VK_RBUTTON)&0x8000)){RightClickerReset(s);return;}   // Start Delay restarts on each press
+ if(s.onlyHolding&&(!(GetAsyncKeyState(VK_RBUTTON)&0x8000)||!overlay::GameplayInputAllowed())){RightClickerReset(s);return;}   // Start Delay restarts on each press
  const int64_t now=CombatNs();if(!s.init){s.init=true;s.start=now;RightClickerSchedule(s,0);}
  if((double)(now-s.start)/1e6<(double)s.startDelay)return;
  const double elapsed=(double)(now-s.last)/1e6,cur=RightClickerDelay(s);if(elapsed<=cur)return;
@@ -171,7 +171,7 @@ inline void ClickAssistReset(ClickAssistShared& s){s.held=false;s.remaining=0;s.
 inline int Percent100(){uint64_t hi=0,lo=_umul128(ClickRng()(),100,&hi);while((lo&0xfffffffffffffff0ull)==0)lo=_umul128(ClickRng()(),100,&hi);return (int)hi;}
 inline void ClickAssistWork(){auto& s=ClickAssist();std::lock_guard<std::mutex> lock(s.guard);if(!s.enabled)return;Context c{};
  if(!Local(&c)||!CombatNoInterface()){if(s.held||s.remaining>0)overlay::ClearButton(0);s.held=false;s.remaining=0;return;}
- const bool held=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0,was=s.held;s.held=held;
+ const bool held=overlay::GameplayInputAllowed()&&(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0,was=s.held;s.held=held;
  if(!held&&was){s.remaining=0;overlay::ClearButton(0);}
  if(held&&!was&&s.remaining==0){uint64_t hit{};int32_t kind=-1;const bool onBlock=CrosshairHit(c,&hit,&kind)&&kind==0;
   if((s.blocks||!onBlock)&&Percent100()<s.chance){s.remaining=s.extra;s.delay=s.low<s.high?s.low+(s.high-s.low)*Rand24():s.low;s.last=CombatNs();s.active=true;}}   // arm the extra clicks
@@ -224,7 +224,7 @@ inline void KillAuraAttack(const Context& c,const KillAuraConfig& k,uintptr_t ta
  bool any=false;CombatTargetFilter filter;ForEachActor(c,[&](uintptr_t a){if(CombatTargetValid(c,a,k.playersOnly,true,filter)&&KillAuraScore(c,k,a,k.distance,nullptr)){if(!any){ActionSwing(c,c.actor,4);overlay::RecordClick(0);}any=true;AttackActor(c,a);}return true;});
  if(any)KillAuraSchedule(k);}
 inline uintptr_t KillAuraResolve(const Context& c,uint64_t id){uintptr_t a{};return id&&ActorByRuntimeId(c.registry,id,&a)?a:0;}
-inline bool KillAuraGates(const Context& c,const KillAuraConfig& k){if(k.mouseDown&&!(GetAsyncKeyState(VK_LBUTTON)&0x8000))return false;if(k.weaponsOnly&&!IsWeapon(c))return false;return true;}
+inline bool KillAuraGates(const Context& c,const KillAuraConfig& k){if(k.mouseDown&&(!overlay::GameplayInputAllowed()||!(GetAsyncKeyState(VK_LBUTTON)&0x8000)))return false;if(k.weaponsOnly&&!IsWeapon(c))return false;return true;}
 inline void KillAuraTeleport(const Context& c,const KillAuraConfig& k,uintptr_t target){auto& s=KillAura();float lo[3],hi[3];uint64_t id{};
  if(!ActorBox(target,lo,hi)||!RuntimeId(target,&id))return;const uint64_t region=ActorRegion(c);if(!region)return;
  static const float dirs[4][2]={{-1,-1},{1,-1},{1,1},{-1,1}};const float cx=(lo[0]+hi[0])*0.5f,cz=(lo[2]+hi[2])*0.5f;const int by=(int)floorf(lo[1]);
@@ -236,7 +236,7 @@ inline void KillAuraTeleport(const Context& c,const KillAuraConfig& k,uintptr_t 
  float* sv=(float*)st;for(int i=0;i<3;++i){sv[i]=to[i];sv[3+i]=to[i];sv[6+i]=0;}float* b=(float*)bb;for(int i=0;i<3;++i){b[i]+=to[i]-old[i];b[3+i]+=to[i]-old[i];}
  s.side=chosen;s.pending=true;s.pendingTarget=id;s.arrived=false;}
 inline void KillAuraWork(){auto& s=KillAura();if(!s.enabled)return;KillAuraConfig k;{std::lock_guard<std::mutex> lock(s.guard);k=s.cfg;}Context c{};
- if(!Local(&c)||!CombatNoInterface())return;if(!KillAuraGates(c,k))return;
+ if(!Local(&c)||!CombatNoInterface()||!overlay::GameplayInputAllowed())return;if(!KillAuraGates(c,k))return;
  if(s.pending){if(!s.arrived)return;s.pending=false;s.arrived=false;const uintptr_t t=KillAuraResolve(c,s.pendingTarget);
   if(!t||!CombatTargetValid(c,t,k.playersOnly)||!KillAuraScore(c,k,t,k.distance,nullptr))return;KillAuraAttack(c,k,t);return;}
  uintptr_t best=0;float bestScore=3.4028234663852886e+38f;const float range=KillAuraPickRange(k);
@@ -247,7 +247,7 @@ inline void KillAuraWork(){auto& s=KillAura();if(!s.enabled)return;KillAuraConfi
   RotRequest r;r.module=kRotKillAura;r.yaw=yaw;r.pitch=pitch;r.mode=2;r.priority=2;
   r.predicate=[k,id](uintptr_t){Context c{};if(!KillAura().enabled||!Local(&c)||!KillAuraGates(c,k))return false;const uintptr_t t=KillAuraResolve(c,id);   // rotation still wanted
    return t&&CombatTargetValid(c,t,k.playersOnly)&&KillAuraScore(c,k,t,KillAuraPickRange(k),nullptr);};
-  if(attack)r.reached=[k,id](uintptr_t){Context c{};if(!Local(&c))return;const uintptr_t t=KillAuraResolve(c,id);if(t&&KillAuraScore(c,k,t,k.distance,nullptr))KillAuraAttack(c,k,t);};   // rotation reached: attack
+  if(attack)r.reached=[k,id](uintptr_t){Context c{};if(!overlay::GameplayInputAllowed()||!Local(&c))return;const uintptr_t t=KillAuraResolve(c,id);if(t&&KillAuraScore(c,k,t,k.distance,nullptr))KillAuraAttack(c,k,t);};   // rotation reached: attack
   RotSubmit(std::move(r));return;}
  if(!ready)return;if(k.mode==2){KillAuraTeleport(c,k,best);return;}KillAuraAttack(c,k,best);}
 inline void KillAuraSend(uintptr_t packet){auto& s=KillAura();if(!s.pending)return;uint64_t table{},get{};   // attack after the teleport packet is sent
@@ -301,7 +301,7 @@ inline bool CombatTargetValid(const Context& c,uintptr_t target,bool playersOnly
 // Attacks like Auto Clicker's packet mode: swing (4), click counted by the CPS HUD, then the transaction.
 struct TriggerBotShared{std::mutex guard;bool enabled=false,hold=false,weaponsOnly=false,playersOnly=true;float low=8,high=12;double delay=0;bool scheduled=false;int64_t last=0;};
 inline TriggerBotShared& TriggerBot(){static auto* s=new TriggerBotShared;return *s;}
-inline void TriggerBotWork(const char* screen){auto& s=TriggerBot();std::lock_guard<std::mutex> lock(s.guard);if(!s.enabled||strcmp(screen,"hud_screen")||menuPause)return;Context c{};
+inline void TriggerBotWork(const char* screen){auto& s=TriggerBot();std::lock_guard<std::mutex> lock(s.guard);if(!s.enabled||strcmp(screen,"hud_screen")||menuPause||!overlay::GameplayInputAllowed())return;Context c{};
  if(!Local(&c))return;if(s.hold&&!(GetAsyncKeyState(VK_LBUTTON)&0x8000))return;if(s.weaponsOnly&&!IsWeapon(c))return;
  const uintptr_t target=CrosshairActor(c);if(!target||!CombatTargetValid(c,target,s.playersOnly))return;
  const int64_t now=CombatNs();if(s.scheduled&&(double)(now-s.last)/1e6<=s.delay)return;

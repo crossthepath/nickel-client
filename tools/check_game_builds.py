@@ -89,7 +89,7 @@ def main():
     sections = reference_sections(launcher)
     used = {}; direct = []
     for f in sorted((root / 'native').glob('*.[hc]pp')):
-        if f.name.startswith('generated_build_') or f.name == 'game_build.hpp': continue
+        if f.name.startswith('generated_build_') or f.name in ('generated_signatures.hpp', 'game_build.hpp'): continue
         for n, line in enumerate(f.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
             addresses, offsets = scan_line(line, sections)
             for v, sec in addresses.items(): used.setdefault(v, (sec, f.name))

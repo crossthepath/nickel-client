@@ -12,10 +12,10 @@ public static class MonitorTick
   catch (Exception error) { return error; }
  }
 
- /// <summary>Text of the notice under Load: nothing while loading or loaded, the load error after a failed load, else
- /// the error of the last Minecraft check ("" when it worked).</summary>
- public static string Notice(bool waiting, bool loaded, bool failed, string message, string monitorError) =>
-  waiting || loaded ? "" : failed ? message : monitorError;
+ /// <summary>Text of the notice under Load: nothing while loading, the game warning while loaded (game features off),
+ /// the load error after a failed load, else the error of the last Minecraft check ("" when it worked).</summary>
+ public static string Notice(bool waiting, bool loaded, bool failed, string message, string monitorError, string loadedWarning = "") =>
+  loaded ? loadedWarning : waiting ? "" : failed ? message : monitorError;
 
  public static string? SelfTest()
  {
@@ -24,6 +24,7 @@ public static class MonitorTick
   if (Notice(false, false, false, "", "") != "") return "a notice is shown after a good check";
   if (Notice(false, false, true, "Load error", check) != "Load error") return "a load error is not shown first";
   if (Notice(true, false, false, "", check) != "" || Notice(false, true, false, "Press Right Shift", check) != "") return "a notice is shown while loading or loaded";
+  if (Notice(false, true, false, "Press Right Shift", check, "game modules are off") != "game modules are off") return "the warning of a loaded game is not shown";
   // Task.Run: no UI synchronization context, so waiting here cannot block a continuation.
   static Exception? Check(Func<Task> tick) => Task.Run(() => Run(tick)).GetAwaiter().GetResult();
   try
