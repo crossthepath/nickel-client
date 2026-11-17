@@ -71,6 +71,9 @@ public partial class MainWindow : Window
   if (!review) LauncherPresence.SetEnabled(preferences.DiscordPresence);
   if (!review) { if (string.IsNullOrEmpty(preferences.InstallId)) { preferences.InstallId = UsagePing.NewId(); Save(); } UsagePing.SetEnabled(preferences.UsageStatistics, preferences.InstallId); }
   SourceInitialized += (_, _) => { ApplyWindowFrame(); if (!review) ApplyStreamHide(); if (PresentationSource.FromVisual(this) is HwndSource source) source.AddHook(MoveHook); };
+  if (!review) ContentRendered += async (_, _) => await OfferUpdateAtStartAsync();
+  else if (Environment.GetEnvironmentVariable("NICKEL_REVIEW_UPDATE") is { Length: > 0 } reviewTag)   // review export: the update pop-up for that version
+   ShowUpdatePopup(new Updater.Release(new ReleaseManifest("Nickel", "beta", reviewTag, "v" + reviewTag, "Nickel.exe", 0, ""), []));
   Root.MouseLeftButtonDown += (_, e) => { if (e.GetPosition(Root).Y < 40 && e.ButtonState == MouseButtonState.Pressed) DragMove(); };
   Closed += (_, _) => { closed = true; lifetime.Cancel(); monitor.Stop(); connection?.Dispose(); connection = null; lifetime.Dispose(); };
  }
@@ -495,6 +498,62 @@ public partial class MainWindow : Window
   switches.Add((track, () => on));
   OnClick(control, () => { on = changed(!on); Fade(track, on ? AccentDeep : "#2d2d39", .2); Slide(shift, TranslateTransform.XProperty, on ? 16 : 0, .2); });
   return control;
+ }
+
+ // ---------------------------------------------------------------- update pop-up
+ /// <summary>At start, looks for a newer signed release (same check as Settings > Check for updates) and offers it in a
+ /// pop-up. A failed check stays silent: the Settings button still reports errors.</summary>
+ private async Task OfferUpdateAtStartAsync()
+ {
+  try { if (await Updater.LatestAsync(lifetime.Token) is { } release && !closed) ShowUpdatePopup(release); }
+  catch (Exception error) when (error is OperationCanceledException or InvalidOperationException or System.Net.Http.HttpRequestException or IOException) { }
+ }
+ /// <summary>A card over the window: the new version, Update now (downloads, verifies, replaces the launcher and starts
+ /// the new one), Later, and a link to the release notes.</summary>
+ private void ShowUpdatePopup(Updater.Release release)
+ {
+  var version = release.Tag.TrimStart('v', 'V');
+  var layer = new Grid { Background = B("#000000b3"), Opacity = 0 };
+  Panel.SetZIndex(layer, 10);
+  var card = new Border { Width = 400, Background = B("#0f0f14"), BorderBrush = B("#2d2d39"), BorderThickness = new Thickness(1), Padding = new Thickness(24, 22, 24, 22), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+  var body = new StackPanel(); card.Child = body;
+  var top = new StackPanel { Orientation = Orientation.Horizontal };
+  var glyph = Icon("retry", 16, B(Accent)); glyph.Margin = new Thickness(0, 0, 9, 0); top.Children.Add(glyph);
+  top.Children.Add(T("NEW UPDATE", 11.5, Bold, Accent)); body.Children.Add(top);
+  var title = Wrapped(21, SemiBold, "#ffffff", 1.25); title.Text = "New update available"; title.Margin = new Thickness(0, 12, 0, 0); body.Children.Add(title);
+  var text = Wrapped(13, Regular, "#a0a0ab", 1.45); text.Margin = new Thickness(0, 8, 0, 0);
+  text.Text = $"Nickel {version} is out (you have {Updater.Version}). Update now to get the latest fixes and features; the launcher restarts by itself.";
+  body.Children.Add(text);
+  var error = Wrapped(12, Regular, "#f6a0ab", 1.35); error.Margin = new Thickness(0, 10, 0, 0); error.Visibility = Visibility.Collapsed; body.Children.Add(error);
+  var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 20, 0, 0) };
+  var updateLabel = Wrapped(13.5, SemiBold, "#0d0d0f", 1.2); updateLabel.Text = "Update now"; updateLabel.VerticalAlignment = VerticalAlignment.Center;
+  var updateSurface = B("#ffffff");
+  var update = new Border { Height = 36, Padding = new Thickness(16, 0, 16, 0), Background = updateSurface, Child = updateLabel, Cursor = Cursors.Hand };
+  update.MouseEnter += (_, _) => Fade(updateSurface, "#ebebf0", .15); update.MouseLeave += (_, _) => Fade(updateSurface, "#ffffff", .15);
+  var laterSurface = B("#14141b00");
+  var later = new Border { Height = 36, Padding = new Thickness(16, 0, 16, 0), Margin = new Thickness(10, 0, 0, 0), BorderBrush = B("#2d2d39"), BorderThickness = new Thickness(1), Background = laterSurface, Child = T("Later", 13.5, Medium, "#ffffff"), Cursor = Cursors.Hand };
+  later.MouseEnter += (_, _) => Fade(laterSurface, "#14141b", .15); later.MouseLeave += (_, _) => Fade(laterSurface, "#14141b00", .15);
+  buttons.Children.Add(update); buttons.Children.Add(later);
+  var notes = T("What's new", 12.5, Medium, "#a0a0ab"); notes.Cursor = Cursors.Hand; notes.Margin = new Thickness(16, 0, 0, 0); notes.VerticalAlignment = VerticalAlignment.Center;
+  buttons.Children.Add(notes); body.Children.Add(buttons);
+  layer.Children.Add(card); Root.Children.Add(layer);
+  Slide(layer, OpacityProperty, 1, .25);
+  var working = false;
+  void Dismiss() { if (working) return; Slide(layer, OpacityProperty, 0, .2); var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(.22) }; timer.Tick += (_, _) => { timer.Stop(); Root.Children.Remove(layer); }; timer.Start(); }
+  OnClick(later, Dismiss);
+  OnClick(notes, () => OpenLink($"{GitHubUrl}/releases/tag/{release.Tag}"));
+  OnClick(update, async () =>
+  {
+   if (working || review) return; working = true; error.Visibility = Visibility.Collapsed;
+   try
+   {
+    updateLabel.Text = "Downloading...";
+    await Updater.InstallAsync(release, percent => Dispatcher.Invoke(() => updateLabel.Text = $"Downloading {percent} %"), lifetime.Token, start: true);
+    Close();   // the new version is starting
+   }
+   catch (OperationCanceledException) { working = false; }
+   catch (Exception failure) { working = false; updateLabel.Text = "Try again"; error.Text = failure.Message; error.Visibility = Visibility.Visible; }
+  });
  }
 
  // ---------------------------------------------------------------- window

@@ -1266,6 +1266,11 @@ MenuOption& AiOption() {
     return aiAssistantOption;
 }
 
+// False while Nickel AI is not released: Settings shows it as "Soon", the option stays off whatever ai/settings.ini
+// says, and nothing of it is created (no bubble, no chat, no network). The offline review of the probe still turns it
+// on (NICKEL_REVIEW_AI).
+constexpr bool kAiReleased = false;
+
 // Settings > Connection, under Nickel AI: [ai] memory= in the same settings.ini (on by default).
 MenuOption aiMemoryOption = {"nickel-ai-memory",
                              "Nickel AI memory",
@@ -1356,6 +1361,9 @@ void AiShutdown() {
 
 // The Settings toggle and Reset all are the only callers. Turning it off never creates the file.
 void SetAiEnabled(bool on) {
+    if (on && !kAiReleased) {
+        return;
+    }
     AiOption().value = on;
     const std::wstring path = AiSettingPath();
     const bool exists = GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
@@ -1387,7 +1395,7 @@ void AiTick() {
     }
     if (!m.settingRead) {
         m.settingRead = true;
-        AiOption().value = GetPrivateProfileIntW(L"ai", L"enabled", 1, AiSettingPath().c_str()) == 1;
+        AiOption().value = kAiReleased && GetPrivateProfileIntW(L"ai", L"enabled", 1, AiSettingPath().c_str()) == 1;
         AiMemoryOption().value = GetPrivateProfileIntW(L"ai", L"memory", 1, AiSettingPath().c_str()) == 1;
         wchar_t place[64] = {};
         GetPrivateProfileStringW(L"ai", L"bubble", L"", place, 64, AiSettingPath().c_str());

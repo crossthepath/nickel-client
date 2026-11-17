@@ -121,7 +121,7 @@ public static class GameBuilds
  /// <summary>True for the versions the overlay adapts to when the game file holds no validated build (a launcher's copy
  /// changed elsewhere, a relinked hotfix): it then finds every game function Nickel uses itself and keeps game features
  /// off when one differs (native/game_resolve.hpp, AdaptableVersion; keep both in step).</summary>
- public static bool Adaptable(int major, int minor, int build) => major == 1 && minor == 26 && build >= 60 && build <= 69;
+ public static bool Adaptable(int major, int minor, int build) => major == 1 && (minor > 26 || (minor == 26 && build >= 60));
 
  /// <summary>Checks a game image file: null when Nickel can load into it, else the refusal. build is the validated build
  /// the file holds; null with a version Adaptable() means the overlay will look for Nickel's game functions itself, and
@@ -134,7 +134,7 @@ public static class GameBuilds
   var version = $"{info.FileMajorPart}.{info.FileMinorPart}.{info.FileBuildPart}.{info.FilePrivatePart}";
   var validated = VersionValidated(info.FileMajorPart, info.FileMinorPart, info.FileBuildPart, builds);
   if (!validated && !Adaptable(info.FileMajorPart, info.FileMinorPart, info.FileBuildPart))
-   return $"Nickel supports Minecraft 1.26.60 to 1.26.69 (tested: {SupportedVersions}); this game is {version}.";
+   return $"Nickel supports Minecraft 1.26.60 and later (tested: {SupportedVersions}); this game is {version}.";
   var sameVersion = builds.Where(b => b.Major == info.FileMajorPart && b.Minor == info.FileMinorPart && b.Build == info.FileBuildPart).ToArray();
   using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
   build = Identify(file, sameVersion, out var reason);
@@ -246,7 +246,7 @@ public static class GameBuilds
   if (!IsGameImage(@"C:\XboxGames\Minecraft for Windows\Content\Minecraft.Windows.exe") || IsGameImage(@"C:\x\Minecraft.Windows.exe.bak") || IsGameImage(@"C:\x\Notepad.exe"))
    return "the game image name rule is wrong";
   if (!VersionValidated(1, 26, 62, builds) || VersionValidated(1, 26, 63, builds) || VersionValidated(1, 25, 62, builds)) return "the version rule is wrong";
-  if (!Adaptable(1, 26, 60) || !Adaptable(1, 26, 65) || !Adaptable(1, 26, 69) || Adaptable(1, 26, 59) || Adaptable(1, 26, 70) || Adaptable(1, 21, 62))
+  if (!Adaptable(1, 26, 60) || !Adaptable(1, 26, 65) || !Adaptable(1, 26, 90) || !Adaptable(1, 27, 0) || Adaptable(1, 26, 59) || Adaptable(1, 21, 62) || Adaptable(2, 0, 0))
    return "the adaptable version rule is wrong";
   // The in-memory comparison on this launcher's own process: a buffer holding the profile's code is accepted, and the
   // same buffer with one byte changed is refused.

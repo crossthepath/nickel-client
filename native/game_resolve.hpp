@@ -24,8 +24,9 @@ extern "C" {
 }
 
 namespace game {
-// Versions the overlay tries to adapt to when no profile matches: the 1.26.60 line Nickel's profiles come from.
-inline bool AdaptableVersion(const uint16_t version[4]){return version[0]==1&&version[1]==26&&version[2]>=60&&version[2]<=69;}
+// Versions the overlay tries to adapt to when no profile matches: 1.26.60 and every later version. A later update
+// whose functions Nickel uses changed is refused by AdaptBuild (game features off, the changed function named).
+inline bool AdaptableVersion(const uint16_t version[4]){return version[0]==1&&(version[1]>26||(version[1]==26&&version[2]>=60));}
 
 struct AdaptedBuild{std::vector<RvaRange> ranges;std::vector<RvaPair> data;std::string error;unsigned functions=0,dataFound=0;};
 

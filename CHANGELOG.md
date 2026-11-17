@@ -14,33 +14,21 @@ record. Do not add a handwritten entry here for each change.
 ### Game versions
 
 - Minecraft 1.26.65 (the current Microsoft Store / Xbox app version) is supported, along with 1.26.62 and 1.26.63.
-- Nickel loads into any copy of Minecraft 1.26.60 to 1.26.69, from any launcher: when the game is not a build Nickel
-  was tested on (a launcher's own copy, a game patched by another program, a small hotfix), Nickel finds every game
+- Nickel loads into any copy of Minecraft 1.26.60 or later, from any launcher: when the game is not a build Nickel
+  was tested on (a launcher's own copy, a game patched by another program, a newer update), Nickel finds every game
   function it uses by itself and checks each one before hooking it. If one is missing or changed, the menu, HUD and
   scripts still work, game modules stay off, and the launcher says which function differs.
 - A refused game now says why ("Load failed" with the reason).
 
-### Nickel AI
+### Launcher
 
-- Nickel AI, an assistant inside the menu: a bubble beside the menu opens a chat window. Ask about modules, settings
-  and scripts; it can look them up, turn modules on or off, change settings, write scripts and undo its changes.
-- Every change waits on a card that shows the real current and new values; nothing happens until you press Allow.
-  Scripts it writes are saved held and run only when you start them.
-- Answers show their formatting (bold, lists, headings, code).
-- Up to 25 messages, one more every 30 minutes; the chat shows how many are left and when the next one comes back.
-  No account and no sign-in: Nickel AI uses the anonymous key of this install.
-- It sees the game: the server you are on (named, not just its address), what the server sent since you joined
-  (custom items, commands, scoreboards), the players and entities around you, and it can capture packets while you
-  play. It searches the web and Mojang's protocol documentation, and checks every script against Nickel's API
-  before saving it.
-- It keeps working while you close the chat and play, and a notice tells you when it is done or needs you.
-- Long chats are summarised instead of filling up.
-- Nickel AI memory (Settings > Connection, on by default): short notes about you are kept for your next chats.
-  Turn it off and Nickel AI keeps nothing.
-- The chat window can be resized from its corner, long messages wrap, and right click on a message copies it or
-  its code.
-- Nickel AI is on by default; turn it off in Settings > Connection > Nickel AI (assistant). While it is off, Nickel
-  sends nothing.
+- When a new version is out, the launcher says so in a pop-up as it opens: Update now downloads it, checks its
+  signature, and restarts the launcher on the new version; Later closes the pop-up; What's new opens the release notes.
+
+### Nickel AI (soon)
+
+- Nickel AI, an assistant inside the menu that answers questions about modules and servers and can change settings
+  or write scripts for you, is coming. It shows as "Soon" in Settings > Connection and cannot be turned on yet.
 
 ### PUBLIC
 
@@ -50,7 +38,8 @@ record. Do not add a handwritten entry here for each change.
 ### Menu
 
 - The menu fits the game window: it scales down on smaller windows instead of going past the edges.
-- The Nickel AI bubble can be dragged; double-click its window's header to put it back.
+- Client keys (module binds, Right Shift, mouse buttons for Auto Clicker, Kill Aura and Aim Assist) no longer act
+  while the game is paused, a game screen is open or Minecraft is not the window in front.
 
 ## 1.2.0-beta
 

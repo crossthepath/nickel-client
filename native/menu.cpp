@@ -2826,7 +2826,14 @@ void DrawMenuSettings(ImVec2 origin,float s,float opacity){
   const bool lower=button(id+"-minus","",right-122*U,28*U,0,canLower,a);d->AddLine(at(right-150*U+9.5f*U,26*U),at(right-150*U+18.5f*U,26*U),Rgba(230,230,235,a*(canLower?1.f:.4f)),1.6f*s);
   if(lower)return -1;return button(id+"-plus","+",right,28*U,0,canRaise,a)?1:0;};
  header("INTERFACE","\xee\x80\x89");for(auto& option:interfaceOptions)toggle(option);
- header("CONNECTION","\xee\x80\x89");for(auto& option:connectionOptions)toggle(option);toggle(PublicOption());toggle(AiOption());if(AiOption().value)toggle(AiMemoryOption());
+ // A setting that is not available yet: its row with a "Soon" pill in place of the switch, nothing to click.
+ auto soon=[&](const char* key,const char* title,const char* description){const float a=row(key,title,description);const float w=46,x0=areaW-12*U-w;
+  const ImVec2 lo=at(x0,26*U-10),hi=at(x0+w,26*U+10);d->AddRectFilled(lo,hi,ToU32(themeLive.accentDeep,.30f*a),10*s);d->AddRect(lo,hi,ToU32(themeLive.accent,.60f*a),10*s,0,U*s);
+  Label(d,semibold,11.5f*s,at(x0+(w-TextWidth(semibold,11.5f,"Soon"))/2,26*U-.7f*11.5f),"Soon",Rgba(240,238,248,a));};
+ header("CONNECTION","\xee\x80\x89");for(auto& option:connectionOptions)toggle(option);toggle(PublicOption());
+ if(kAiReleased){toggle(AiOption());if(AiOption().value)toggle(AiMemoryOption());}
+ else{soon("nickel-ai-soon","Nickel AI (assistant)","An assistant in the menu: ask about modules and servers, and let it change settings or write scripts for you.");
+  soon("nickel-ai-memory-soon","Nickel AI memory","Nickel AI remembers your server, your preferences and the scripts you made together between chats.");}
  // Theme: one swatch per theme (glow -> background gradient), selection ringed in white; saved in [interface] theme
  {const float a2=row("theme","Theme",(std::string(Th().name)+"  \xc2\xb7  menu colors and animated background").c_str());const float size=20*U,gap=8*U,right=areaW-12*U;
   for(int t=themeCount-1;t>=0;--t){const float x=right-(themeCount-t)*size-(themeCount-1-t)*gap;const ImVec2 lo=at(x,16*U),hi=at(x+size,36*U);

@@ -82,7 +82,7 @@ inline bool Supported(uintptr_t* base,uint32_t* size){
    const bool forceAdapt=GetEnvironmentVariableW(L"NICKEL_FORCE_ADAPT",nullptr,0)>0;
    if(!GameVersion((HMODULE)image,version))buildRefusal="the game has no version information";
    else if(!forceAdapt&&(currentBuild=MatchBuild((const uint8_t*)image,version))>=0)state=1;
-   else if(!AdaptableVersion(version)){char text[160];snprintf(text,sizeof text,"Minecraft %u.%u.%u is not supported (Nickel supports 1.26.60 to 1.26.69)",version[0],version[1],version[2]);buildRefusal=text;}
+   else if(!AdaptableVersion(version)){char text[160];snprintf(text,sizeof text,"Minecraft %u.%u.%u is not supported (Nickel supports 1.26.60 and later)",version[0],version[1],version[2]);buildRefusal=text;}
    else{AdaptedBuild adapted=AdaptBuild((const uint8_t*)image);const std::string error=adapted.error;
     if(UseAdaptedBuild((const uint8_t*)image,version,std::move(adapted)))state=1;else buildRefusal=error;}}}
  *base=image;*size=imageSize;return state==1;

@@ -38,8 +38,8 @@ bool Writable(uint8_t* at,size_t n){DWORD old;return VirtualProtect(at,n,PAGE_WR
 }
 
 int main(){
- const uint16_t v62[4]={1,26,62,1},v65[4]={1,26,65,3},v70[4]={1,26,70,1},v52[4]={1,26,52,3},v21[4]={1,21,62,1};
- Check(AdaptableVersion(v62)&&AdaptableVersion(v65)&&!AdaptableVersion(v70)&&!AdaptableVersion(v52)&&!AdaptableVersion(v21),"adaptable versions are 1.26.60 to 1.26.69");
+ const uint16_t v62[4]={1,26,62,1},v65[4]={1,26,65,3},v70[4]={1,26,70,1},v127[4]={1,27,0,1},v52[4]={1,26,52,3},v21[4]={1,21,62,1};
+ Check(AdaptableVersion(v62)&&AdaptableVersion(v65)&&AdaptableVersion(v70)&&AdaptableVersion(v127)&&!AdaptableVersion(v52)&&!AdaptableVersion(v21),"adaptable versions are 1.26.60 and later");
  Check(sizeof(kSignatureFunctions)/sizeof(kSignatureFunctions[0])>300&&sizeof(kSignatureData)/sizeof(kSignatureData[0])>=13,"the generated signatures cover Nickel's functions and data");
  {const uint8_t code[]={0xe8,1,2,3,4,0x48,0x8b,0x05,5,6,7,8,0xc3};const auto m=SignatureMask(code,sizeof code);
   Check(m.size()==13&&!m[1]&&!m[4]&&m[0]&&m[5]&&m[7]&&!m[8]&&!m[11]&&m[12],"the mask hides rel32 call targets and RIP-relative displacements only");}
